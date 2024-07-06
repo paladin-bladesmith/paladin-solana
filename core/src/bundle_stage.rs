@@ -200,7 +200,10 @@ impl BundleStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
-        bundle_receiver: Receiver<Vec<PacketBundle>>,
+        (bundle_receiver, paladin_receiver): (
+            Receiver<Vec<PacketBundle>>,
+            Receiver<Vec<PacketBundle>>,
+        ),
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
@@ -215,7 +218,7 @@ impl BundleStage {
         Self::start_bundle_thread(
             cluster_info,
             poh_recorder,
-            bundle_receiver,
+            (bundle_receiver, paladin_receiver),
             transaction_status_sender,
             replay_vote_sender,
             log_messages_bytes_limit,
@@ -238,7 +241,10 @@ impl BundleStage {
     fn start_bundle_thread(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
-        bundle_receiver: Receiver<Vec<PacketBundle>>,
+        (bundle_receiver, paladin_receiver): (
+            Receiver<Vec<PacketBundle>>,
+            Receiver<Vec<PacketBundle>>,
+        ),
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_message_bytes_limit: Option<usize>,
@@ -255,8 +261,14 @@ impl BundleStage {
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
 
-        let mut bundle_receiver =
-            BundleReceiver::new(BUNDLE_STAGE_ID, bundle_receiver, bank_forks, Some(5));
+        let mut bundle_receiver = BundleReceiver::new(
+            BUNDLE_STAGE_ID,
+            bundle_receiver,
+            bank_forks.clone(),
+            Some(5),
+        );
+        let mut paladin_receiver =
+            BundleReceiver::new(BUNDLE_STAGE_ID, paladin_receiver, bank_forks, Some(5));
 
         let committer = Committer::new(
             transaction_status_sender,
@@ -302,7 +314,7 @@ impl BundleStage {
             .name("solBundleStgTx".to_string())
             .spawn(move || {
                 Self::process_loop(
-                    &mut bundle_receiver,
+                    (&mut bundle_receiver, &mut paladin_receiver),
                     decision_maker,
                     consumer,
                     BUNDLE_STAGE_ID,
@@ -317,7 +329,7 @@ impl BundleStage {
 
     #[allow(clippy::too_many_arguments)]
     fn process_loop(
-        bundle_receiver: &mut BundleReceiver,
+        (bundle_receiver, paladin_receiver): (&mut BundleReceiver, &mut BundleReceiver),
         decision_maker: DecisionMaker,
         mut consumer: BundleConsumer,
         id: u32,
@@ -346,6 +358,19 @@ impl BundleStage {
                     .leader_slot_metrics_tracker()
                     .increment_process_buffered_packets_us(process_buffered_packets_time.as_us());
                 last_metrics_update = Instant::now();
+            }
+
+            match paladin_receiver.receive_and_buffer_bundles(
+                // TODO: Should we store paladin TXs separately? This would let
+                // us prioritize paladin TXs over traditional bundles.
+                &mut unprocessed_bundle_storage,
+                // TODO: Track paladin metrics separate for analysis.
+                &mut bundle_stage_metrics,
+                // TODO: Track paladin metrics separate for analysis.
+                &mut bundle_stage_leader_metrics,
+            ) {
+                Ok(_) | Err(RecvTimeoutError::Timeout) => (),
+                Err(RecvTimeoutError::Disconnected) => break,
             }
 
             match bundle_receiver.receive_and_buffer_bundles(

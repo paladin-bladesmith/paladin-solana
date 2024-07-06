@@ -12,6 +12,7 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
+        paladin_stage::PaladinStage,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -84,6 +85,7 @@ pub struct Tpu {
     tracer_thread_hdl: TracerThread,
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
+    paladin_stage: PaladinStage,
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
 }
@@ -252,6 +254,9 @@ impl Tpu {
             &block_builder_fee_info,
         );
 
+        let (paladin_sender, paladin_receiver) = unbounded();
+        let paladin_stage = PaladinStage::new(exit.clone(), paladin_sender);
+
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),
@@ -315,7 +320,7 @@ impl Tpu {
         let bundle_stage = BundleStage::new(
             cluster_info,
             poh_recorder,
-            bundle_receiver,
+            (bundle_receiver, paladin_receiver),
             transaction_status_sender,
             replay_vote_sender,
             log_messages_bytes_limit,
@@ -369,6 +374,7 @@ impl Tpu {
                 staked_nodes_updater_service,
                 tracer_thread_hdl,
                 block_engine_stage,
+                paladin_stage,
                 relayer_stage,
                 fetch_stage_manager,
                 bundle_stage,
@@ -390,6 +396,7 @@ impl Tpu {
             self.bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
+            self.paladin_stage.join(),
             self.fetch_stage_manager.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
