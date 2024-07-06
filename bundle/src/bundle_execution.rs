@@ -1,4 +1,5 @@
 use {
+    crate::bundle_account_locker::{ExclusivityError, LockedBundle},
     itertools::izip,
     log::*,
     solana_accounts_db::{
@@ -103,6 +104,9 @@ pub enum LoadAndExecuteBundleError {
 
     #[error("Invalid pre or post accounts")]
     InvalidPreOrPostAccounts,
+
+    #[error("Account was in use and transaction was not FIFO")]
+    AccountInUse,
 }
 
 pub struct BundleTransactionsOutput<'a> {
@@ -220,7 +224,8 @@ pub fn check_bundle_execution_results<'a>(
 #[allow(clippy::too_many_arguments)]
 pub fn load_and_execute_bundle<'a>(
     bank: &Bank,
-    bundle: &'a SanitizedBundle,
+    locked_bundle: Option<&mut LockedBundle>,
+    sanitized_bundle: &'a SanitizedBundle,
     // Max blockhash age
     max_age: usize,
     // Upper bound on execution time for a bundle
@@ -241,9 +246,10 @@ pub fn load_and_execute_bundle<'a>(
     // will use AccountsOverride + Bank
     pre_execution_accounts: &[Option<Vec<Pubkey>>],
     post_execution_accounts: &[Option<Vec<Pubkey>>],
+    fifo: bool,
 ) -> LoadAndExecuteBundleOutput<'a> {
     if pre_execution_accounts.len() != post_execution_accounts.len()
-        || post_execution_accounts.len() != bundle.transactions.len()
+        || post_execution_accounts.len() != sanitized_bundle.transactions.len()
     {
         return LoadAndExecuteBundleOutput {
             bundle_transaction_results: vec![],
@@ -255,7 +261,7 @@ pub fn load_and_execute_bundle<'a>(
     let mut binding = AccountOverrides::default();
     let account_overrides = account_overrides.unwrap_or(&mut binding);
     if is_simulation {
-        bundle
+        sanitized_bundle
             .transactions
             .iter()
             .map(|tx| tx.message().account_keys())
@@ -272,9 +278,29 @@ pub fn load_and_execute_bundle<'a>(
     let mut bundle_transaction_results = vec![];
     let mut metrics = BundleExecutionMetrics::default();
 
-    while chunk_start != bundle.transactions.len() {
+    // NB: We need to make the locks exclusive to avoid races between Paladin & Jito thread.
+    if let Some(locked_bundle) = locked_bundle {
+        loop {
+            match (fifo, locked_bundle.try_make_exclusive()) {
+                (_, Ok(_)) => break,
+                (true, Err(ExclusivityError)) => std::thread::sleep(Duration::from_millis(5)),
+                (false, Err(ExclusivityError)) => {
+                    return LoadAndExecuteBundleOutput {
+                        bundle_transaction_results,
+                        metrics,
+                        result: Err(LoadAndExecuteBundleError::AccountInUse),
+                    };
+                }
+            }
+        }
+    }
+
+    while chunk_start != sanitized_bundle.transactions.len() {
         if start_time.elapsed() > *max_processing_time {
-            trace!("bundle: {} took too long to execute", bundle.bundle_id);
+            trace!(
+                "bundle: {} took too long to execute",
+                sanitized_bundle.bundle_id
+            );
             return LoadAndExecuteBundleOutput {
                 bundle_transaction_results,
                 metrics,
@@ -284,8 +310,11 @@ pub fn load_and_execute_bundle<'a>(
             };
         }
 
-        let chunk_end = min(bundle.transactions.len(), chunk_start.saturating_add(128));
-        let chunk = &bundle.transactions[chunk_start..chunk_end];
+        let chunk_end = min(
+            sanitized_bundle.transactions.len(),
+            chunk_start.saturating_add(128),
+        );
+        let chunk = &sanitized_bundle.transactions[chunk_start..chunk_end];
 
         // Note: these batches are dropped after execution and before record/commit, which is atypical
         // compared to BankingStage which holds account locks until record + commit to avoid race conditions with
@@ -297,9 +326,18 @@ pub fn load_and_execute_bundle<'a>(
             bank.prepare_sequential_sanitized_batch_with_results(chunk)
         };
 
+        // If this is not a fifo batch, then bail on any failed locks.
+        if !fifo && batch.lock_results().iter().any(|lock| lock.is_err()) {
+            return LoadAndExecuteBundleOutput {
+                bundle_transaction_results,
+                metrics,
+                result: Err(LoadAndExecuteBundleError::AccountInUse),
+            };
+        }
+
         debug!(
             "bundle: {} batch num locks ok: {}",
-            bundle.bundle_id,
+            sanitized_bundle.bundle_id,
             batch.lock_results().iter().filter(|lr| lr.is_ok()).count()
         );
 
@@ -309,7 +347,7 @@ pub fn load_and_execute_bundle<'a>(
         if let Some((transaction, lock_failure)) = batch.check_bundle_lock_results() {
             debug!(
                 "bundle: {} lock error; signature: {} error: {}",
-                bundle.bundle_id,
+                sanitized_bundle.bundle_id,
                 transaction.signature(),
                 lock_failure
             );
@@ -363,7 +401,7 @@ pub fn load_and_execute_bundle<'a>(
             ));
         debug!(
             "bundle id: {} loaded_transactions: {:?}",
-            bundle.bundle_id, load_and_execute_transactions_output.loaded_transactions
+            sanitized_bundle.bundle_id, load_and_execute_transactions_output.loaded_transactions
         );
         saturating_add_assign!(metrics.load_execute_us, load_execute_us);
 
@@ -383,7 +421,7 @@ pub fn load_and_execute_bundle<'a>(
             //  we'll get the results for A_1 but not [A_2], [B], [C] due to the way this loop executes.
             debug!(
                 "bundle: {} execution error; signature: {} error: {:?}",
-                bundle.bundle_id,
+                sanitized_bundle.bundle_id,
                 failing_tx.signature(),
                 exec_result
             );
@@ -407,7 +445,7 @@ pub fn load_and_execute_bundle<'a>(
             saturating_add_assign!(metrics.num_retries, 1);
             debug!(
                 "bundle: {} no transaction executed, retrying",
-                bundle.bundle_id
+                sanitized_bundle.bundle_id
             );
             continue;
         }
@@ -582,6 +620,7 @@ mod tests {
 
         let execution_result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &MAX_PROCESSING_TIME,
@@ -594,6 +633,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
 
         // make sure the bundle succeeded
@@ -659,6 +699,7 @@ mod tests {
         let default_accounts = vec![None; bundle.transactions.len()];
         let execution_result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &MAX_PROCESSING_TIME,
@@ -671,6 +712,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
 
         assert_eq!(execution_result.bundle_transaction_results.len(), 0);
@@ -680,7 +722,8 @@ mod tests {
         match execution_result.result.unwrap_err() {
             LoadAndExecuteBundleError::ProcessingTimeExceeded(_)
             | LoadAndExecuteBundleError::LockError { .. }
-            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
+            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts
+            | LoadAndExecuteBundleError::AccountInUse => {
                 unreachable!();
             }
             LoadAndExecuteBundleError::TransactionError {
@@ -736,6 +779,7 @@ mod tests {
         let default_accounts = vec![None; bundle.transactions.len()];
         let execution_result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &MAX_PROCESSING_TIME,
@@ -748,6 +792,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
 
         assert!(execution_result.result.is_ok());
@@ -960,6 +1005,7 @@ mod tests {
         let default_accounts = vec![None; bundle.transactions.len()];
         let execution_result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &MAX_PROCESSING_TIME,
@@ -972,11 +1018,13 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
         match execution_result.result.as_ref().unwrap_err() {
             LoadAndExecuteBundleError::ProcessingTimeExceeded(_)
             | LoadAndExecuteBundleError::LockError { .. }
-            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
+            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts
+            | LoadAndExecuteBundleError::AccountInUse => {
                 unreachable!();
             }
 
@@ -1021,6 +1069,7 @@ mod tests {
         let default = vec![None; bundle.transactions.len()];
         let result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &Duration::from_millis(100),
@@ -1033,6 +1082,7 @@ mod tests {
             None,
             &default,
             &default,
+            true,
         );
         assert_matches!(
             result.result,
@@ -1066,6 +1116,7 @@ mod tests {
         let default = vec![None; bundle.transactions.len()];
         let result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &Duration::from_millis(100),
@@ -1078,6 +1129,7 @@ mod tests {
             None,
             &default,
             &default,
+            true,
         );
         assert!(result.result.is_ok());
     }
@@ -1124,6 +1176,7 @@ mod tests {
         let default = vec![None; bundle.transactions.len()];
         let result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &Duration::from_secs(2),
@@ -1136,6 +1189,7 @@ mod tests {
             None,
             &default,
             &default,
+            true,
         );
         assert!(result.result.is_ok());
 
@@ -1159,6 +1213,7 @@ mod tests {
 
         let result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &Duration::from_millis(100),
@@ -1171,6 +1226,7 @@ mod tests {
             None,
             &PRE_EXECUTION_ACCOUNTS,
             &vec![None; bundle.transactions.len()],
+            true,
         );
         assert_matches!(
             result.result,
@@ -1179,6 +1235,7 @@ mod tests {
 
         let result = load_and_execute_bundle(
             &bank,
+            None,
             &bundle,
             MAX_PROCESSING_AGE,
             &Duration::from_millis(100),
@@ -1191,6 +1248,7 @@ mod tests {
             None,
             &vec![None; bundle.transactions.len()],
             &PRE_EXECUTION_ACCOUNTS,
+            true,
         );
         assert_matches!(
             result.result,
