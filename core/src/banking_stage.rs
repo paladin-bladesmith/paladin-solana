@@ -25,12 +25,12 @@ use {
             },
         },
         banking_trace::BankingPacketReceiver,
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
         tracer_packet_stats::TracerPacketStats,
         validator::BlockProductionMethod,
     },
     crossbeam_channel::{unbounded, Receiver, RecvTimeoutError, Sender},
     histogram::Histogram,
+    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_client::connection_cache::ConnectionCache,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
     solana_ledger::blockstore_processor::TransactionStatusSender,
@@ -77,7 +77,7 @@ pub(crate) mod packet_filter;
 mod packet_receiver;
 mod read_write_account_set;
 mod scheduler_messages;
-mod transaction_scheduler;
+pub(crate) mod transaction_scheduler;
 
 // Fixed thread size seems to be fastest on GCP setup
 pub const NUM_THREADS: u32 = 6;

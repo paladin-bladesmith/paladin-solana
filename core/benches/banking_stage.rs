@@ -13,6 +13,7 @@ use {
     log::*,
     rand::{thread_rng, Rng},
     rayon::prelude::*,
+    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::{
@@ -25,7 +26,6 @@ use {
             BankingStage, BankingStageStats,
         },
         banking_trace::{BankingPacketBatch, BankingTracer},
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     solana_entry::entry::{next_hash, Entry},
     solana_gossip::cluster_info::{ClusterInfo, Node},

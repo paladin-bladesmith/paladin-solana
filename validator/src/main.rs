@@ -33,6 +33,7 @@ use {
     solana_core::{
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        p3::P3_SOCKET_DEFAULT,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
@@ -1609,6 +1610,12 @@ pub fn main() {
         trust_packets: matches.is_present("trust_relayer_packets"),
     };
 
+    let p3_socket = if matches.is_present("p3_socket") {
+        value_of(&matches, "p3_socket").expect("couldn't parse p3_socket")
+    } else {
+        SocketAddr::from_str(P3_SOCKET_DEFAULT).expect("couldn't parse p3_socket")
+    };
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -1771,6 +1778,7 @@ pub fn main() {
         wen_restart_coordinator: value_t!(matches, "wen_restart_coordinator", Pubkey).ok(),
         preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
+        p3_socket,
         ..ValidatorConfig::default()
     };
 
@@ -2418,6 +2426,7 @@ fn tip_manager_config_from_matches(
     voting_disabled: bool,
 ) -> TipManagerConfig {
     TipManagerConfig {
+        funnel: pubkey_of(matches, "funnel"),
         tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
             || {
                 if !voting_disabled {

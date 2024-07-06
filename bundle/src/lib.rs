@@ -9,6 +9,7 @@ use {
     thiserror::Error,
 };
 
+pub mod bundle_account_locker;
 pub mod bundle_execution;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,6 +60,12 @@ pub enum BundleExecutionError {
 
     #[error("Tip payment error {0}")]
     TipError(#[from] TipError),
+
+    #[error("Tip was too low")]
+    TipTooLow,
+
+    #[error("Bundle contained a front run")]
+    FrontRun,
 }
 
 #[derive(Debug)]

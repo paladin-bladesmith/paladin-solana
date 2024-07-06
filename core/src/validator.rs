@@ -14,6 +14,8 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
             ExternalRootSource, Tower,
         },
+        p3::P3_SOCKET_DEFAULT,
+        p3_quic::P3_QUIC_SOCKET_DEFAULT,
         poh_timing_report_service::PohTimingReportService,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
@@ -138,9 +140,10 @@ use {
     solana_wen_restart::wen_restart::{wait_for_wen_restart, WenRestartConfig},
     std::{
         collections::{HashMap, HashSet},
-        net::SocketAddr,
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
         num::NonZeroUsize,
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -298,6 +301,9 @@ pub struct ValidatorConfig {
     pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
+    // p3
+    pub p3_socket: SocketAddr,
+    pub p3_quic_socket: SocketAddr,
 }
 
 impl Default for ValidatorConfig {
@@ -376,6 +382,8 @@ impl Default for ValidatorConfig {
             shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
+            p3_socket: SocketAddr::from_str(P3_SOCKET_DEFAULT).expect("p3 socket"),
+            p3_quic_socket: SocketAddr::from_str(P3_QUIC_SOCKET_DEFAULT).expect("p3_quic socket"),
         }
     }
 }
@@ -393,6 +401,7 @@ impl ValidatorConfig {
                 .expect("thread count is non-zero"),
             tvu_shred_sigverify_threads: NonZeroUsize::new(get_thread_count())
                 .expect("thread count is non-zero"),
+            p3_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
             ..Self::default()
         }
     }
@@ -1524,9 +1533,11 @@ impl Validator {
             config.generator_config.clone(),
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
+            leader_schedule_cache.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
+            (config.p3_socket, config.p3_quic_socket),
         );
 
         datapoint_info!(

@@ -3495,7 +3495,7 @@ pub mod utils {
         solana_account_decoder::{UiAccount, UiAccountEncoding},
         solana_bundle::{
             bundle_execution::{LoadAndExecuteBundleError, LoadAndExecuteBundleOutput},
-            BundleExecutionError,
+            BundleExecutionError, TipError,
         },
         solana_rpc_client_api::{
             bundles::{
@@ -3557,6 +3557,9 @@ pub mod utils {
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                         RpcBundleExecutionError::InvalidPreOrPostAccounts
                     }
+                    LoadAndExecuteBundleError::AccountInUse => {
+                        RpcBundleExecutionError::BundleExecutionTimeout
+                    }
                 }
             }
             BundleExecutionError::LockError => RpcBundleExecutionError::BundleLockError,
@@ -3564,6 +3567,10 @@ pub mod utils {
                 RpcBundleExecutionError::PohRecordError(e.to_string())
             }
             BundleExecutionError::TipError(e) => RpcBundleExecutionError::TipError(e.to_string()),
+            // NB: Lie about the error as to not break downstream consumers.
+            BundleExecutionError::TipTooLow | BundleExecutionError::FrontRun => {
+                RpcBundleExecutionError::TipError(TipError::CrankTipError.to_string())
+            }
         }
     }
 
@@ -4426,6 +4433,7 @@ pub mod rpc_full {
                 account_configs_to_accounts(&config.post_execution_accounts_configs)?;
             let bundle_execution_result = load_and_execute_bundle(
                 &bank,
+                None,
                 &sanitized_bundle,
                 MAX_PROCESSING_AGE,
                 &MAX_BUNDLE_SIMULATION_TIME,
@@ -4435,6 +4443,7 @@ pub mod rpc_full {
                 None,
                 &pre_execution_accounts,
                 &post_execution_accounts,
+                true,
             );
 
             // only return error if irrecoverable (timeout or tx malformed)
@@ -4461,6 +4470,7 @@ pub mod rpc_full {
                         signature, transaction_error
                     )));
                 }
+                Err(LoadAndExecuteBundleError::AccountInUse) => unreachable!(),
             }
 
             let rpc_bundle_result =

@@ -1,17 +1,21 @@
 <p align="center">
-  <a href="https://solana.com">
-    <img alt="Solana" src="https://i.imgur.com/0vfIMHo.png" width="250" />
+  <a href="https://paladin.one">
+    <img alt="Paladin" src="https://pbs.twimg.com/profile_images/1868483503857512448/yxMVc1u4_400x400.jpg" width="250" />
   </a>
 </p>
+
+# Paladin
 
 [![Build status](https://badge.buildkite.com/3a7c88c0f777e1a0fddacc190823565271ae4c251ef78d83a8.svg)](https://buildkite.com/jito/jito-solana)
 
 # About
 
-This repository contains Jito's fork of the Solana validator.
+This repository contains Paladin's fork of the Jito validator.
 
-We recommend checking out our [Gitbook](https://jito-foundation.gitbook.io/mev/jito-solana/building-the-software) for
-more detailed instructions on building and running Jito-Solana.
+We recommend checking out our [Gitbook](https://paladin-3.gitbook.io/paladin-or-p3-docs) for
+more detailed instructions on building and running `paladin-solana`.
+
+NOTE: When running `paladin-solana`, please run the latest [release](https://github.com/paladin-bladesmith/paladin-solana/releases). The `master` branch is NOT considered ready for production.
 
 ---
 
