@@ -8,12 +8,12 @@ use {
         unprocessed_transaction_storage::{ConsumeScannerPayload, UnprocessedTransactionStorage},
         BankingStageStats,
     },
-    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     itertools::Itertools,
     solana_accounts_db::{
         transaction_error_metrics::TransactionErrorMetrics,
         transaction_results::TransactionCheckResult,
     },
+    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_ledger::token_balances::collect_token_balances,
     solana_measure::{measure::Measure, measure_us},
     solana_poh::poh_recorder::{
