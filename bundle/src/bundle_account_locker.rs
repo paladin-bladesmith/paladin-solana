@@ -10,10 +10,15 @@
 // state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 // replayed improperly and that leader would have produced an invalid block.
 use {
+    hashbrown::{
+        hash_map::{Entry, EntryRef},
+        HashMap,
+    },
+    log::warn,
     solana_runtime::bank::Bank,
     solana_sdk::{bundle::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks},
     std::{
-        collections::{hash_map::Entry, HashMap, HashSet},
+        collections::HashSet,
         sync::{Arc, Mutex, MutexGuard},
     },
     thiserror::Error,
@@ -25,16 +30,21 @@ pub enum BundleAccountLockerError {
     LockingError,
 }
 
+#[derive(Clone, Error, Debug)]
+#[error("Failed to get exlcusivity")]
+pub struct ExclusivityError;
+
 pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 
 pub struct LockedBundle<'a, 'b> {
     bundle_account_locker: &'a BundleAccountLocker,
     sanitized_bundle: &'b SanitizedBundle,
     bank: Arc<Bank>,
+    has_exclusivity: bool,
 }
 
 impl<'a, 'b> LockedBundle<'a, 'b> {
-    pub fn new(
+    fn new(
         bundle_account_locker: &'a BundleAccountLocker,
         sanitized_bundle: &'b SanitizedBundle,
         bank: &Arc<Bank>,
@@ -43,20 +53,73 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
             bundle_account_locker,
             sanitized_bundle,
             bank: bank.clone(),
+            has_exclusivity: false,
         }
     }
 
     pub fn sanitized_bundle(&self) -> &SanitizedBundle {
         self.sanitized_bundle
     }
+
+    pub fn try_make_exclusive(&mut self) -> Result<(), ExclusivityError> {
+        assert!(
+            !self.has_exclusivity,
+            "Duplicate calls to try_make_exclusive"
+        );
+
+        // Compute read & write locks.
+        let (read_locks, write_locks) =
+            BundleAccountLocker::get_read_write_locks(self.sanitized_bundle, &self.bank)
+                .expect("Existence of locked bundle implies this cannot fail");
+
+        // Take lock on bundle_account_locker.
+        let mut lock = self.bundle_account_locker.account_locks.lock().unwrap();
+
+        // No read accounts have write locks.
+        for key in read_locks.keys() {
+            match lock.exclusive_locks.get(key) {
+                Some(Lock::Read(_)) | None => {}
+                Some(Lock::Write) => return Err(ExclusivityError),
+            }
+        }
+
+        // No write accounts have any lock.
+        for key in write_locks.keys() {
+            if lock.exclusive_locks.contains_key(key) {
+                return Err(ExclusivityError);
+            }
+        }
+
+        // Insert our locks.
+        for key in read_locks
+            .keys()
+            // NB: It is possible to have overlapping read & write locks because a bundle contains
+            // multiple transactions.
+            .filter(|key| !write_locks.contains_key(*key))
+        {
+            let lock = lock.exclusive_locks.entry_ref(key).or_insert(Lock::Read(0));
+            match lock {
+                Lock::Read(count) => *count += 1,
+                Lock::Write => unreachable!(),
+            }
+        }
+        for key in write_locks.keys() {
+            assert!(lock.exclusive_locks.insert(*key, Lock::Write).is_none());
+        }
+        self.has_exclusivity = true;
+
+        Ok(())
+    }
 }
 
 // Automatically unlock bundle accounts when destructed
 impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
     fn drop(&mut self) {
-        let _ = self
-            .bundle_account_locker
-            .unlock_bundle_accounts(self.sanitized_bundle, &self.bank);
+        let _ = self.bundle_account_locker.unlock_bundle_accounts(
+            self.sanitized_bundle,
+            &self.bank,
+            self.has_exclusivity,
+        );
     }
 }
 
@@ -64,6 +127,7 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
 pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
+    exclusive_locks: HashMap<Pubkey, Lock>,
 }
 
 impl BundleAccountLocks {
@@ -118,6 +182,12 @@ impl BundleAccountLocks {
     }
 }
 
+#[derive(Clone)]
+enum Lock {
+    Write,
+    Read(u64),
+}
+
 #[derive(Clone, Default)]
 pub struct BundleAccountLocker {
     account_locks: Arc<Mutex<BundleAccountLocks>>,
@@ -163,13 +233,44 @@ impl BundleAccountLocker {
         &self,
         sanitized_bundle: &SanitizedBundle,
         bank: &Bank,
+        has_exclusivity: bool,
     ) -> BundleAccountLockerResult<()> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks
-            .lock()
-            .unwrap()
-            .unlock_accounts(read_locks, write_locks);
+        let mut lock = self.account_locks.lock().unwrap();
+
+        // Remove exclusive keys.
+        if has_exclusivity {
+            for key in read_locks
+                .keys()
+                .filter(|key| !write_locks.contains_key(*key))
+            {
+                match lock.exclusive_locks.entry_ref(key) {
+                    EntryRef::Occupied(mut entry) => {
+                        let count = match entry.get_mut() {
+                            Lock::Read(count) => count,
+                            Lock::Write => unreachable!(),
+                        };
+
+                        *count -= 1;
+
+                        if *count == 0 {
+                            entry.remove();
+                        }
+                    }
+                    EntryRef::Vacant(_) => unreachable!(),
+                }
+            }
+
+            for key in write_locks.keys() {
+                let removed = lock.exclusive_locks.remove(key).unwrap();
+                assert!(matches!(removed, Lock::Write));
+            }
+        }
+
+        // Remove interest.
+        lock.unlock_accounts(read_locks, write_locks);
+
         Ok(())
     }
 
@@ -215,112 +316,5 @@ impl BundleAccountLocker {
                 });
 
         Ok((bundle_read_locks, bundle_write_locks))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use {
-        crate::{
-            bundle_stage::bundle_account_locker::BundleAccountLocker,
-            immutable_deserialized_bundle::ImmutableDeserializedBundle,
-            packet_bundle::PacketBundle,
-        },
-        solana_ledger::genesis_utils::create_genesis_config,
-        solana_perf::packet::PacketBatch,
-        solana_runtime::{bank::Bank, genesis_utils::GenesisConfigInfo},
-        solana_sdk::{
-            packet::Packet, signature::Signer, signer::keypair::Keypair, system_program,
-            system_transaction::transfer, transaction::VersionedTransaction,
-        },
-        solana_svm::transaction_error_metrics::TransactionErrorMetrics,
-        std::collections::HashSet,
-    };
-
-    #[test]
-    fn test_simple_lock_bundles() {
-        let GenesisConfigInfo {
-            genesis_config,
-            mint_keypair,
-            ..
-        } = create_genesis_config(2);
-        let (bank, _) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
-
-        let bundle_account_locker = BundleAccountLocker::default();
-
-        let kp0 = Keypair::new();
-        let kp1 = Keypair::new();
-
-        let tx0 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp0.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
-        let tx1 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp1.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
-
-        let mut packet_bundle0 = PacketBundle {
-            batch: PacketBatch::new(vec![Packet::from_data(None, &tx0).unwrap()]),
-            bundle_id: tx0.signatures[0].to_string(),
-        };
-        let mut packet_bundle1 = PacketBundle {
-            batch: PacketBatch::new(vec![Packet::from_data(None, &tx1).unwrap()]),
-            bundle_id: tx1.signatures[0].to_string(),
-        };
-
-        let mut transaction_errors = TransactionErrorMetrics::default();
-
-        let sanitized_bundle0 = ImmutableDeserializedBundle::new(&mut packet_bundle0, None)
-            .unwrap()
-            .build_sanitized_bundle(&bank, &HashSet::default(), &mut transaction_errors)
-            .expect("sanitize bundle 0");
-        let sanitized_bundle1 = ImmutableDeserializedBundle::new(&mut packet_bundle1, None)
-            .unwrap()
-            .build_sanitized_bundle(&bank, &HashSet::default(), &mut transaction_errors)
-            .expect("sanitize bundle 1");
-
-        let locked_bundle0 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle0, &bank)
-            .unwrap();
-
-        assert_eq!(
-            bundle_account_locker.write_locks(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey()])
-        );
-        assert_eq!(
-            bundle_account_locker.read_locks(),
-            HashSet::from_iter([system_program::id()])
-        );
-
-        let locked_bundle1 = bundle_account_locker
-            .prepare_locked_bundle(&sanitized_bundle1, &bank)
-            .unwrap();
-        assert_eq!(
-            bundle_account_locker.write_locks(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp1.pubkey()])
-        );
-        assert_eq!(
-            bundle_account_locker.read_locks(),
-            HashSet::from_iter([system_program::id()])
-        );
-
-        drop(locked_bundle0);
-        assert_eq!(
-            bundle_account_locker.write_locks(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
-        );
-        assert_eq!(
-            bundle_account_locker.read_locks(),
-            HashSet::from_iter([system_program::id()])
-        );
-
-        drop(locked_bundle1);
-        assert!(bundle_account_locker.write_locks().is_empty());
-        assert!(bundle_account_locker.read_locks().is_empty());
     }
 }

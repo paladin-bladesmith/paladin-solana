@@ -6,12 +6,14 @@ use {
     crate::{
         banking_stage::BankingStage,
         banking_trace::{BankingTracer, TracerThread},
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
+        p3::P3,
+        paladin_bundle_stage::PaladinBundleStage,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -26,6 +28,7 @@ use {
     },
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver},
+    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_client::connection_cache::ConnectionCache,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
@@ -91,7 +94,9 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    jito_bundle_stage: BundleStage,
+    paladin_bundle_stage: std::thread::JoinHandle<()>,
+    p3: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -137,6 +142,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
+        p3_socket: SocketAddr,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -259,6 +265,15 @@ impl Tpu {
             &block_builder_fee_info,
         );
 
+        // Launch paladin threads.
+        let (paladin_sender, paladin_receiver) = unbounded();
+        let p3 = P3::spawn(
+            exit.clone(),
+            paladin_sender,
+            p3_socket,
+            poh_recorder.clone(),
+        );
+
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),
@@ -318,20 +333,33 @@ impl Tpu {
             bundle_account_locker.clone(),
         );
 
-        let bundle_stage = BundleStage::new(
+        let jito_bundle_stage = BundleStage::new(
             cluster_info,
             poh_recorder,
             bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             exit.clone(),
-            tip_manager,
-            bundle_account_locker,
+            tip_manager.clone(),
+            bundle_account_locker.clone(),
             &block_builder_fee_info,
             preallocated_bundle_cost,
             bank_forks.clone(),
             prioritization_fee_cache,
+        );
+        let paladin_bundle_stage = PaladinBundleStage::spawn(
+            exit.clone(),
+            paladin_receiver,
+            cluster_info.clone(),
+            poh_recorder.clone(),
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            tip_manager,
+            bundle_account_locker,
+            prioritization_fee_cache.clone(),
+            preallocated_bundle_cost,
         );
 
         let (entry_receiver, tpu_entry_notifier) =
@@ -377,7 +405,9 @@ impl Tpu {
                 block_engine_stage,
                 relayer_stage,
                 fetch_stage_manager,
-                bundle_stage,
+                jito_bundle_stage,
+                paladin_bundle_stage,
+                p3,
             },
             vec![key_updater, forwards_key_updater],
         )
@@ -393,10 +423,12 @@ impl Tpu {
             self.staked_nodes_updater_service.join(),
             self.tpu_quic_t.join(),
             self.tpu_forwards_quic_t.join(),
-            self.bundle_stage.join(),
+            self.jito_bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
+            self.paladin_bundle_stage.join(),
+            self.p3.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

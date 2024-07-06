@@ -87,6 +87,7 @@ pub struct TipManager {
     tip_payment_program_info: TipPaymentProgramInfo,
     tip_distribution_program_info: TipDistributionProgramInfo,
     tip_distribution_account_config: TipDistributionAccountConfig,
+    tip_accounts: HashSet<Pubkey>,
 }
 
 #[derive(Clone)]
@@ -154,6 +155,16 @@ impl TipManager {
                 config_pda_and_bump,
             },
             tip_distribution_account_config,
+            tip_accounts: HashSet::from_iter([
+                tip_pda_0.0,
+                tip_pda_1.0,
+                tip_pda_2.0,
+                tip_pda_3.0,
+                tip_pda_4.0,
+                tip_pda_5.0,
+                tip_pda_6.0,
+                tip_pda_7.0,
+            ]),
         }
     }
 
@@ -180,17 +191,8 @@ impl TipManager {
         Ok(self.get_tip_payment_config_account(bank)?.tip_receiver)
     }
 
-    pub fn get_tip_accounts(&self) -> HashSet<Pubkey> {
-        HashSet::from([
-            self.tip_payment_program_info.tip_pda_0.0,
-            self.tip_payment_program_info.tip_pda_1.0,
-            self.tip_payment_program_info.tip_pda_2.0,
-            self.tip_payment_program_info.tip_pda_3.0,
-            self.tip_payment_program_info.tip_pda_4.0,
-            self.tip_payment_program_info.tip_pda_5.0,
-            self.tip_payment_program_info.tip_pda_6.0,
-            self.tip_payment_program_info.tip_pda_7.0,
-        ])
+    pub fn get_tip_accounts(&self) -> &HashSet<Pubkey> {
+        &self.tip_accounts
     }
 
     pub fn get_tip_payment_config_account(&self, bank: &Bank) -> Result<Config> {
@@ -461,10 +463,11 @@ impl TipManager {
     pub fn get_tip_account_balances(&self, bank: &Arc<Bank>) -> Vec<(Pubkey, u64)> {
         let accounts = self.get_tip_accounts();
         accounts
-            .into_iter()
+            .iter()
             .map(|account| {
-                let balance = bank.get_balance(&account);
-                (account, balance)
+                let balance = bank.get_balance(account);
+
+                (*account, balance)
             })
             .collect()
     }
@@ -477,15 +480,15 @@ impl TipManager {
     ) -> Vec<(Pubkey, u64)> {
         let accounts = self.get_tip_accounts();
         accounts
-            .into_iter()
+            .iter()
             .map(|account| {
-                let account_data = bank.get_account(&account).unwrap_or_default();
-                let balance = bank.get_balance(&account);
+                let account_data = bank.get_account(account).unwrap_or_default();
+                let balance = bank.get_balance(account);
                 let rent_exempt =
                     bank.get_minimum_balance_for_rent_exemption(account_data.data().len());
                 // NOTE: don't unwrap here in case bug in on-chain program, don't want all validators to crash
                 // if program gets stuck in bad state
-                (account, balance.checked_sub(rent_exempt).unwrap_or_else(|| {
+                (*account, balance.checked_sub(rent_exempt).unwrap_or_else(|| {
                     warn!("balance is below rent exempt amount. balance: {} rent_exempt: {} acc size: {}", balance, rent_exempt, TipPaymentAccount::SIZE);
                     0
                 }))
