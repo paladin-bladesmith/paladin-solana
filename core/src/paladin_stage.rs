@@ -20,6 +20,7 @@ use {
 const SOCKET_ENDPOINT: &str = "paladin";
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(250);
 
+const ERR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const STATS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
@@ -55,6 +56,9 @@ impl PaladinStage {
         while !exit.load(Ordering::Relaxed) {
             if let Err(err) = Self::run_until_err(&paladin_tx) {
                 warn!("PaladinStage encountered error, restarting; err={err}");
+                if !exit.load(Ordering::Relaxed) {
+                    std::thread::sleep(ERR_RETRY_DELAY);
+                }
             }
         }
     }
