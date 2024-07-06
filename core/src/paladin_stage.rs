@@ -12,11 +12,15 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
+        time::{Duration, Instant},
     },
     thiserror::Error,
 };
 
-const PALADIN_ENDPOINT: &str = "paladin";
+const SOCKET_ENDPOINT: &str = "paladin";
+const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(250);
+
+const STATS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Error)]
 enum PaladinError {
@@ -58,18 +62,37 @@ impl PaladinStage {
     fn run_until_err(
         paladin_tx: &crossbeam_channel::Sender<Vec<PacketBundle>>,
     ) -> Result<(), PaladinError> {
+        let mut paladin_stats_creation = Instant::now();
         let mut paladin_stats = PaladinStageStats::default();
 
         // Setup abstract unix socket for geyser bot to connect to.
-        let socket = std::os::unix::net::SocketAddr::from_abstract_name(PALADIN_ENDPOINT)?;
+        let socket = std::os::unix::net::SocketAddr::from_abstract_name(SOCKET_ENDPOINT)?;
         let socket = std::os::unix::net::UnixDatagram::bind_addr(&socket)?;
+        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
 
-        // Fixed re-usable buffer to read TXs into.
+        // Re-usable buffer to read packets into.
         let mut buf = [0u8; PACKET_DATA_SIZE];
 
         loop {
-            // TODO: Receive with timeout to check exit condition & report stats.
-            let size = socket.recv(&mut buf)?;
+            let size = match socket.recv(&mut buf) {
+                Ok(size) => size,
+                Err(err) => match err.kind() {
+                    // NB: Returned when the timeout expires.
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => continue,
+                    _ => return Err(err.into()),
+                },
+            };
+
+            // Updates stats if sufficient time has passed.
+            let stats_age = paladin_stats_creation.elapsed();
+            if stats_age > STATS_REPORT_INTERVAL {
+                paladin_stats.report(stats_age);
+
+                paladin_stats_creation = Instant::now();
+                paladin_stats = PaladinStageStats::default();
+            }
+
+            // Handle received packets.
             let packet = Packet::new(
                 buf,
                 Meta {
@@ -113,9 +136,10 @@ struct PaladinStageStats {
 }
 
 impl PaladinStageStats {
-    pub(crate) fn report(&self) {
+    pub(crate) fn report(&self, age: Duration) {
         datapoint_info!(
             "paladin_stage-stats",
+            ("stats_age_us", age.as_micros() as i64, i64),
             ("num_paladin_packets", self.num_paladin_packets, i64),
         );
     }
