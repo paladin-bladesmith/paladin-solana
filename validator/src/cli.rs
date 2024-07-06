@@ -71,6 +71,7 @@ const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 const DEFAULT_PREALLOCATED_BUNDLE_COST: &str = "3000000";
 const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: &str = "500";
 const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: &str = "3";
+const P3_SOCKET: &str = "0.0.0.0:4818";
 
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     return App::new(crate_name!())
@@ -84,6 +85,19 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
             Arg::with_name(SKIP_SEED_PHRASE_VALIDATION_ARG.name)
                 .long(SKIP_SEED_PHRASE_VALIDATION_ARG.long)
                 .help(SKIP_SEED_PHRASE_VALIDATION_ARG.help),
+        )
+        .arg(
+        	Arg::with_name("funnel")
+         		.long("funnel")
+           		.help("funnel. Defaults to None")
+             	.takes_value(true)
+        )
+        .arg(
+        	Arg::with_name("p3_socket")
+         		.long("p3-socket")
+           		.help("p3 socket. Defaults to 0.0.0.0:4818")
+             	.takes_value(true)
+              	.default_value(P3_SOCKET)
         )
         .arg(
             Arg::with_name("block_engine_url")
