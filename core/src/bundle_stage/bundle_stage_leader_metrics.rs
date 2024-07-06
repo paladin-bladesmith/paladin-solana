@@ -253,6 +253,10 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     saturating_add_assign!(bundle_stage_metrics.bad_argument, 1);
                 }
+                // TODO: Consider adding metrics.
+                Err(BundleExecutionError::TransactionFailure(
+                    LoadAndExecuteBundleError::AccountInUse,
+                )) => {}
             }
         }
     }

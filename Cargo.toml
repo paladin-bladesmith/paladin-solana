@@ -124,11 +124,7 @@ members = [
     "zk-token-sdk",
 ]
 
-exclude = [
-    "anchor",
-    "jito-programs",
-    "programs/sbf",
-]
+exclude = ["anchor", "jito-programs", "programs/sbf"]
 
 # This prevents a Travis CI error when building for Windows.
 resolver = "2"
@@ -236,8 +232,12 @@ jemallocator = { package = "tikv-jemallocator", version = "0.4.1", features = [
 ] }
 js-sys = "0.3.67"
 jito-protos = { path = "jito-protos", version = "=1.18.23" }
-jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = ["no-entrypoint"] }
-jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = ["no-entrypoint"] }
+jito-tip-distribution = { path = "jito-programs/mev-programs/programs/tip-distribution", features = [
+    "no-entrypoint",
+] }
+jito-tip-payment = { path = "jito-programs/mev-programs/programs/tip-payment", features = [
+    "no-entrypoint",
+] }
 json5 = "0.4.1"
 jsonrpc-core = "18.0.0"
 jsonrpc-core-client = "18.0.0"
@@ -431,7 +431,7 @@ tokio = "1.29.1"
 tokio-serde = "0.8"
 tokio-stream = "0.1.14"
 tokio-tungstenite = "0.20.1"
-tokio-util = "0.6"
+tokio-util = "0.7"
 toml = "0.8.8"
 tonic = "0.9.2"
 tonic-build = "0.9.2"
