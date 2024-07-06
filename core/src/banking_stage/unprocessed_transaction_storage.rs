@@ -1163,10 +1163,10 @@ pub struct InsertPacketBundlesSummary {
 #[derive(Debug)]
 pub struct BundleStorage {
     last_update_slot: Slot,
-    unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
     // Storage for bundles that exceeded the cost model for the slot they were last attempted
     // execution on
-    cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
 }
 
 impl BundleStorage {
@@ -1366,6 +1366,10 @@ impl BundleStorage {
                         );
                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
+                    // If we fail to take a lock, retry the bundle on next iteration.
+                    Err(BundleExecutionError::TransactionFailure(
+                        LoadAndExecuteBundleError::AccountInUse,
+                    )) => rebuffered_bundles.push(deserialized_bundle),
                     Err(BundleExecutionError::TransactionFailure(e)) => {
                         debug!(
                             "bundle={} execution error: {:?}",
@@ -1382,6 +1386,8 @@ impl BundleStorage {
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }
+                    // NB: Currently the cutoff is static so no point in retrying.
+                    Err(BundleExecutionError::TipTooLow) => {}
                 },
             );
 
