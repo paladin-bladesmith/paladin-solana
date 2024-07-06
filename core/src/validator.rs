@@ -14,6 +14,7 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
             ExternalRootSource, Tower,
         },
+        p3::P3_SOCKET_DEFAULT,
         poh_timing_report_service::PohTimingReportService,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{self, serve_repair::ServeRepair, serve_repair_service::ServeRepairService},
@@ -133,6 +134,7 @@ use {
         net::SocketAddr,
         num::NonZeroUsize,
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -293,6 +295,8 @@ pub struct ValidatorConfig {
     pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
+    // p3
+    pub p3_socket: SocketAddr,
 }
 
 impl Default for ValidatorConfig {
@@ -371,6 +375,7 @@ impl Default for ValidatorConfig {
             shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
+            p3_socket: SocketAddr::from_str(P3_SOCKET_DEFAULT).expect("p3 socket"),
         }
     }
 }
@@ -1490,6 +1495,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
+            config.p3_socket,
         );
 
         datapoint_info!(
