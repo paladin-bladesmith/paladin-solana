@@ -3,7 +3,7 @@
 use {
     crate::config::RpcSimulateTransactionAccountsConfig,
     solana_account_decoder::UiAccount,
-    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
+    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, TipError},
     solana_sdk::{
         clock::Slot,
         commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -88,11 +88,16 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                         Self::InvalidPreOrPostAccounts
                     }
+                    LoadAndExecuteBundleError::AccountInUse => Self::BundleExecutionTimeout,
                 }
             }
             BundleExecutionError::LockError => Self::BundleLockError,
             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
+            // NB: Lie about the error as to not break downstream consumers.
+            BundleExecutionError::TipTooLow | BundleExecutionError::FrontRun => {
+                Self::TipError(TipError::CrankTipError.to_string())
+            }
         }
     }
 }
@@ -119,7 +124,7 @@ pub struct RpcSimulateBundleTransactionResult {
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleConfig {
     /// Gives the state of accounts pre/post transaction execution.
-    /// The length of each of these must be equal to the number transactions.   
+    /// The length of each of these must be equal to the number transactions.
     pub pre_execution_accounts_configs: Vec<Option<RpcSimulateTransactionAccountsConfig>>,
     pub post_execution_accounts_configs: Vec<Option<RpcSimulateTransactionAccountsConfig>>,
 

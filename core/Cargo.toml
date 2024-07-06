@@ -19,12 +19,14 @@ anchor-lang = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
 bs58 = { workspace = true }
+bytemuck.workspace = true
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
 crossbeam-channel = { workspace = true }
 dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 etcd-client = { workspace = true, features = ["tls"] }
 futures = { workspace = true }
+hashbrown.workspace = true
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
@@ -35,6 +37,8 @@ log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
 num_enum = { workspace = true }
+ouroboros.workspace = true
+paladin-lockup-program.workspace = true
 prio-graph = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
@@ -85,12 +89,14 @@ solana-version = { workspace = true }
 solana-vote = { workspace = true }
 solana-vote-program = { workspace = true }
 solana-wen-restart = { workspace = true }
+spl-discriminator.workspace = true
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
 sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 trees = { workspace = true }
 

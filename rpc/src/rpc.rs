@@ -4163,6 +4163,7 @@ pub mod rpc_full {
 
             let bundle_execution_result = load_and_execute_bundle(
                 &bank,
+                None,
                 &sanitized_bundle,
                 MAX_PROCESSING_AGE,
                 &MAX_BUNDLE_SIMULATION_TIME,
@@ -4172,6 +4173,7 @@ pub mod rpc_full {
                 None,
                 &pre_execution_accounts,
                 &post_execution_accounts,
+                true,
             );
 
             // only return error if irrecoverable (timeout or tx malformed)
@@ -4198,6 +4200,7 @@ pub mod rpc_full {
                         signature, transaction_error
                     )));
                 }
+                Err(LoadAndExecuteBundleError::AccountInUse) => unreachable!(),
             }
 
             let rpc_bundle_result =
