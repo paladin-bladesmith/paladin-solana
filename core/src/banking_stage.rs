@@ -77,7 +77,7 @@ pub(crate) mod packet_filter;
 mod packet_receiver;
 mod read_write_account_set;
 mod scheduler_messages;
-mod transaction_scheduler;
+pub(crate) mod transaction_scheduler;
 
 // Fixed thread size seems to be fastest on GCP setup
 pub const NUM_THREADS: u32 = 6;

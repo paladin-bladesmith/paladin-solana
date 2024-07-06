@@ -12,6 +12,8 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
+        p3::P3,
+        p3_quic::P3Quic,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -30,7 +32,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
         blockstore::Blockstore, blockstore_processor::TransactionStatusSender,
-        entry_notifier_service::EntryNotifierSender,
+        entry_notifier_service::EntryNotifierSender, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
@@ -93,7 +95,9 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    jito_bundle_stage: BundleStage,
+    p3: std::thread::JoinHandle<()>,
+    p3_quic: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -136,9 +140,11 @@ impl Tpu {
         _generator_config: Option<GeneratorConfig>, /* vestigial code for replay invalidator */
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
+        p3_socket: SocketAddr,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -261,6 +267,15 @@ impl Tpu {
             &block_builder_fee_info,
         );
 
+        // Launch paladin threads.
+        let p3 = P3::spawn(exit.clone(), packet_sender.clone(), p3_socket);
+        let (p3_quic, p3_quic_key_updaters) = P3Quic::spawn(
+            exit.clone(),
+            packet_sender.clone(),
+            poh_recorder.clone(),
+            keypair,
+        );
+
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
             cluster_info.clone(),
@@ -294,7 +309,12 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
-        let tip_manager = TipManager::new(tip_manager_config);
+        let tip_manager = TipManager::new(
+            blockstore.clone(),
+            cluster_info.clone(),
+            leader_schedule_cache.clone(),
+            tip_manager_config,
+        );
 
         let bundle_account_locker = BundleAccountLocker::default();
 
@@ -319,16 +339,16 @@ impl Tpu {
             bundle_account_locker.clone(),
         );
 
-        let bundle_stage = BundleStage::new(
+        let jito_bundle_stage = BundleStage::new(
             cluster_info,
             poh_recorder,
             bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             exit.clone(),
-            tip_manager,
-            bundle_account_locker,
+            tip_manager.clone(),
+            bundle_account_locker.clone(),
             &block_builder_fee_info,
             preallocated_bundle_cost,
             prioritization_fee_cache,
@@ -377,9 +397,15 @@ impl Tpu {
                 block_engine_stage,
                 relayer_stage,
                 fetch_stage_manager,
-                bundle_stage,
+                jito_bundle_stage,
+                p3,
+                p3_quic,
             },
-            vec![key_updater, forwards_key_updater],
+            [key_updater, forwards_key_updater]
+                .into_iter()
+                .chain(p3_quic_key_updaters)
+                .map(|notifier| notifier as Arc<dyn NotifyKeyUpdate + Send + Sync>)
+                .collect(),
         )
     }
 
@@ -393,10 +419,12 @@ impl Tpu {
             self.staked_nodes_updater_service.join(),
             self.tpu_quic_t.join(),
             self.tpu_forwards_quic_t.join(),
-            self.bundle_stage.join(),
+            self.jito_bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
+            self.p3.join(),
+            self.p3_quic.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

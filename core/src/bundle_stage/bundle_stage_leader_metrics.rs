@@ -265,6 +265,8 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     saturating_add_assign!(bundle_stage_metrics.bad_argument, 1);
                 }
+                // TODO: Consider adding metrics.
+                Err(BundleExecutionError::TipTooLow | BundleExecutionError::FrontRun) => {}
             }
         }
     }
@@ -325,6 +327,54 @@ impl BundleStageStatsMetricsTracker {
             );
         }
     }
+
+    pub(crate) fn increment_committed(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.committed, count);
+        }
+    }
+
+    pub(crate) fn increment_committed_cu(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.committed_cu, count);
+        }
+    }
+
+    pub(crate) fn increment_committed_lamports(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.committed_lamports, count);
+        }
+    }
+
+    pub(crate) fn increment_reverted(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.reverted, count);
+        }
+    }
+
+    pub(crate) fn increment_reverted_cu(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.reverted_cu, count);
+        }
+    }
+
+    pub(crate) fn increment_dropped(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.dropped, count);
+        }
+    }
+
+    pub(crate) fn increment_dropped_cu(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.dropped_cu, count);
+        }
+    }
+
+    pub(crate) fn increment_dropped_lamports(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.dropped_lamports, count);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -370,6 +420,23 @@ pub struct BundleStageStats {
     execution_results_max_retries: u64,
 
     bad_argument: u64,
+
+    /// Bundles that were committed.
+    committed: u64,
+    /// CUs used by committed transactions.
+    committed_cu: u64,
+    /// Lamports paid by committed transactions.
+    committed_lamports: u64,
+    /// Bundles that reverted.
+    reverted: u64,
+    /// CUs that were dropped due to a transaction reverting.
+    reverted_cu: u64,
+    /// TXs that were dropped due to low tips.
+    dropped: u64,
+    /// CUs that were dropped due to low tips.
+    dropped_cu: u64,
+    /// Lamports forgone by dropping low tip bundles.
+    dropped_lamports: u64,
 }
 
 impl BundleStageStats {
@@ -510,7 +577,13 @@ impl BundleStageStats {
                 self.execution_results_max_retries,
                 i64
             ),
-            ("bad_argument", self.bad_argument, i64)
+            ("bad_argument", self.bad_argument, i64),
+            ("committed", self.committed, i64),
+            ("committed_cu", self.committed_cu, i64),
+            ("committed_lamports", self.committed_lamports, i64),
+            ("dropped", self.dropped, i64),
+            ("dropped_cu", self.dropped_cu, i64),
+            ("dropped_lamports", self.dropped_lamports, i64),
         );
     }
 }

@@ -17,8 +17,11 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    itertools::{izip, Itertools},
     solana_bundle::{
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+        bundle_execution::{
+            load_and_execute_bundle, BundleExecutionMetrics, LoadAndExecuteBundleOutput,
+        },
         BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
     },
     solana_cost_model::transaction_cost::TransactionCost,
@@ -29,9 +32,7 @@ use {
     solana_sdk::{
         clock::{Slot, MAX_PROCESSING_AGE},
         pubkey::Pubkey,
-        transaction::{
-            SanitizedTransaction, {self},
-        },
+        transaction::{self, SanitizedTransaction, TransactionError},
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
@@ -52,6 +53,8 @@ pub struct ExecuteRecordCommitResult {
     execution_metrics: BundleExecutionMetrics,
     execute_and_commit_timings: LeaderExecuteAndCommitTimings,
     transaction_error_counter: TransactionErrorMetrics,
+    cu_used: u64,
+    lamports_paid: u64,
 }
 
 pub struct BundleConsumer {
@@ -221,6 +224,7 @@ impl BundleConsumer {
                             &locked_bundle,
                             bank_start,
                             bundle_stage_leader_metrics,
+                            Some(10u64.pow(6) / 10), // 0.1 lamports per CU
                         ));
                         bundle_stage_leader_metrics
                             .leader_slot_metrics_tracker()
@@ -261,6 +265,7 @@ impl BundleConsumer {
         locked_bundle: &LockedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        min_micro_lamports: Option<u64>,
     ) -> Result<(), BundleExecutionError> {
         if !Bank::should_bank_still_be_processing_txs(
             &bank_start.bank_creation_time,
@@ -310,6 +315,8 @@ impl BundleConsumer {
             locked_bundle.sanitized_bundle(),
             bank_start,
             bundle_stage_leader_metrics,
+            tip_manager.get_tip_accounts(),
+            min_micro_lamports,
         )?;
 
         Ok(())
@@ -360,6 +367,8 @@ impl BundleConsumer {
                 locked_init_tip_programs_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                tip_manager.get_tip_accounts(),
+                None,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -413,6 +422,8 @@ impl BundleConsumer {
                 locked_tip_crank_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                tip_manager.get_tip_accounts(),
+                None,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -481,6 +492,8 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        tip_accounts: &HashSet<Pubkey>,
+        min_micro_lamports: Option<u64>,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -510,6 +523,9 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             sanitized_bundle,
             bank_start,
+            &transaction_qos_cost_results,
+            tip_accounts,
+            min_micro_lamports,
         ));
 
         bundle_stage_leader_metrics
@@ -558,6 +574,26 @@ impl BundleConsumer {
                 max_prioritization_fees: 0, // TODO (LB)
             });
 
+        // Update packing metrics.
+        let bundle_metrics = bundle_stage_leader_metrics.bundle_stage_metrics_tracker();
+
+        match result.result {
+            Ok(_) => {
+                bundle_metrics.increment_committed(1);
+                bundle_metrics.increment_committed_cu(result.cu_used);
+                bundle_metrics.increment_committed_lamports(result.lamports_paid);
+            }
+            Err(BundleExecutionError::TipTooLow) => {
+                bundle_metrics.increment_dropped(1);
+                bundle_metrics.increment_dropped_cu(result.cu_used);
+                bundle_metrics.increment_dropped_lamports(result.lamports_paid);
+            }
+            Err(_) => {
+                bundle_metrics.increment_reverted(1);
+                bundle_metrics.increment_reverted_cu(result.cu_used);
+            }
+        }
+
         match result.result {
             Ok(_) => {
                 QosService::remove_or_update_costs(
@@ -591,6 +627,12 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
+        transaction_qos_cost_results: &[Result<
+            TransactionCost<'_, SanitizedTransaction>,
+            TransactionError,
+        >],
+        tip_accounts: &HashSet<Pubkey>,
+        min_micro_lamports: Option<u64>,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -626,6 +668,14 @@ impl BundleConsumer {
             bundle_execution_results.result().is_ok()
         );
 
+        let economics = Self::compute_cu_and_lamports(
+            tip_accounts,
+            bank_start,
+            transaction_qos_cost_results,
+            &bundle_execution_results,
+        );
+        let (cu_used, lamports_paid) = economics.unwrap_or_default();
+
         // don't commit bundle if failure executing any part of the bundle
         if let Err(e) = bundle_execution_results.result() {
             return ExecuteRecordCommitResult {
@@ -634,8 +684,53 @@ impl BundleConsumer {
                 execution_metrics,
                 execute_and_commit_timings,
                 transaction_error_counter,
+                cu_used,
+                lamports_paid,
             };
         }
+
+        // NB: Must run before we start committing the transactions.
+        if super::front_run_identifier::is_bundle_front_run(&bundle_execution_results) {
+            info!(
+                "Dropping front run bundle; bundle_id={}; txs=[{}]",
+                sanitized_bundle.bundle_id,
+                sanitized_bundle
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.signature().to_string())
+                    .join(", ")
+            );
+
+            return ExecuteRecordCommitResult {
+                commit_transaction_details: vec![],
+                result: Err(BundleExecutionError::FrontRun),
+                execution_metrics,
+                execute_and_commit_timings,
+                transaction_error_counter,
+                cu_used,
+                lamports_paid,
+            };
+        }
+
+        // Compute the bundles total CUs & lamports paid.
+        match economics {
+            Some((cu_used, lamports_paid)) => {
+                if let Some(min_micro_lamports) = min_micro_lamports {
+                    if lamports_paid * 10u64.pow(6) / cu_used < min_micro_lamports {
+                        return ExecuteRecordCommitResult {
+                            commit_transaction_details: vec![],
+                            result: Err(BundleExecutionError::TipTooLow),
+                            execution_metrics,
+                            execute_and_commit_timings,
+                            transaction_error_counter,
+                            cu_used,
+                            lamports_paid,
+                        };
+                    }
+                }
+            }
+            None => eprintln!("Failed to compute CU & lamports; this shouldn't be possible"),
+        };
 
         let (executed_batches, execution_results_to_transactions_us) =
             measure_us!(bundle_execution_results.executed_transaction_batches());
@@ -684,6 +779,8 @@ impl BundleConsumer {
                 execution_metrics,
                 execute_and_commit_timings,
                 transaction_error_counter,
+                cu_used,
+                lamports_paid,
             };
         }
 
@@ -722,6 +819,8 @@ impl BundleConsumer {
             execution_metrics,
             execute_and_commit_timings,
             transaction_error_counter,
+            cu_used,
+            lamports_paid,
         }
     }
 
@@ -733,6 +832,58 @@ impl BundleConsumer {
                 .iter()
                 .any(|a| tip_pdas.contains(a))
         })
+    }
+
+    fn compute_cu_and_lamports(
+        tip_accounts: &HashSet<Pubkey>,
+        bank_start: &BankStart,
+        transaction_qos_cost_results: &[Result<
+            TransactionCost<'_, SanitizedTransaction>,
+            TransactionError,
+        >],
+        bundle_execution_results: &LoadAndExecuteBundleOutput,
+    ) -> Option<(u64, u64)> {
+        let mut cu_used = 0u64;
+        let mut lamports_paid = 0u64;
+        for ((tx, execution, pre, post), cost) in bundle_execution_results
+            .bundle_transaction_results()
+            .iter()
+            .flat_map(|res| {
+                izip!(
+                    res.executed_transactions(),
+                    res.execution_results(),
+                    &res.pre_balance_info().native,
+                    &res.post_balance_info().0,
+                )
+            })
+            .zip(transaction_qos_cost_results)
+        {
+            // Compute the tip payments.
+            for (_, (pre, post)) in izip!(pre, post)
+                .enumerate()
+                .map(|(i, (pre, post))| (tx.message().account_keys().get(i).unwrap(), (pre, post)))
+                .filter(|(key, _)| tip_accounts.contains(key))
+            {
+                let tip = post.saturating_sub(*pre);
+                lamports_paid = lamports_paid.saturating_add(tip);
+            }
+
+            // Compute the TX base + priority fee.
+            let cost = cost.as_ref().ok()?;
+            let fee = bank_start.working_bank.get_fee_for_message(tx.message())?;
+            let total_cu = cost
+                .sum()
+                .saturating_add(execution.as_ref().ok()?.execution_details()?.executed_units);
+
+            lamports_paid = lamports_paid.saturating_add(fee);
+            cu_used = cu_used.saturating_add(total_cu);
+        }
+
+        if cu_used == 0 || lamports_paid == 0 {
+            return None;
+        }
+
+        Some((cu_used, lamports_paid))
     }
 }
 
@@ -749,7 +900,9 @@ mod tests {
             },
             packet_bundle::PacketBundle,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
+            tip_manager::{
+                tests::MockBlockstore, TipDistributionAccountConfig, TipManager, TipManagerConfig,
+            },
         },
         crossbeam_channel::{unbounded, Receiver},
         jito_tip_distribution::sdk::derive_tip_distribution_account_address,
@@ -974,20 +1127,33 @@ mod tests {
             .collect()
     }
 
-    fn get_tip_manager(vote_account: &Pubkey) -> TipManager {
-        TipManager::new(TipManagerConfig {
-            tip_payment_program_id: Pubkey::from_str("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt")
+    fn get_tip_manager(
+        cluster_info: Arc<ClusterInfo>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
+        vote_account: &Pubkey,
+        funnel: Option<Pubkey>,
+    ) -> TipManager {
+        TipManager::new(
+            Arc::new(RwLock::new(MockBlockstore(vec![]))),
+            cluster_info,
+            leader_schedule_cache,
+            TipManagerConfig {
+                funnel,
+                tip_payment_program_id: Pubkey::from_str(
+                    "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",
+                )
                 .unwrap(),
-            tip_distribution_program_id: Pubkey::from_str(
-                "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
-            )
-            .unwrap(),
-            tip_distribution_account_config: TipDistributionAccountConfig {
-                merkle_root_upload_authority: Pubkey::new_unique(),
-                vote_account: *vote_account,
-                commission_bps: 10,
+                tip_distribution_program_id: Pubkey::from_str(
+                    "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
+                )
+                .unwrap(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: *vote_account,
+                    commission_bps: 10,
+                },
             },
-        })
+        )
     }
 
     /// Happy-path bundle execution w/ no tip management
@@ -1019,18 +1185,24 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_pubkey = Pubkey::new_unique();
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let mut consumer = BundleConsumer::new(
             committer,
@@ -1167,18 +1339,24 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let mut consumer = BundleConsumer::new(
             committer,
@@ -1345,18 +1523,24 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
