@@ -43,8 +43,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
     std::{
-        collections,
-        collections::BTreeMap,
+        collections::{self, BTreeMap},
         fmt::Display,
         fs::File,
         io::{self, BufRead, BufReader},

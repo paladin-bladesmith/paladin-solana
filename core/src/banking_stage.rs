@@ -20,8 +20,8 @@ use {
             consume_worker::ConsumeWorker,
             packet_deserializer::PacketDeserializer,
             transaction_scheduler::{
-                prio_graph_scheduler::PrioGraphScheduler,
-                scheduler_controller::SchedulerController, scheduler_error::SchedulerError,
+                greedy_scheduler::GreedyScheduler, scheduler_controller::SchedulerController,
+                scheduler_error::SchedulerError,
             },
         },
         banking_trace::BankingPacketReceiver,
@@ -77,7 +77,7 @@ pub(crate) mod packet_filter;
 mod packet_receiver;
 mod read_write_account_set;
 mod scheduler_messages;
-mod transaction_scheduler;
+pub(crate) mod transaction_scheduler;
 
 // Fixed thread size seems to be fastest on GCP setup
 pub const NUM_THREADS: u32 = 6;
@@ -651,7 +651,7 @@ impl BankingStage {
         // Spawn the central scheduler thread
         bank_thread_hdls.push({
             let packet_deserializer = PacketDeserializer::new(non_vote_receiver);
-            let scheduler = PrioGraphScheduler::new(work_senders, finished_work_receiver);
+            let scheduler = GreedyScheduler::new(work_senders, finished_work_receiver);
             let scheduler_controller = SchedulerController::new(
                 decision_maker.clone(),
                 packet_deserializer,

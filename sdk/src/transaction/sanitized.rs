@@ -35,6 +35,7 @@ pub struct SanitizedTransaction {
     message: SanitizedMessage,
     message_hash: Hash,
     is_simple_vote_tx: bool,
+    drop_on_revert: bool,
     signatures: Vec<Signature>,
 }
 
@@ -68,6 +69,7 @@ impl SanitizedTransaction {
         tx: SanitizedVersionedTransaction,
         message_hash: Hash,
         is_simple_vote_tx: bool,
+        drop_on_revert: bool,
         address_loader: impl AddressLoader,
         reserved_account_keys: &HashSet<Pubkey>,
     ) -> Result<Self> {
@@ -92,6 +94,7 @@ impl SanitizedTransaction {
             message,
             message_hash,
             is_simple_vote_tx,
+            drop_on_revert,
             signatures,
         })
     }
@@ -103,6 +106,7 @@ impl SanitizedTransaction {
         tx: VersionedTransaction,
         message_hash: impl Into<MessageHash>,
         is_simple_vote_tx: Option<bool>,
+        drop_on_revert: bool,
         address_loader: impl AddressLoader,
         reserved_account_keys: &HashSet<Pubkey>,
     ) -> Result<Self> {
@@ -117,6 +121,7 @@ impl SanitizedTransaction {
             sanitized_versioned_tx,
             message_hash,
             is_simple_vote_tx,
+            drop_on_revert,
             address_loader,
             reserved_account_keys,
         )
@@ -126,6 +131,7 @@ impl SanitizedTransaction {
     pub fn try_from_legacy_transaction(
         tx: Transaction,
         reserved_account_keys: &HashSet<Pubkey>,
+        drop_on_revert: bool,
     ) -> Result<Self> {
         tx.sanitize()?;
 
@@ -136,13 +142,14 @@ impl SanitizedTransaction {
                 reserved_account_keys,
             )),
             is_simple_vote_tx: false,
+            drop_on_revert,
             signatures: tx.signatures,
         })
     }
 
     /// Create a sanitized transaction from a legacy transaction. Used for tests only.
     pub fn from_transaction_for_tests(tx: Transaction) -> Self {
-        Self::try_from_legacy_transaction(tx, &ReservedAccountKeys::empty_key_set()).unwrap()
+        Self::try_from_legacy_transaction(tx, &ReservedAccountKeys::empty_key_set(), false).unwrap()
     }
 
     /// Return the first signature for this transaction.
@@ -174,6 +181,11 @@ impl SanitizedTransaction {
     /// Returns true if this transaction is a simple vote
     pub fn is_simple_vote_transaction(&self) -> bool {
         self.is_simple_vote_tx
+    }
+
+    /// Returns true if this transaction should be dropped on revert.
+    pub fn drop_on_revert(&self) -> bool {
+        self.drop_on_revert
     }
 
     /// Convert this sanitized transaction into a versioned transaction for
@@ -307,6 +319,7 @@ impl SanitizedTransaction {
             message_hash: Hash::new_unique(),
             signatures,
             is_simple_vote_tx,
+            drop_on_revert: false,
         }
     }
 }
@@ -343,6 +356,7 @@ mod tests {
                 VersionedTransaction::from(vote_tx.clone()),
                 MessageHash::Compute,
                 None,
+                false,
                 SimpleAddressLoader::Disabled,
                 &ReservedAccountKeys::empty_key_set(),
             )
@@ -356,6 +370,7 @@ mod tests {
                 VersionedTransaction::from(vote_tx.clone()),
                 MessageHash::Compute,
                 Some(false),
+                false,
                 SimpleAddressLoader::Disabled,
                 &ReservedAccountKeys::empty_key_set(),
             )
@@ -371,6 +386,7 @@ mod tests {
                 VersionedTransaction::from(vote_tx.clone()),
                 MessageHash::Compute,
                 None,
+                false,
                 SimpleAddressLoader::Disabled,
                 &ReservedAccountKeys::empty_key_set(),
             )
@@ -384,6 +400,7 @@ mod tests {
                 VersionedTransaction::from(vote_tx),
                 MessageHash::Compute,
                 Some(true),
+                false,
                 SimpleAddressLoader::Disabled,
                 &ReservedAccountKeys::empty_key_set(),
             )

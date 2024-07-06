@@ -1144,6 +1144,7 @@ mod tests {
                 .unwrap(),
                 MessageHash::Compute,
                 None,
+                false,
                 loader,
                 &HashSet::default(),
             )
