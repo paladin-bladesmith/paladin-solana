@@ -1158,6 +1158,13 @@ impl PohRecorder {
         }
     }
 
+    pub fn latest_bank(&self) -> Arc<Bank> {
+        match self.get_poh_recorder_bank() {
+            PohRecorderBank::WorkingBank(bank) => bank.working_bank,
+            PohRecorderBank::LastResetBank(bank) => bank,
+        }
+    }
+
     // Filters the return result of PohRecorder::bank_start(), returns the bank
     // if it's still processing transactions
     pub fn get_working_bank_if_not_expired<'a>(

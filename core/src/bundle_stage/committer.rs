@@ -139,7 +139,7 @@ impl Committer {
                     );
 
                     let post_balance_info = bundle_results.post_balance_info().clone();
-                    let pre_balance_info = bundle_results.pre_balance_info();
+                    let pre_balance_info = bundle_results.pre_balance_info_mut();
 
                     let num_committed = tx_results
                         .execution_results
