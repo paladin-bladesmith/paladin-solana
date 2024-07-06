@@ -8,7 +8,6 @@ use {
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
-            bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
             bundle_packet_receiver::BundleReceiver,
             bundle_reserved_space_manager::BundleReservedSpaceManager,
             bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
@@ -17,7 +16,9 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    bundle_consumer::BundleConsumer,
     crossbeam_channel::{Receiver, RecvTimeoutError},
+    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
@@ -38,16 +39,17 @@ use {
     },
 };
 
-pub mod bundle_account_locker;
-mod bundle_consumer;
+pub(crate) mod bundle_consumer;
 mod bundle_packet_deserializer;
 mod bundle_packet_receiver;
-mod bundle_reserved_space_manager;
+pub(crate) mod bundle_reserved_space_manager;
 pub(crate) mod bundle_stage_leader_metrics;
-mod committer;
+pub(crate) mod committer;
+mod front_run_identifier;
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
+pub const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
 // Stats emitted periodically
 #[derive(Default)]
@@ -256,8 +258,12 @@ impl BundleStage {
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
 
-        let mut bundle_receiver =
-            BundleReceiver::new(BUNDLE_STAGE_ID, bundle_receiver, bank_forks, Some(5));
+        let mut bundle_receiver = BundleReceiver::new(
+            BUNDLE_STAGE_ID,
+            bundle_receiver,
+            bank_forks,
+            Some(MAX_PACKETS_PER_BUNDLE),
+        );
 
         let committer = Committer::new(
             transaction_status_sender,
