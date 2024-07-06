@@ -231,6 +231,7 @@ generic-array = { version = "0.14.7", default-features = false }
 gethostname = "0.2.3"
 getrandom = "0.2.10"
 goauth = "0.13.1"
+hashbrown = "0.14.3"
 hex = "0.4.3"
 hidapi = { version = "2.6.1", default-features = false }
 histogram = "0.6.9"
@@ -284,6 +285,7 @@ num-traits = "0.2"
 num_cpus = "1.16.0"
 num_enum = "0.7.2"
 openssl = "0.10"
+ouroboros = "0.18.4"
 parking_lot = "0.12"
 pbkdf2 = { version = "0.11.0", default-features = false }
 pem = "1.1.1"
