@@ -7,3 +7,6 @@
 [submodule "jito-protos/protos"]
 	path = jito-protos/protos
 	url = https://github.com/jito-labs/mev-protos.git
+[submodule "paladin-programs/lockup"]
+	path = paladin-programs/lockup
+	url = https://github.com/paladin-bladesmith/lockup-program.git

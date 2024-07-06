@@ -231,6 +231,7 @@ generic-array = { version = "0.14.7", default-features = false }
 gethostname = "0.2.3"
 getrandom = "0.2.10"
 goauth = "0.13.1"
+hashbrown = "0.14.3"
 hex = "0.4.3"
 hidapi = { version = "2.6.1", default-features = false }
 histogram = "0.6.9"
@@ -284,6 +285,8 @@ num-traits = "0.2"
 num_cpus = "1.16.0"
 num_enum = "0.7.2"
 openssl = "0.10"
+ouroboros = "0.18.4"
+paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
 parking_lot = "0.12"
 pbkdf2 = { version = "0.11.0", default-features = false }
 pem = "1.1.1"
@@ -327,6 +330,7 @@ serde_yaml = "0.9.34"
 serial_test = "2.0.0"
 sha2 = "0.10.8"
 sha3 = "0.10.8"
+shank = "0.4.2"
 shuttle = "0.7.1"
 signal-hook = "0.3.17"
 siphasher = "0.3.11"
@@ -429,6 +433,7 @@ solana-zk-token-proof-program = { path = "programs/zk-token-proof", version = "=
 solana-zk-token-sdk = { path = "zk-token-sdk", version = "=2.0.22" }
 solana_rbpf = "=0.8.4"
 spl-associated-token-account = "=4.0.0"
+spl-discriminator = "=0.3.0"
 spl-instruction-padding = "0.2"
 spl-memo = "=5.0.0"
 spl-pod = "=0.3.0"
