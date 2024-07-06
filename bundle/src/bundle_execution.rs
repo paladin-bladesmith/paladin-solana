@@ -335,16 +335,14 @@ pub fn load_and_execute_bundle<'a>(
 
         let mut pre_balance_info = PreBalanceInfo::default();
         let (_, collect_balances_us) = measure_us!({
-            if transaction_status_sender_enabled {
-                pre_balance_info.native =
-                    bank.collect_balances_with_cache(&batch, Some(account_overrides));
-                pre_balance_info.token = collect_token_balances(
-                    bank,
-                    &batch,
-                    &mut pre_balance_info.mint_decimals,
-                    Some(account_overrides),
-                );
-            }
+            pre_balance_info.native =
+                bank.collect_balances_with_cache(&batch, Some(account_overrides));
+            pre_balance_info.token = collect_token_balances(
+                bank,
+                &batch,
+                &mut pre_balance_info.mint_decimals,
+                Some(account_overrides),
+            );
         });
         saturating_add_assign!(metrics.collect_balances_us, collect_balances_us);
 
@@ -460,23 +458,16 @@ pub fn load_and_execute_bundle<'a>(
             get_account_transactions(bank, account_overrides, accounts_requested, &batch);
         saturating_add_assign!(metrics.collect_pre_post_accounts_us, m.end_as_us());
 
-        let ((post_balances, post_token_balances), collect_balances_us) =
-            measure_us!(if transaction_status_sender_enabled {
-                let post_balances =
-                    bank.collect_balances_with_cache(&batch, Some(account_overrides));
-                let post_token_balances = collect_token_balances(
-                    bank,
-                    &batch,
-                    &mut pre_balance_info.mint_decimals,
-                    Some(account_overrides),
-                );
-                (post_balances, post_token_balances)
-            } else {
-                (
-                    TransactionBalances::default(),
-                    TransactionTokenBalances::default(),
-                )
-            });
+        let ((post_balances, post_token_balances), collect_balances_us) = measure_us!({
+            let post_balances = bank.collect_balances_with_cache(&batch, Some(account_overrides));
+            let post_token_balances = collect_token_balances(
+                bank,
+                &batch,
+                &mut pre_balance_info.mint_decimals,
+                Some(account_overrides),
+            );
+            (post_balances, post_token_balances)
+        });
         saturating_add_assign!(metrics.collect_balances_us, collect_balances_us);
 
         let processing_end = batch.lock_results().iter().position(|lr| lr.is_err());
