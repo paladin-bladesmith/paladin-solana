@@ -126,6 +126,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "allocator-api2"
+version = "0.2.18"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c6cb57a04249c6480766f7f7cef5467412af1490f8d1e243141daddada3264f"
+
+[[package]]
 name = "anchor-attribute-access-control"
 version = "0.24.2"
 dependencies = [
@@ -2574,6 +2580,10 @@ name = "hashbrown"
 version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "290f1a1d9242c78d09ce40a5e87e7554ee637af1351968159f4952f028f75604"
+dependencies = [
+ "ahash 0.8.7",
+ "allocator-api2",
+]
 
 [[package]]
 name = "headers"
@@ -5708,6 +5718,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "rayon",
+ "solana-bundle",
  "solana-client",
  "solana-core",
  "solana-gossip",
@@ -5894,6 +5905,7 @@ version = "1.18.23"
 dependencies = [
  "anchor-lang",
  "assert_matches",
+ "hashbrown 0.14.3",
  "itertools",
  "log",
  "serde",
@@ -6237,6 +6249,7 @@ dependencies = [
  "etcd-client",
  "fs_extra",
  "futures 0.3.30",
+ "hashbrown 0.14.3",
  "histogram",
  "itertools",
  "jito-protos",
@@ -6247,6 +6260,7 @@ dependencies = [
  "lru",
  "min-max-heap",
  "num_enum 0.7.2",
+ "ouroboros",
  "prio-graph",
  "prost",
  "prost-types",
@@ -6312,6 +6326,7 @@ dependencies = [
  "test-case",
  "thiserror",
  "tokio",
+ "tokio-util 0.7.1",
  "tonic",
  "tonic-build",
  "trees",
@@ -7259,7 +7274,7 @@ dependencies = [
  "symlink",
  "thiserror",
  "tokio",
- "tokio-util 0.6.9",
+ "tokio-util 0.7.1",
 ]
 
 [[package]]
@@ -9001,7 +9016,6 @@ checksum = "9e99e1983e5d376cd8eb4b66604d2e99e79f5bd988c3055891dcd8c9e2604cc0"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "log",
  "pin-project-lite",
@@ -9017,6 +9031,7 @@ checksum = "0edfdeb067411dba2044da6d1cb2df793dd35add7888d73c16e3381ded401764"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",
