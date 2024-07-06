@@ -24,7 +24,11 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_perf::packet::PacketBatch,
     solana_sdk::{
-        pubkey::Pubkey, saturating_add_assign, signature::Signer, signer::keypair::Keypair,
+        packet::{Meta, Packet, PACKET_DATA_SIZE},
+        pubkey::Pubkey,
+        saturating_add_assign,
+        signature::Signer,
+        signer::keypair::Keypair,
     },
     std::{
         str::FromStr,
@@ -50,6 +54,8 @@ const CONNECTION_BACKOFF_S: u64 = 5;
 struct BlockEngineStageStats {
     num_bundles: u64,
     num_bundle_packets: u64,
+    num_paladin: u64,
+    num_paladin_packets: u64,
     num_packets: u64,
     num_empty_packets: u64,
 }
@@ -60,6 +66,8 @@ impl BlockEngineStageStats {
             "block_engine_stage-stats",
             ("num_bundles", self.num_bundles, i64),
             ("num_bundle_packets", self.num_bundle_packets, i64),
+            ("num_paladin", self.num_paladin, i64),
+            ("num_paladin_packets", self.num_paladin_packets, i64),
             ("num_packets", self.num_packets, i64),
             ("num_empty_packets", self.num_empty_packets, i64)
         );
@@ -381,6 +389,10 @@ impl BlockEngineStage {
         let mut metrics_and_auth_tick = interval(METRICS_TICK);
         let mut maintenance_tick = interval(MAINTENANCE_TICK);
 
+        let mut buf = [0u8; PACKET_DATA_SIZE];
+        let socket =
+            tokio::net::UnixDatagram::bind("/tmp/paladin.ipc").expect("TODO: Handle this error");
+
         info!("connected to packet and bundle stream");
 
         while !exit.load(Ordering::Relaxed) {
@@ -391,6 +403,12 @@ impl BlockEngineStage {
                 }
                 maybe_bundles = bundle_stream.message() => {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
+                }
+                res = socket.recv(&mut buf) => {
+                    let size = res.expect("TODO: Handle error");
+                    let packet = Packet::new(buf, Meta { size, ..Default::default() });
+                    // TODO: Drain additional packets from the socket using try_recv.
+                    Self::handle_paladin(vec![packet], bundle_tx, &mut block_engine_stats)?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
                     block_engine_stats.report();
@@ -521,6 +539,33 @@ impl BlockEngineStage {
         } else {
             saturating_add_assign!(block_engine_stats.num_empty_packets, 1);
         }
+
+        Ok(())
+    }
+
+    fn handle_paladin(
+        packets: Vec<Packet>,
+        bundle_sender: &Sender<Vec<PacketBundle>>,
+        block_engine_stats: &mut BlockEngineStageStats,
+    ) -> crate::proxy::Result<()> {
+        // Each paladin TX (inside a packet) translates to one bundle.
+        let bundles: Vec<_> = packets
+            .into_iter()
+            .map(|packet| PacketBundle {
+                bundle_id: String::default(),
+                batch: PacketBatch::new(vec![packet]),
+            })
+            .collect();
+
+        // Update stats.
+        saturating_add_assign!(block_engine_stats.num_paladin, bundles.len() as u64);
+        saturating_add_assign!(
+            block_engine_stats.num_bundle_packets,
+            bundles.iter().map(|bundle| bundle.batch.len() as u64).sum()
+        );
+
+        // Bon voyage.
+        bundle_sender.try_send(bundles).expect("TODO: Handle error");
 
         Ok(())
     }
