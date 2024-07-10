@@ -2,10 +2,7 @@ use {
     crate::packet_bundle::PacketBundle,
     crossbeam_channel::TrySendError,
     solana_perf::packet::PacketBatch,
-    solana_sdk::{
-        packet::{Meta, Packet, PACKET_DATA_SIZE},
-        saturating_add_assign,
-    },
+    solana_sdk::packet::{Meta, Packet, PACKET_DATA_SIZE},
     std::{
         os::linux::net::SocketAddrExt,
         sync::{
@@ -67,7 +64,6 @@ impl PaladinStage {
         paladin_tx: &crossbeam_channel::Sender<Vec<PacketBundle>>,
     ) -> Result<(), PaladinError> {
         let mut paladin_stats_creation = Instant::now();
-        let mut paladin_stats = PaladinStageStats::default();
 
         // Setup abstract unix socket for geyser bot to connect to.
         let socket = std::os::unix::net::SocketAddr::from_abstract_name(SOCKET_ENDPOINT)?;
@@ -90,10 +86,7 @@ impl PaladinStage {
             // Updates stats if sufficient time has passed.
             let stats_age = paladin_stats_creation.elapsed();
             if stats_age > STATS_REPORT_INTERVAL {
-                paladin_stats.report(stats_age);
-
                 paladin_stats_creation = Instant::now();
-                paladin_stats = PaladinStageStats::default();
             }
 
             // Handle received packets.
@@ -105,21 +98,14 @@ impl PaladinStage {
                 },
             );
             // TODO: Drain additional packets from the socket using try_recv.
-            Self::handle_paladin(vec![packet], paladin_tx, &mut paladin_stats)?;
+            Self::handle_paladin(vec![packet], paladin_tx)?;
         }
     }
 
     fn handle_paladin(
         packets: Vec<Packet>,
         bundle_sender: &crossbeam_channel::Sender<Vec<PacketBundle>>,
-        paladin_stage_stats: &mut PaladinStageStats,
     ) -> Result<(), TrySendError<Vec<PacketBundle>>> {
-        // Update stats.
-        saturating_add_assign!(
-            paladin_stage_stats.num_paladin_packets,
-            packets.len() as u64
-        );
-
         // Each paladin TX (inside a packet) translates to one bundle.
         let bundles: Vec<_> = packets
             .into_iter()
@@ -129,22 +115,9 @@ impl PaladinStage {
             })
             .collect();
 
+        println!("Paladin stage received: {}", bundles.len());
+
         // Bon voyage.
         bundle_sender.try_send(bundles)
-    }
-}
-
-#[derive(Default)]
-struct PaladinStageStats {
-    num_paladin_packets: u64,
-}
-
-impl PaladinStageStats {
-    pub(crate) fn report(&self, age: Duration) {
-        datapoint_info!(
-            "paladin_stage-stats",
-            ("stats_age_us", age.as_micros() as i64, i64),
-            ("num_paladin_packets", self.num_paladin_packets, i64),
-        );
     }
 }

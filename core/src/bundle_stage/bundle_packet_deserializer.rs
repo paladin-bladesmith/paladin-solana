@@ -89,7 +89,8 @@ impl BundlePacketDeserializer {
                 Ok(deserialized_bundle) => {
                     deserialized_bundles.push(deserialized_bundle);
                 }
-                Err(_) => {
+                Err(err) => {
+                    println!("Bundle dropped; err={err}");
                     // TODO (LB): prob wanna collect stats here
                     saturating_add_assign!(num_dropped_bundles, 1);
                     saturating_add_assign!(num_dropped_packets, bundle.batch.len());
@@ -137,6 +138,10 @@ impl BundlePacketDeserializer {
                     break;
                 }
             }
+        }
+
+        if num_bundles_received > 0 {
+            println!("BundleStage received: {num_bundles_received}");
         }
 
         Ok((num_bundles_received, num_packets_received, bundles))

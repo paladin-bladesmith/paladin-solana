@@ -1250,6 +1250,17 @@ impl BundleStorage {
         sanitized_bundles
             .into_iter()
             .zip(bundle_execution_results)
+            .inspect(|((_, sanitized_bundle), res)| {
+                println!(
+                    "{}: {:?}",
+                    sanitized_bundle
+                        .transactions
+                        .get(0)
+                        .map(|tx| *tx.signature())
+                        .unwrap_or_default(),
+                    res,
+                )
+            })
             .for_each(
                 |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {
