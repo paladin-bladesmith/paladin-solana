@@ -19,9 +19,11 @@ use {
 #[cfg(target_os = "linux")]
 use os::linux::net::SocketAddrExt;
 
+#[cfg(target_os = "linux")]
 const SOCKET_ENDPOINT: &str = "paladin";
 
 // Cypher: This socket path will only be used on MacOS
+#[cfg(target_os = "macos")]
 const SOCKET_PATH: &str = "/tmp/paladin.sock";
 
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(250);
