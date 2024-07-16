@@ -4,7 +4,6 @@ use {
     solana_perf::packet::PacketBatch,
     solana_sdk::packet::{Meta, Packet, PACKET_DATA_SIZE},
     std::{
-        os::linux::net::SocketAddrExt,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -14,7 +13,14 @@ use {
     thiserror::Error,
 };
 
+#[cfg(target_os = "linux")]
+use os::linux::net::SocketAddrExt;
+
 const SOCKET_ENDPOINT: &str = "paladin";
+
+// Cypher: This socket path will only be used on MacOS
+const SOCKET_PATH: &str = "/tmp/paladin.sock";
+
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(250);
 
 const ERR_RETRY_DELAY: Duration = Duration::from_secs(1);
@@ -66,8 +72,14 @@ impl PaladinStage {
         let mut paladin_stats_creation = Instant::now();
 
         // Setup abstract unix socket for geyser bot to connect to.
-        let socket = std::os::unix::net::SocketAddr::from_abstract_name(SOCKET_ENDPOINT)?;
-        let socket = std::os::unix::net::UnixDatagram::bind_addr(&socket)?;
+        #[cfg(target_os = "linux")]
+        let endpoint = std::os::unix::net::SocketAddr::from_abstract_name(SOCKET_ENDPOINT)?;
+
+        #[cfg(target_os = "macos")]
+        let endpoint = std::os::unix::net::SocketAddr::from_pathname(&SOCKET_PATH)
+                .expect("Failed ot create socket address");
+
+        let socket = std::os::unix::net::UnixDatagram::bind_addr(&endpoint)?;
         socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
 
         // Re-usable buffer to read packets into.
