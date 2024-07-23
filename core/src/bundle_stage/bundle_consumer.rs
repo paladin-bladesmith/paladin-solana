@@ -828,7 +828,7 @@ impl BundleConsumer {
                         }
                     }
                 } else {
-                    unreachable!("Failed bundles should be dropped prior to calling this function");
+                    eprintln!("Failed bundles should be dropped prior to calling this function");
                 }
             }
         }
