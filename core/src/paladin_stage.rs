@@ -79,7 +79,7 @@ impl PaladinStage {
 
         #[cfg(target_os = "macos")]
         let endpoint = std::os::unix::net::SocketAddr::from_pathname(&SOCKET_PATH)
-                .expect("Failed ot create socket address");
+            .expect("Failed ot create socket address");
 
         let socket = std::os::unix::net::UnixDatagram::bind_addr(&endpoint)?;
         socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;

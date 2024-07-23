@@ -18,7 +18,9 @@ use {
     },
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+        bundle_execution::{
+            load_and_execute_bundle, BundleExecutionMetrics, LoadAndExecuteBundleOutput,
+        },
         BundleExecutionError, BundleExecutionResult, TipError,
     },
     solana_cost_model::transaction_cost::TransactionCost,
@@ -27,18 +29,29 @@ use {
     solana_poh::poh_recorder::{BankStart, RecordTransactionsSummary, TransactionRecorder},
     solana_runtime::bank::Bank,
     solana_sdk::{
+        account::ReadableAccount,
         bundle::SanitizedBundle,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
         transaction::{self},
+        pubkey
     },
     std::{
         collections::HashSet,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
     },
+    lazy_static::lazy_static
 };
+
+lazy_static! {
+    static ref FRONTRUN_OWNERS: HashSet<Pubkey> = {
+        let mut set = HashSet::new();
+        set.insert(pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"));  // Raydium AMM
+        set
+    };
+}
 
 pub struct ExecuteRecordCommitResult {
     commit_transaction_details: Vec<CommitTransactionDetails>,
@@ -672,6 +685,13 @@ impl BundleConsumer {
             };
         }
 
+        if Self::bundle_duplicates_owned_accounts(&bundle_execution_results, &FRONTRUN_OWNERS) {
+            println!(
+                "bundle: {} duplicates owned accounts",
+                sanitized_bundle.bundle_id
+            );
+        }
+
         let (executed_batches, execution_results_to_transactions_us) =
             measure_us!(bundle_execution_results.executed_transaction_batches());
 
@@ -774,6 +794,46 @@ impl BundleConsumer {
                 .iter()
                 .any(|a| tip_pdas.contains(a))
         })
+    }
+
+    fn bundle_duplicates_owned_accounts(
+        bundle_result: &LoadAndExecuteBundleOutput,
+        owners: &HashSet<Pubkey>,
+    ) -> bool {
+        let mut seen_keys: HashSet<Pubkey> = HashSet::with_capacity(
+            bundle_result
+                .bundle_transaction_results()
+                .iter()
+                .flat_map(|batch| batch.transactions())
+                .map(|txn| txn.message().account_keys().len())
+                .sum(),
+        );
+        for bundle_batch_result in bundle_result.bundle_transaction_results().iter() {
+            for (tx_index, loaded_tx) in bundle_batch_result
+                .load_and_execute_transactions_output()
+                .loaded_transactions
+                .iter()
+                .enumerate()
+                .map(|(i, (result, _))| (i, result))
+            {
+                if let Ok(loaded_tx) = loaded_tx {
+                    let locks =
+                        &bundle_batch_result.transactions()[tx_index].get_account_locks_unchecked();
+                    for (loaded_account_key, loaded_account_data) in loaded_tx.accounts.iter() {
+                        if owners.contains(&loaded_account_data.owner())
+                            && locks.writable.contains(&loaded_account_key)
+                            && !seen_keys.insert(*loaded_account_key)
+                        {
+                            return true;
+                        }
+                    }
+                } else {
+                    unreachable!("Failed bundles should be dropped prior to calling this function");
+                }
+            }
+        }
+
+        false
     }
 }
 
