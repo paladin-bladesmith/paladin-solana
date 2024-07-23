@@ -14,7 +14,7 @@ use {
 };
 
 #[cfg(target_os = "linux")]
-use os::linux::net::SocketAddrExt;
+use std::os::linux::net::SocketAddrExt;
 
 #[cfg(target_os = "linux")]
 const SOCKET_ENDPOINT: &str = "paladin";
