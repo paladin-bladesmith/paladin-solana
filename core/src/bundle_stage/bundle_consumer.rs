@@ -16,6 +16,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    lazy_static::lazy_static,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
         bundle_execution::{
@@ -32,17 +33,17 @@ use {
         account::ReadableAccount,
         bundle::SanitizedBundle,
         clock::{Slot, MAX_PROCESSING_AGE},
-        feature_set,
+        feature_set, pubkey,
         pubkey::Pubkey,
+        signature::Signature,
         transaction::{self},
-        pubkey
     },
     std::{
-        collections::HashSet,
+        collections::{HashMap, HashSet},
+        rc::Rc,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
     },
-    lazy_static::lazy_static
 };
 
 lazy_static! {
@@ -685,7 +686,7 @@ impl BundleConsumer {
             };
         }
 
-        if Self::bundle_duplicates_owned_accounts(&bundle_execution_results, &FRONTRUN_OWNERS) {
+        if Self::bundle_duplicates_owned_accounts(&bundle_execution_results) {
             println!(
                 "bundle: {} duplicates owned accounts",
                 sanitized_bundle.bundle_id
@@ -796,39 +797,66 @@ impl BundleConsumer {
         })
     }
 
-    fn bundle_duplicates_owned_accounts(
-        bundle_result: &LoadAndExecuteBundleOutput,
-        owners: &HashSet<Pubkey>,
-    ) -> bool {
-        let mut seen_keys: HashSet<Pubkey> = HashSet::with_capacity(
-            bundle_result
-                .bundle_transaction_results()
-                .iter()
-                .flat_map(|batch| batch.transactions())
-                .map(|txn| txn.message().account_keys().len())
-                .sum(),
-        );
+    fn bundle_duplicates_owned_accounts(bundle_result: &LoadAndExecuteBundleOutput) -> bool {
+        let capacity = bundle_result
+            .bundle_transaction_results()
+            .iter()
+            .flat_map(|batch| batch.transactions())
+            .map(|txn| txn.message().account_keys().len())
+            .sum();
+
+        let mut seen_keys: HashSet<Pubkey> = HashSet::with_capacity(capacity);
+        let mut initial_signers: HashMap<Pubkey, Rc<Vec<Pubkey>>> = HashMap::with_capacity(5);
+
         for bundle_batch_result in bundle_result.bundle_transaction_results().iter() {
-            for (tx_index, loaded_tx) in bundle_batch_result
+            for (tx_index, (loaded_tx, _)) in bundle_batch_result
                 .load_and_execute_transactions_output()
                 .loaded_transactions
                 .iter()
                 .enumerate()
-                .map(|(i, (result, _))| (i, result))
             {
-                if let Ok(loaded_tx) = loaded_tx {
-                    let locks =
-                        &bundle_batch_result.transactions()[tx_index].get_account_locks_unchecked();
-                    for (loaded_account_key, loaded_account_data) in loaded_tx.accounts.iter() {
-                        if owners.contains(&loaded_account_data.owner())
-                            && locks.writable.contains(&loaded_account_key)
-                            && !seen_keys.insert(*loaded_account_key)
-                        {
-                            return true;
+                let loaded_tx = match loaded_tx {
+                    Ok(loaded_tx) => loaded_tx,
+                    Err(_) => {
+                        eprintln!(
+                            "Failed bundles should be dropped prior to calling this function"
+                        );
+                        continue;
+                    }
+                };
+
+                let sanitized_tx = &bundle_batch_result.transactions()[tx_index];
+                let account_keys = sanitized_tx.message().account_keys();
+                let signers: Rc<Vec<Pubkey>> = Rc::new(
+                    account_keys
+                        .iter()
+                        .take(sanitized_tx.message().header().num_required_signatures as usize)
+                        .copied()
+                        .collect(),
+                );
+                let locks = sanitized_tx.get_account_locks_unchecked();
+
+                for (loaded_account_key, loaded_account_data) in loaded_tx.accounts.iter() {
+                    if FRONTRUN_OWNERS.contains(&loaded_account_data.owner())
+                        && locks.writable.contains(&loaded_account_key)
+                    {
+                        if !seen_keys.insert(*loaded_account_key) {
+                            if let Some(initial_key_signers) =
+                                initial_signers.get(loaded_account_key)
+                            {
+                                if !signers
+                                    .iter()
+                                    .any(|signer| initial_key_signers.contains(signer))
+                                {
+                                    return true;
+                                }
+                            } else {
+                                eprintln!("Keys should exist in initial_signers");
+                            }
+                        } else {
+                            initial_signers.insert(*loaded_account_key, signers.clone());
                         }
                     }
-                } else {
-                    eprintln!("Failed bundles should be dropped prior to calling this function");
                 }
             }
         }
