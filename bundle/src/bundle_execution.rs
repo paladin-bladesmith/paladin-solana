@@ -387,6 +387,7 @@ pub fn load_and_execute_bundle<'a>(
             get_account_transactions(bank, account_overrides, accounts_requested, &batch);
         saturating_add_assign!(metrics.collect_pre_post_accounts_us, m.end_as_us());
 
+        println!("BUNDLE: {}", bundle.bundle_id);
         let (mut load_and_execute_transactions_output, load_execute_us) = measure_us!(bank
             .load_and_execute_transactions(
                 &batch,
