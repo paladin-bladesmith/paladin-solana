@@ -1,6 +1,6 @@
 use {
     crate::packet_bundle::PacketBundle,
-    bytes::BytesMut,
+    bytes::{Buf, BytesMut},
     crossbeam_channel::TrySendError,
     futures::{future::OptionFuture, StreamExt},
     solana_perf::packet::PacketBatch,
@@ -167,9 +167,13 @@ impl Decoder for TransactionStreamCodec {
     type Error = TransactionStreamError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        let cursor = std::io::Cursor::new(src);
-        match bincode::deserialize_from(cursor).map_err(|err| *err) {
-            Ok(bundle) => Ok(Some(bundle)),
+        let mut cursor = std::io::Cursor::new(&src);
+        match bincode::deserialize_from(&mut cursor).map_err(|err| *err) {
+            Ok(bundle) => {
+                src.advance(cursor.position() as usize);
+
+                Ok(Some(bundle))
+            }
             Err(bincode::ErrorKind::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 Ok(None)
             }
