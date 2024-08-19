@@ -1,13 +1,11 @@
 use {
     crate::packet_bundle::PacketBundle,
+    bytes::BytesMut,
     crossbeam_channel::TrySendError,
+    futures::{future::OptionFuture, StreamExt},
     solana_perf::packet::PacketBatch,
-    solana_sdk::{
-        packet::{Meta, Packet, PACKET_DATA_SIZE},
-        saturating_add_assign,
-    },
+    solana_sdk::{packet::Packet, saturating_add_assign},
     std::{
-        net::UdpSocket,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -15,6 +13,8 @@ use {
         time::{Duration, Instant},
     },
     thiserror::Error,
+    tokio::net::{TcpListener, TcpStream},
+    tokio_util::codec::{Decoder, Framed},
 };
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:4815";
@@ -31,28 +31,42 @@ enum PaladinError {
     Crossbeam(#[from] TrySendError<Vec<PacketBundle>>),
 }
 
-pub struct PaladinStage {
-    handle: std::thread::JoinHandle<()>,
+pub(crate) struct PaladinStage {
+    exit: Arc<AtomicBool>,
+    bundle_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+
+    socket: TcpListener,
+    stream: Option<Framed<TcpStream, TransactionStreamCodec>>,
+
+    stats: PaladinStageStats,
+    stats_creation: Instant,
 }
 
 impl PaladinStage {
-    pub fn new(
+    pub(crate) fn spawn(
+        exit: Arc<AtomicBool>,
+        paladin_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::Builder::new()
+            .name("paladin-stage".to_string())
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async {
+                        let worker = PaladinStage::new(exit, paladin_tx).await;
+                        worker.run().await;
+                    })
+            })
+            .unwrap()
+    }
+
+    async fn new(
         exit: Arc<AtomicBool>,
         paladin_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
     ) -> Self {
-        let handle = std::thread::Builder::new()
-            .name("paladin-stage".to_string())
-            .spawn(move || Self::run(exit, paladin_tx))
-            .unwrap();
-
-        Self { handle }
-    }
-
-    pub fn join(self) -> std::thread::Result<()> {
-        self.handle.join()
-    }
-
-    fn run(exit: Arc<AtomicBool>, paladin_tx: crossbeam_channel::Sender<Vec<PacketBundle>>) {
+        // Determine socket endpoint.
         let socket_endpoint = match std::env::var("PALADIN_TX_ENDPOINT") {
             Ok(endpoint) => endpoint,
             Err(std::env::VarError::NotUnicode(raw)) => {
@@ -62,60 +76,77 @@ impl PaladinStage {
             Err(std::env::VarError::NotPresent) => DEFAULT_ENDPOINT.to_owned(),
         };
 
-        while !exit.load(Ordering::Relaxed) {
-            if let Err(err) = Self::run_until_err(&paladin_tx, &socket_endpoint) {
+        // Setup a TCP socket to receive batches of arb bundles.
+        let socket = tokio::net::TcpListener::bind(socket_endpoint)
+            .await
+            .unwrap();
+
+        PaladinStage {
+            exit,
+            bundle_tx: paladin_tx,
+
+            socket,
+            stream: None,
+
+            stats: PaladinStageStats::default(),
+            stats_creation: Instant::now(),
+        }
+    }
+
+    async fn run(mut self) {
+        while !self.exit.load(Ordering::Relaxed) {
+            if let Err(err) = self.run_until_err().await {
                 warn!("PaladinStage encountered error, restarting; err={err}");
-                if !exit.load(Ordering::Relaxed) {
-                    std::thread::sleep(ERR_RETRY_DELAY);
+                if !self.exit.load(Ordering::Relaxed) {
+                    tokio::time::sleep(ERR_RETRY_DELAY).await;
                 }
             }
         }
     }
 
-    fn run_until_err(
-        paladin_tx: &crossbeam_channel::Sender<Vec<PacketBundle>>,
-        socket_endpoint: &str,
-    ) -> Result<(), PaladinError> {
-        let mut paladin_stats_creation = Instant::now();
-        let mut paladin_stats = PaladinStageStats::default();
-
-        // Setup a UDP socket for receiving arb transaction.s
-        let socket = UdpSocket::bind(socket_endpoint)?;
-        socket.set_read_timeout(Some(SOCKET_READ_TIMEOUT))?;
-
-        // Re-usable buffer to read packets into.
-        let mut buf = [0u8; PACKET_DATA_SIZE];
-
+    async fn run_until_err(&mut self) -> Result<(), PaladinError> {
         loop {
-            let size = match socket.recv(&mut buf) {
-                Ok(size) => size,
-                Err(err) => match err.kind() {
-                    // NB: Returned when the timeout expires.
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut => continue,
-                    _ => return Err(err.into()),
-                },
-            };
+            tokio::select! {
+                biased;
 
-            // Updates stats if sufficient time has passed.
-            let stats_age = paladin_stats_creation.elapsed();
-            if stats_age > STATS_REPORT_INTERVAL {
-                paladin_stats.report(stats_age);
+                res = self.socket.accept() => {
+                    let (stream, address) = res?;
 
-                paladin_stats_creation = Instant::now();
-                paladin_stats = PaladinStageStats::default();
+                    info!("Accepted TcpStream; address={address}");
+                    self.stream = Some(Framed::new(stream, TransactionStreamCodec));
+                }
+                Some(opt) = OptionFuture::from(self.stream.as_mut().map(|stream| stream.next())) =>
+                {
+                    match opt {
+                        Some(res) => match res {
+                            Ok(bundles) => self.on_bundles(bundles)?,
+                            Err(err) => {
+                                warn!("TransactionStream errored; err={err}");
+                                self.stream = None;
+                            }
+                        }
+                        None => {
+                            warn!("TransactionStream dropped without error");
+                            self.stream = None;
+                        }
+                    }
+                }
             }
-
-            // Handle received packets.
-            let packet = Packet::new(
-                buf,
-                Meta {
-                    size,
-                    ..Default::default()
-                },
-            );
-            // TODO: Drain additional packets from the socket using try_recv.
-            Self::handle_paladin(vec![packet], paladin_tx, &mut paladin_stats)?;
         }
+    }
+
+    fn on_bundles(&mut self, bundles: Vec<Vec<Packet>>) -> Result<(), PaladinError> {
+        // Convert bundles into Jito's expected format.
+        let bundles: Vec<_> = bundles
+            .into_iter()
+            .map(|packets| PacketBundle {
+                bundle_id: String::default(),
+                batch: PacketBatch::new(packets),
+            })
+            .collect();
+
+        // Bon voyage.
+        self.bundle_tx.try_send(bundles).map_err(Into::into)
     }
 
     fn handle_paladin(
@@ -141,6 +172,23 @@ impl PaladinStage {
         // Bon voyage.
         bundle_sender.try_send(bundles)
     }
+}
+
+struct TransactionStreamCodec;
+
+impl Decoder for TransactionStreamCodec {
+    type Item = Vec<Vec<Packet>>;
+    type Error = TransactionStreamError;
+
+    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        todo!();
+    }
+}
+
+#[derive(Debug, Error)]
+enum TransactionStreamError {
+    #[error("IO error; err={0}")]
+    Io(#[from] std::io::Error),
 }
 
 #[derive(Default)]

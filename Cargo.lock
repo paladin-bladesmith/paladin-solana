@@ -6312,6 +6312,7 @@ dependencies = [
  "test-case",
  "thiserror",
  "tokio",
+ "tokio-util 0.7.1",
  "tonic",
  "tonic-build",
  "trees",
@@ -7258,7 +7259,7 @@ dependencies = [
  "symlink",
  "thiserror",
  "tokio",
- "tokio-util 0.6.9",
+ "tokio-util 0.7.1",
 ]
 
 [[package]]
@@ -9000,7 +9001,6 @@ checksum = "9e99e1983e5d376cd8eb4b66604d2e99e79f5bd988c3055891dcd8c9e2604cc0"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "log",
  "pin-project-lite",
@@ -9016,6 +9016,7 @@ checksum = "0edfdeb067411dba2044da6d1cb2df793dd35add7888d73c16e3381ded401764"
 dependencies = [
  "bytes",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",

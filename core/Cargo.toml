@@ -88,6 +88,7 @@ sys-info = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
 tonic = { workspace = true }
 trees = { workspace = true }
 
