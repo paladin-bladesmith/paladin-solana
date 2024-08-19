@@ -4,7 +4,7 @@ use {
     crossbeam_channel::TrySendError,
     futures::{future::OptionFuture, StreamExt},
     solana_perf::packet::PacketBatch,
-    solana_sdk::{packet::Packet, saturating_add_assign},
+    solana_sdk::packet::Packet,
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -18,7 +18,6 @@ use {
 };
 
 const DEFAULT_ENDPOINT: &str = "127.0.0.1:4815";
-const SOCKET_READ_TIMEOUT: Duration = Duration::from_millis(250);
 
 const ERR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const STATS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
@@ -39,6 +38,7 @@ pub(crate) struct PaladinStage {
     stream: Option<Framed<TcpStream, TransactionStreamCodec>>,
 
     stats: PaladinStageStats,
+    stats_interval: tokio::time::Interval,
     stats_creation: Instant,
 }
 
@@ -87,6 +87,7 @@ impl PaladinStage {
 
             socket,
             stream: None,
+            stats_interval: tokio::time::interval(STATS_REPORT_INTERVAL),
 
             stats: PaladinStageStats::default(),
             stats_creation: Instant::now(),
@@ -131,11 +132,20 @@ impl PaladinStage {
                         }
                     }
                 }
+                _ = self.stats_interval.tick() => {
+                    let now = Instant::now();
+                    self.stats.report(now.duration_since(self.stats_creation));
+
+                    self.stats = PaladinStageStats::default();
+                    self.stats_creation = now;
+                }
             }
         }
     }
 
     fn on_bundles(&mut self, bundles: Vec<Vec<Packet>>) -> Result<(), PaladinError> {
+        self.stats.num_paladin_bundles = self.stats.num_paladin_bundles.saturating_add(1);
+
         // Convert bundles into Jito's expected format.
         let bundles: Vec<_> = bundles
             .into_iter()
@@ -148,30 +158,6 @@ impl PaladinStage {
         // Bon voyage.
         self.bundle_tx.try_send(bundles).map_err(Into::into)
     }
-
-    fn handle_paladin(
-        packets: Vec<Packet>,
-        bundle_sender: &crossbeam_channel::Sender<Vec<PacketBundle>>,
-        paladin_stage_stats: &mut PaladinStageStats,
-    ) -> Result<(), TrySendError<Vec<PacketBundle>>> {
-        // Update stats.
-        saturating_add_assign!(
-            paladin_stage_stats.num_paladin_packets,
-            packets.len() as u64
-        );
-
-        // Each paladin TX (inside a packet) translates to one bundle.
-        let bundles: Vec<_> = packets
-            .into_iter()
-            .map(|packet| PacketBundle {
-                bundle_id: String::default(),
-                batch: PacketBatch::new(vec![packet]),
-            })
-            .collect();
-
-        // Bon voyage.
-        bundle_sender.try_send(bundles)
-    }
 }
 
 struct TransactionStreamCodec;
@@ -181,19 +167,28 @@ impl Decoder for TransactionStreamCodec {
     type Error = TransactionStreamError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        todo!();
+        let cursor = std::io::Cursor::new(src);
+        match bincode::deserialize_from(cursor).map_err(|err| *err) {
+            Ok(bundle) => Ok(Some(bundle)),
+            Err(bincode::ErrorKind::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
+                Ok(None)
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 }
 
 #[derive(Debug, Error)]
 enum TransactionStreamError {
-    #[error("IO error; err={0}")]
+    #[error("IO; err={0}")]
     Io(#[from] std::io::Error),
+    #[error("Deserialize; err={0}")]
+    Deserialize(#[from] bincode::ErrorKind),
 }
 
 #[derive(Default)]
 struct PaladinStageStats {
-    num_paladin_packets: u64,
+    num_paladin_bundles: u64,
 }
 
 impl PaladinStageStats {
@@ -201,7 +196,7 @@ impl PaladinStageStats {
         datapoint_info!(
             "paladin_stage-stats",
             ("stats_age_us", age.as_micros() as i64, i64),
-            ("num_paladin_packets", self.num_paladin_packets, i64),
+            ("num_paladin_bundles", self.num_paladin_bundles, i64),
         );
     }
 }
