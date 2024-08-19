@@ -95,13 +95,9 @@ impl PaladinStage {
     }
 
     async fn run(mut self) {
-        while !self.exit.load(Ordering::Relaxed) {
-            if let Err(err) = self.run_until_err().await {
-                warn!("PaladinStage encountered error, restarting; err={err}");
-                if !self.exit.load(Ordering::Relaxed) {
-                    tokio::time::sleep(ERR_RETRY_DELAY).await;
-                }
-            }
+        while let Err(err) = self.run_until_err().await {
+            warn!("PaladinStage encountered error, restarting; err={err}");
+            tokio::time::sleep(ERR_RETRY_DELAY).await;
         }
     }
 
@@ -138,6 +134,10 @@ impl PaladinStage {
 
                     self.stats = PaladinStageStats::default();
                     self.stats_creation = now;
+
+                    if self.exit.load(Ordering::Relaxed) {
+                        break Ok(());
+                    }
                 }
             }
         }
