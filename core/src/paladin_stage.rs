@@ -4,7 +4,7 @@ use {
     crossbeam_channel::TrySendError,
     futures::{future::OptionFuture, StreamExt},
     solana_perf::packet::PacketBatch,
-    solana_sdk::packet::Packet,
+    solana_sdk::packet::{Meta, Packet, PACKET_DATA_SIZE},
     std::{
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -171,11 +171,35 @@ impl Decoder for TransactionStreamCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let mut cursor = std::io::Cursor::new(&src);
-        match bincode::deserialize_from(&mut cursor).map_err(|err| *err) {
-            Ok(bundle) => {
+        match bincode::deserialize_from::<_, Vec<Vec<Vec<u8>>>>(&mut cursor).map_err(|err| *err) {
+            Ok(bundles) => {
                 src.advance(cursor.position() as usize);
 
-                Ok(Some(bundle))
+                let mut packet_batches = Vec::with_capacity(bundles.len());
+                for bundle in bundles {
+                    let mut batch = Vec::with_capacity(bundle.len());
+                    for tx in bundle {
+                        if tx.len() > PACKET_DATA_SIZE {
+                            return Err(TransactionStreamError::TransactionSize);
+                        }
+
+                        // Copy transaction to fixed size packet buffer.
+                        let mut buffer = [0; PACKET_DATA_SIZE];
+                        buffer[0..tx.len()].copy_from_slice(&tx);
+
+                        batch.push(Packet::new(
+                            buffer,
+                            Meta {
+                                size: tx.len(),
+                                ..Meta::default()
+                            },
+                        ));
+                    }
+
+                    packet_batches.push(batch);
+                }
+
+                Ok(Some(packet_batches))
             }
             Err(bincode::ErrorKind::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 Ok(None)
@@ -191,6 +215,8 @@ enum TransactionStreamError {
     Io(#[from] std::io::Error),
     #[error("Deserialize; err={0}")]
     Deserialize(#[from] bincode::ErrorKind),
+    #[error("Transaction exceeded packet size")]
+    TransactionSize,
 }
 
 #[derive(Default)]
