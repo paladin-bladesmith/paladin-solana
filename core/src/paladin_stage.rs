@@ -144,7 +144,10 @@ impl PaladinStage {
     }
 
     fn on_bundles(&mut self, bundles: Vec<Vec<Packet>>) -> Result<(), PaladinError> {
-        self.stats.num_paladin_bundles = self.stats.num_paladin_bundles.saturating_add(1);
+        self.stats.num_paladin_bundles = self
+            .stats
+            .num_paladin_bundles
+            .saturating_add(bundles.len() as u64);
 
         // Convert bundles into Jito's expected format.
         let bundles: Vec<_> = bundles
