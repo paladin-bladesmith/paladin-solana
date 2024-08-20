@@ -47,6 +47,7 @@ use {
 pub const UNPROCESSED_BUFFER_STEP_SIZE: usize = 64;
 /// Maximum numer of votes a single receive call will accept
 const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
+/// The maximum number of bundles to process in a single batch.
 const MAX_BUNDLE_BATCH_SIZE: usize = 32;
 
 #[derive(Debug)]
@@ -1364,7 +1365,7 @@ impl BundleStorage {
 
         let sanitized_bundles = self
             .unprocessed_bundle_storage
-            .drain(..MAX_BUNDLE_BATCH_SIZE)
+            .drain(..std::cmp::max(self.unprocessed_bundle_storage.len(), MAX_BUNDLE_BATCH_SIZE))
             .filter_map(|packet_bundle| {
                 let r = packet_bundle.build_sanitized_bundle(
                     &bank,
