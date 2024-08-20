@@ -1365,7 +1365,7 @@ impl BundleStorage {
 
         let sanitized_bundles = self
             .unprocessed_bundle_storage
-            .drain(..std::cmp::max(self.unprocessed_bundle_storage.len(), MAX_BUNDLE_BATCH_SIZE))
+            .drain(..std::cmp::min(self.unprocessed_bundle_storage.len(), MAX_BUNDLE_BATCH_SIZE))
             .filter_map(|packet_bundle| {
                 let r = packet_bundle.build_sanitized_bundle(
                     &bank,

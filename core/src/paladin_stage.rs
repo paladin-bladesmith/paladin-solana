@@ -47,6 +47,8 @@ impl PaladinStage {
         exit: Arc<AtomicBool>,
         paladin_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
     ) -> std::thread::JoinHandle<()> {
+        info!("Spawning PaladinStage");
+
         std::thread::Builder::new()
             .name("paladin-stage".to_string())
             .spawn(move || {
@@ -77,9 +79,10 @@ impl PaladinStage {
         };
 
         // Setup a TCP socket to receive batches of arb bundles.
-        let socket = tokio::net::TcpListener::bind(socket_endpoint)
+        let socket = tokio::net::TcpListener::bind(&socket_endpoint)
             .await
             .unwrap();
+        info!("Paladin stage socket bound; endpoint={socket_endpoint}");
 
         PaladinStage {
             exit,
