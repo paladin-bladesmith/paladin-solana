@@ -47,6 +47,7 @@ use {
 pub const UNPROCESSED_BUFFER_STEP_SIZE: usize = 64;
 /// Maximum numer of votes a single receive call will accept
 const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
+const MAX_BUNDLE_BATCH_SIZE: usize = 32;
 
 #[derive(Debug)]
 pub enum UnprocessedTransactionStorage {
@@ -1131,7 +1132,9 @@ impl BundleStorage {
     }
 
     pub(crate) fn max_receive_size(&self) -> usize {
-        self.unprocessed_bundle_storage.capacity() - self.unprocessed_bundle_storage.len()
+        self.unprocessed_bundle_storage.capacity()
+            - self.unprocessed_bundle_storage.len()
+            - self.cost_model_buffered_bundle_storage.len()
     }
 
     fn forward_option(&self) -> ForwardOption {
@@ -1277,7 +1280,11 @@ impl BundleStorage {
                             "bundle={} exceeds cost model, rebuffering",
                             sanitized_bundle.bundle_id
                         );
-                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                        // NB: Paladin continuously submits the N best arbs, so we don't want to
+                        // buffer failed bundles for too long.
+                        if sanitized_bundle.bundle_id != "P" {
+                            self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                        }
                     }
                     Err(BundleExecutionError::TransactionFailure(
                         LoadAndExecuteBundleError::ProcessingTimeExceeded(_),
@@ -1328,42 +1335,37 @@ impl BundleStorage {
 
         let start = Instant::now();
 
-        let mut sanitized_bundles = Vec::new();
-
-        // on new slot, drain anything that was buffered from last slot
+        // On new slot, re-queue cost model exceeded bundles to the front of the queue (but after
+        // paladin bundles).
         if bank.slot() != self.last_update_slot {
-            sanitized_bundles.extend(
-                self.cost_model_buffered_bundle_storage
-                    .drain(..)
-                    .filter_map(|packet_bundle| {
-                        let r = packet_bundle.build_sanitized_bundle(
-                            &bank,
-                            blacklisted_accounts,
-                            &mut error_metrics,
-                        );
-                        bundle_stage_leader_metrics
-                            .bundle_stage_metrics_tracker()
-                            .increment_sanitize_transaction_result(&r);
+            // Pull out the paladin bundles.
+            let paladin_bundles = self
+                .unprocessed_bundle_storage
+                .iter()
+                .position(|bundle| bundle.bundle_id() != "P")
+                .unwrap_or(0);
+            let paladin_bundles: Vec<_> = self
+                .unprocessed_bundle_storage
+                .drain(0..paladin_bundles)
+                .collect();
 
-                        match r {
-                            Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-                            Err(e) => {
-                                debug!(
-                                    "bundle id: {} error sanitizing: {}",
-                                    packet_bundle.bundle_id(),
-                                    e
-                                );
-                                None
-                            }
-                        }
-                    }),
-            );
+            // Push the cost model and paladin bundles (with paladin being at the front).
+            for bundle in self
+                .cost_model_buffered_bundle_storage
+                .drain(..)
+                .rev()
+                .chain(paladin_bundles)
+            {
+                self.unprocessed_bundle_storage.push_front(bundle);
+            }
 
             self.last_update_slot = bank.slot();
         }
 
-        sanitized_bundles.extend(self.unprocessed_bundle_storage.drain(..).filter_map(
-            |packet_bundle| {
+        let sanitized_bundles = self
+            .unprocessed_bundle_storage
+            .drain(..MAX_BUNDLE_BATCH_SIZE)
+            .filter_map(|packet_bundle| {
                 let r = packet_bundle.build_sanitized_bundle(
                     &bank,
                     blacklisted_accounts,
@@ -1383,8 +1385,8 @@ impl BundleStorage {
                         None
                     }
                 }
-            },
-        ));
+            })
+            .collect();
 
         let elapsed = start.elapsed().as_micros();
         bundle_stage_leader_metrics
