@@ -76,6 +76,13 @@ pub enum ThreadType {
     Bundles,
 }
 
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum BundleInsertType {
+    Jito,
+    Paladin,
+    Retry,
+}
+
 #[derive(Debug)]
 pub enum InsertPacketBatchSummary {
     VoteBatchInsertionMetrics(VoteBatchInsertionMetrics),
@@ -490,10 +497,11 @@ impl UnprocessedTransactionStorage {
     pub(crate) fn insert_bundles(
         &mut self,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+        bundle_insert_type: BundleInsertType,
     ) -> InsertPacketBundlesSummary {
         match self {
             UnprocessedTransactionStorage::BundleStorage(bundle_storage) => {
-                bundle_storage.insert_unprocessed_bundles(deserialized_bundles, true)
+                bundle_storage.insert_unprocessed_bundles(deserialized_bundles, bundle_insert_type)
             }
             UnprocessedTransactionStorage::LocalTransactionStorage(_)
             | UnprocessedTransactionStorage::VoteStorage(_) => {
@@ -1154,12 +1162,33 @@ impl BundleStorage {
     fn insert_bundles(
         deque: &mut VecDeque<ImmutableDeserializedBundle>,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-        push_back: bool,
+        bundle_insert_type: BundleInsertType,
     ) -> InsertPacketBundlesSummary {
         let mut num_bundles_inserted: usize = 0;
         let mut num_packets_inserted: usize = 0;
         let mut num_bundles_dropped: usize = 0;
         let mut num_packets_dropped: usize = 0;
+
+        if bundle_insert_type == BundleInsertType::Paladin {
+            // Drain any unprocessed paladin bundles.
+            while let Some(front) = deque.front() {
+                match front.bundle_id() {
+                    "P" => {
+                        deque.pop_front();
+                    }
+                    _ => break,
+                }
+            }
+
+            // If necessary, drop bundles to make room.
+            let available = deque.capacity() - deque.len();
+            let shortfall = deserialized_bundles.len().saturating_sub(available);
+            let start_idx = deque.len().saturating_sub(shortfall);
+            for dropped in deque.drain(start_idx..deque.len()) {
+                saturating_add_assign!(num_bundles_dropped, 1);
+                saturating_add_assign!(num_packets_dropped, dropped.len());
+            }
+        }
 
         for bundle in deserialized_bundles {
             if deque.capacity() == deque.len() {
@@ -1168,10 +1197,9 @@ impl BundleStorage {
             } else {
                 saturating_add_assign!(num_bundles_inserted, 1);
                 saturating_add_assign!(num_packets_inserted, bundle.len());
-                if push_back {
-                    deque.push_back(bundle);
-                } else {
-                    deque.push_front(bundle)
+                match bundle_insert_type {
+                    BundleInsertType::Paladin | BundleInsertType::Retry => deque.push_front(bundle),
+                    BundleInsertType::Jito => deque.push_back(bundle),
                 }
             }
         }
@@ -1195,7 +1223,7 @@ impl BundleStorage {
         Self::insert_bundles(
             &mut self.unprocessed_bundle_storage,
             deserialized_bundles,
-            false,
+            BundleInsertType::Retry,
         )
     }
 
@@ -1206,19 +1234,19 @@ impl BundleStorage {
         Self::insert_bundles(
             &mut self.cost_model_buffered_bundle_storage,
             deserialized_bundles,
-            true,
+            BundleInsertType::Jito,
         )
     }
 
     fn insert_unprocessed_bundles(
         &mut self,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-        push_back: bool,
+        bundle_insert_type: BundleInsertType,
     ) -> InsertPacketBundlesSummary {
         Self::insert_bundles(
             &mut self.unprocessed_bundle_storage,
             deserialized_bundles,
-            push_back,
+            bundle_insert_type,
         )
     }
 
@@ -1296,7 +1324,9 @@ impl BundleStorage {
                             "bundle={} processing time exceeded, rebuffering",
                             sanitized_bundle.bundle_id
                         );
-                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                        if sanitized_bundle.bundle_id != "P" {
+                            self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
+                        }
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
                         debug!(

@@ -1,7 +1,9 @@
 use {
     super::BundleStageLoopMetrics,
     crate::{
-        banking_stage::unprocessed_transaction_storage::UnprocessedTransactionStorage,
+        banking_stage::unprocessed_transaction_storage::{
+            BundleInsertType, UnprocessedTransactionStorage,
+        },
         bundle_stage::{
             bundle_packet_deserializer::{BundlePacketDeserializer, ReceiveBundleResults},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
@@ -47,6 +49,7 @@ impl BundleReceiver {
         unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        bundle_insert_type: BundleInsertType,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
             let recv_timeout = Self::get_receive_timeout(unprocessed_bundle_storage);
@@ -61,6 +64,7 @@ impl BundleReceiver {
                         bundle_stage_metrics,
                         // tracer_packet_stats,
                         bundle_stage_leader_metrics,
+                        bundle_insert_type,
                     );
                     recv_and_buffer_measure.stop();
                     bundle_stage_metrics.increment_receive_and_buffer_bundles_elapsed_us(
@@ -102,6 +106,7 @@ impl BundleReceiver {
         unprocessed_transaction_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        bundle_insert_type: BundleInsertType,
     ) {
         let bundle_count = deserialized_bundles.len();
         let packet_count: usize = deserialized_bundles.iter().map(|b| b.len()).sum();
@@ -122,6 +127,7 @@ impl BundleReceiver {
             deserialized_bundles,
             bundle_stage_leader_metrics,
             bundle_stage_stats,
+            bundle_insert_type,
         );
     }
 
@@ -130,10 +136,11 @@ impl BundleReceiver {
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         bundle_stage_stats: &mut BundleStageLoopMetrics,
+        bundle_insert_type: BundleInsertType,
     ) {
         if !deserialized_bundles.is_empty() {
-            let insert_bundles_summary =
-                unprocessed_transaction_storage.insert_bundles(deserialized_bundles);
+            let insert_bundles_summary = unprocessed_transaction_storage
+                .insert_bundles(deserialized_bundles, bundle_insert_type);
 
             bundle_stage_stats.increment_newly_buffered_bundles_count(
                 insert_bundles_summary.num_bundles_inserted as u64,
@@ -263,6 +270,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -318,6 +326,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -371,6 +380,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -441,6 +451,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -509,6 +520,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -560,6 +572,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -609,6 +622,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -654,6 +668,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -736,6 +751,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -760,6 +776,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
@@ -785,6 +802,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            BundleInsertType::Jito,
         );
         assert!(result.is_ok());
 
