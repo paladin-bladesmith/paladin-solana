@@ -5,7 +5,7 @@ use {
         banking_stage::{
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
-            unprocessed_transaction_storage::UnprocessedTransactionStorage,
+            unprocessed_transaction_storage::{BundleInsertType, UnprocessedTransactionStorage},
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
@@ -368,6 +368,7 @@ impl BundleStage {
                 &mut bundle_stage_metrics,
                 // TODO: Track paladin metrics separate for analysis.
                 &mut bundle_stage_leader_metrics,
+                BundleInsertType::Paladin,
             ) {
                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -377,6 +378,7 @@ impl BundleStage {
                 &mut unprocessed_bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
+                BundleInsertType::Jito,
             ) {
                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,

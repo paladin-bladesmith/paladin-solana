@@ -85,7 +85,7 @@ pub struct Tpu {
     tracer_thread_hdl: TracerThread,
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
-    paladin_stage: PaladinStage,
+    paladin_stage: std::thread::JoinHandle<()>,
     fetch_stage_manager: FetchStageManager,
     bundle_stage: BundleStage,
 }
@@ -255,7 +255,7 @@ impl Tpu {
         );
 
         let (paladin_sender, paladin_receiver) = unbounded();
-        let paladin_stage = PaladinStage::new(exit.clone(), paladin_sender);
+        let paladin_stage = PaladinStage::spawn(exit.clone(), paladin_sender);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
