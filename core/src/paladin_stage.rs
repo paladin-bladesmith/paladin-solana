@@ -17,7 +17,7 @@ use {
     tokio_util::codec::{Decoder, Framed},
 };
 
-const DEFAULT_ENDPOINT: &str = "127.0.0.1:4815";
+const DEFAULT_ENDPOINT: &str = "0.0.0.0:4815";
 
 const ERR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const STATS_REPORT_INTERVAL: Duration = Duration::from_secs(1);
