@@ -1285,10 +1285,26 @@ impl BundleStorage {
             .for_each(
                 |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed ok",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
                         // yippee
                     }
                     Err(BundleExecutionError::PohRecordError(e)) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with poh record error",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         // buffer the bundle to the front of the queue to be attempted next slot
                         debug!(
                             "bundle={} poh record error: {e:?}",
@@ -1298,12 +1314,28 @@ impl BundleStorage {
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::BankProcessingTimeLimitReached) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with BankProcessingTimeLimitReached",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         // buffer the bundle to the front of the queue to be attempted next slot
                         debug!("bundle={} bank processing done", sanitized_bundle.bundle_id);
                         rebuffered_bundles.push(deserialized_bundle);
                         is_slot_over = true;
                     }
                     Err(BundleExecutionError::ExceedsCostModel) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with ExceedsCostModel",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         // cost model buffered bundles contain most recent bundles at the front of the queue
                         debug!(
                             "bundle={} exceeds cost model, rebuffering",
@@ -1318,6 +1350,14 @@ impl BundleStorage {
                     Err(BundleExecutionError::TransactionFailure(
                         LoadAndExecuteBundleError::ProcessingTimeExceeded(_),
                     )) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with ProcessingTimeExceeded",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         // these are treated the same as exceeds cost model and are rebuferred to be completed
                         // at the beginning of the next slot
                         debug!(
@@ -1329,6 +1369,15 @@ impl BundleStorage {
                         }
                     }
                     Err(BundleExecutionError::TransactionFailure(e)) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with tx failure: {:?}",
+                                sanitized_bundle.transactions[0].signature().to_string(),
+                                e
+                            );
+                        }
                         debug!(
                             "bundle={} execution error: {:?}",
                             sanitized_bundle.bundle_id, e
@@ -1336,11 +1385,27 @@ impl BundleStorage {
                         // do nothing
                     }
                     Err(BundleExecutionError::TipError(e)) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with TipError",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         debug!("bundle={} tip error: {}", sanitized_bundle.bundle_id, e);
                         // Tip errors are _typically_ due to misconfiguration (except for poh record error, bank processing error, exceeds cost model)
                         // in order to prevent buffering too many bundles, we'll just drop the bundle
                     }
                     Err(BundleExecutionError::LockError) => {
+                        if sanitized_bundle.bundle_id == "P"
+                            && sanitized_bundle.transactions.len() == 1
+                        {
+                            println!(
+                                "bundle txid={} executed with LockError",
+                                sanitized_bundle.transactions[0].signature().to_string()
+                            );
+                        }
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }

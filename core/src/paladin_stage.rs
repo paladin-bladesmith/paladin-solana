@@ -156,10 +156,15 @@ impl PaladinStage {
         let bundles: Vec<_> = bundles
             .into_iter()
             .map(|packets| PacketBundle {
-                bundle_id: String::default(),
+                bundle_id: String::from("P"),
                 batch: PacketBatch::new(packets),
             })
             .collect();
+
+        println!("Received {} bundles", bundles.len());
+        for bundle in &bundles {
+            println!("Bundle ID: {:?}", bundle.bundle_id);
+        }
 
         // Bon voyage.
         self.bundle_tx.try_send(bundles).map_err(Into::into)

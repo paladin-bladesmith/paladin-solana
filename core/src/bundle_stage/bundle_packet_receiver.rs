@@ -58,6 +58,14 @@ impl BundleReceiver {
                 .receive_bundles(recv_timeout, unprocessed_bundle_storage.max_receive_size())
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
+                    if bundle_insert_type == BundleInsertType::Paladin {
+                        println!(
+                            "Paladin Receiver: Received {} bundles | Dropped {} bundles | Dropped {} packets",
+                            receive_bundle_results.deserialized_bundles.len(),
+                            receive_bundle_results.num_dropped_bundles,
+                            receive_bundle_results.num_dropped_packets
+                        );
+                    }
                     self.buffer_bundles(
                         receive_bundle_results,
                         unprocessed_bundle_storage,
