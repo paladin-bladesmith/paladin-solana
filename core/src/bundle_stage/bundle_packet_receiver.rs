@@ -88,6 +88,13 @@ impl BundleReceiver {
         result
     }
 
+    pub fn drain_receiver(&mut self) {
+        const MAX_RECEIVE_SIZE: usize = 1024;
+        let _ = self
+            .bundle_packet_deserializer
+            .receive_bundles(Duration::from_millis(0), MAX_RECEIVE_SIZE);
+    }
+
     fn get_receive_timeout(
         unprocessed_transaction_storage: &UnprocessedTransactionStorage,
     ) -> Duration {
@@ -100,7 +107,7 @@ impl BundleReceiver {
             Duration::from_millis(0)
         } else {
             // BundleStage should pick up a working_bank as fast as possible
-            Duration::from_millis(100)
+            Duration::from_millis(50)
         }
     }
 

@@ -341,11 +341,13 @@ impl BundleStage {
         let mut bundle_stage_metrics = BundleStageLoopMetrics::new(id);
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
+        let mut consume = false;
         while !exit.load(Ordering::Relaxed) {
             if !unprocessed_bundle_storage.is_empty()
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let (_, process_buffered_packets_time) = measure!(
+                let process_buffered_packets_time;
+                (consume, process_buffered_packets_time) = measure!(
                     Self::process_buffered_bundles(
                         &decision_maker,
                         &mut consumer,
@@ -360,18 +362,21 @@ impl BundleStage {
                 last_metrics_update = Instant::now();
             }
 
-            match paladin_receiver.receive_and_buffer_bundles(
-                // TODO: Should we store paladin TXs separately? This would let
-                // us prioritize paladin TXs over traditional bundles.
-                &mut unprocessed_bundle_storage,
-                // TODO: Track paladin metrics separate for analysis.
-                &mut bundle_stage_metrics,
-                // TODO: Track paladin metrics separate for analysis.
-                &mut bundle_stage_leader_metrics,
-                BundleInsertType::Paladin,
-            ) {
-                Ok(_) | Err(RecvTimeoutError::Timeout) => (),
-                Err(RecvTimeoutError::Disconnected) => break,
+            match consume {
+                true => match paladin_receiver.receive_and_buffer_bundles(
+                    // TODO: Should we store paladin TXs separately? This would let
+                    // us prioritize paladin TXs over traditional bundles.
+                    &mut unprocessed_bundle_storage,
+                    // TODO: Track paladin metrics separate for analysis.
+                    &mut bundle_stage_metrics,
+                    // TODO: Track paladin metrics separate for analysis.
+                    &mut bundle_stage_leader_metrics,
+                    BundleInsertType::Paladin,
+                ) {
+                    Ok(_) | Err(RecvTimeoutError::Timeout) => (),
+                    Err(RecvTimeoutError::Disconnected) => break,
+                },
+                false => paladin_receiver.drain_receiver(),
             }
 
             match bundle_receiver.receive_and_buffer_bundles(
@@ -407,7 +412,7 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
         unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-    ) {
+    ) -> bool {
         let (decision, make_decision_time) =
             measure!(decision_maker.make_consume_or_forward_decision());
 
@@ -416,6 +421,7 @@ impl BundleStage {
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time.as_us());
+        let consume = matches!(decision, BufferedPacketsDecision::Consume(_));
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
@@ -459,5 +465,7 @@ impl BundleStage {
                     .apply_action(metrics_action, banking_stage_metrics_action);
             }
         }
+
+        consume
     }
 }
