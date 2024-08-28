@@ -12,7 +12,8 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
-        paladin_stage::PaladinStage,
+        paladin_bundle_stage::PaladinBundleStage,
+        paladin_socket::PaladinSocket,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -85,9 +86,10 @@ pub struct Tpu {
     tracer_thread_hdl: TracerThread,
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
-    paladin_stage: std::thread::JoinHandle<()>,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    jito_bundle_stage: BundleStage,
+    paladin_socket: std::thread::JoinHandle<()>,
+    paladin_bundle_stage: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -255,7 +257,7 @@ impl Tpu {
         );
 
         let (paladin_sender, paladin_receiver) = unbounded();
-        let paladin_stage = PaladinStage::spawn(exit.clone(), paladin_sender);
+        let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
@@ -317,10 +319,10 @@ impl Tpu {
             bundle_account_locker.clone(),
         );
 
-        let bundle_stage = BundleStage::new(
+        let jito_bundle_stage = BundleStage::new(
             cluster_info,
             poh_recorder,
-            (bundle_receiver, paladin_receiver),
+            bundle_receiver,
             transaction_status_sender,
             replay_vote_sender,
             log_messages_bytes_limit,
@@ -332,6 +334,7 @@ impl Tpu {
             bank_forks.clone(),
             prioritization_fee_cache,
         );
+        let paladin_bundle_stage = PaladinBundleStage::spawn(exit.clone(), paladin_receiver);
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -374,10 +377,11 @@ impl Tpu {
                 staked_nodes_updater_service,
                 tracer_thread_hdl,
                 block_engine_stage,
-                paladin_stage,
+                paladin_socket,
                 relayer_stage,
                 fetch_stage_manager,
-                bundle_stage,
+                jito_bundle_stage,
+                paladin_bundle_stage,
             },
             vec![key_updater, forwards_key_updater],
         )
@@ -393,11 +397,12 @@ impl Tpu {
             self.staked_nodes_updater_service.join(),
             self.tpu_quic_t.join(),
             self.tpu_forwards_quic_t.join(),
-            self.bundle_stage.join(),
+            self.jito_bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
-            self.paladin_stage.join(),
             self.fetch_stage_manager.join(),
+            self.paladin_socket.join(),
+            self.paladin_bundle_stage.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

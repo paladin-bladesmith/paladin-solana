@@ -5,7 +5,7 @@ use {
         banking_stage::{
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
-            unprocessed_transaction_storage::{BundleInsertType, UnprocessedTransactionStorage},
+            unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
@@ -200,10 +200,7 @@ impl BundleStage {
     pub fn new(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
-        (bundle_receiver, paladin_receiver): (
-            Receiver<Vec<PacketBundle>>,
-            Receiver<Vec<PacketBundle>>,
-        ),
+        bundle_receiver: Receiver<Vec<PacketBundle>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
@@ -218,7 +215,7 @@ impl BundleStage {
         Self::start_bundle_thread(
             cluster_info,
             poh_recorder,
-            (bundle_receiver, paladin_receiver),
+            bundle_receiver,
             transaction_status_sender,
             replay_vote_sender,
             log_messages_bytes_limit,
@@ -241,10 +238,7 @@ impl BundleStage {
     fn start_bundle_thread(
         cluster_info: &Arc<ClusterInfo>,
         poh_recorder: &Arc<RwLock<PohRecorder>>,
-        (bundle_receiver, paladin_receiver): (
-            Receiver<Vec<PacketBundle>>,
-            Receiver<Vec<PacketBundle>>,
-        ),
+        bundle_receiver: Receiver<Vec<PacketBundle>>,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_message_bytes_limit: Option<usize>,
@@ -261,14 +255,8 @@ impl BundleStage {
         let poh_recorder = poh_recorder.clone();
         let cluster_info = cluster_info.clone();
 
-        let mut bundle_receiver = BundleReceiver::new(
-            BUNDLE_STAGE_ID,
-            bundle_receiver,
-            bank_forks.clone(),
-            Some(5),
-        );
-        let mut paladin_receiver =
-            BundleReceiver::new(BUNDLE_STAGE_ID, paladin_receiver, bank_forks, Some(5));
+        let mut bundle_receiver =
+            BundleReceiver::new(BUNDLE_STAGE_ID, bundle_receiver, bank_forks, Some(5));
 
         let committer = Committer::new(
             transaction_status_sender,
@@ -314,7 +302,7 @@ impl BundleStage {
             .name("solBundleStgTx".to_string())
             .spawn(move || {
                 Self::process_loop(
-                    (&mut bundle_receiver, &mut paladin_receiver),
+                    &mut bundle_receiver,
                     decision_maker,
                     consumer,
                     BUNDLE_STAGE_ID,
@@ -329,7 +317,7 @@ impl BundleStage {
 
     #[allow(clippy::too_many_arguments)]
     fn process_loop(
-        (bundle_receiver, paladin_receiver): (&mut BundleReceiver, &mut BundleReceiver),
+        bundle_receiver: &mut BundleReceiver,
         decision_maker: DecisionMaker,
         mut consumer: BundleConsumer,
         id: u32,
@@ -341,13 +329,11 @@ impl BundleStage {
         let mut bundle_stage_metrics = BundleStageLoopMetrics::new(id);
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
-        let mut consume = false;
         while !exit.load(Ordering::Relaxed) {
             if !unprocessed_bundle_storage.is_empty()
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
             {
-                let process_buffered_packets_time;
-                (consume, process_buffered_packets_time) = measure!(
+                let (_, process_buffered_packets_time) = measure!(
                     Self::process_buffered_bundles(
                         &decision_maker,
                         &mut consumer,
@@ -362,28 +348,10 @@ impl BundleStage {
                 last_metrics_update = Instant::now();
             }
 
-            match consume {
-                true => match paladin_receiver.receive_and_buffer_bundles(
-                    // TODO: Should we store paladin TXs separately? This would let
-                    // us prioritize paladin TXs over traditional bundles.
-                    &mut unprocessed_bundle_storage,
-                    // TODO: Track paladin metrics separate for analysis.
-                    &mut bundle_stage_metrics,
-                    // TODO: Track paladin metrics separate for analysis.
-                    &mut bundle_stage_leader_metrics,
-                    BundleInsertType::Paladin,
-                ) {
-                    Ok(_) | Err(RecvTimeoutError::Timeout) => (),
-                    Err(RecvTimeoutError::Disconnected) => break,
-                },
-                false => paladin_receiver.drain_receiver(),
-            }
-
             match bundle_receiver.receive_and_buffer_bundles(
                 &mut unprocessed_bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
-                BundleInsertType::Jito,
             ) {
                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,
@@ -412,7 +380,7 @@ impl BundleStage {
         consumer: &mut BundleConsumer,
         unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-    ) -> bool {
+    ) {
         let (decision, make_decision_time) =
             measure!(decision_maker.make_consume_or_forward_decision());
 
@@ -421,7 +389,6 @@ impl BundleStage {
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .increment_make_decision_us(make_decision_time.as_us());
-        let consume = matches!(decision, BufferedPacketsDecision::Consume(_));
 
         match decision {
             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
@@ -465,7 +432,5 @@ impl BundleStage {
                     .apply_action(metrics_action, banking_stage_metrics_action);
             }
         }
-
-        consume
     }
 }

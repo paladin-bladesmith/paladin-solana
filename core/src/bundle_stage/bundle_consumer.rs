@@ -781,7 +781,6 @@ impl BundleConsumer {
 mod tests {
     use {
         crate::{
-            banking_stage::unprocessed_transaction_storage::BundleInsertType,
             bundle_stage::{
                 bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
                 bundle_packet_deserializer::BundlePacketDeserializer,
@@ -1114,8 +1113,7 @@ mod tests {
             )
             .unwrap();
 
-        let summary =
-            bundle_storage.insert_bundles(vec![deserialized_bundle], BundleInsertType::Jito);
+        let summary = bundle_storage.insert_bundles(vec![deserialized_bundle]);
         assert_eq!(
             summary.num_packets_inserted,
             sanitized_bundle.transactions.len()
@@ -1275,8 +1273,7 @@ mod tests {
             )
             .unwrap();
 
-        let summary =
-            bundle_storage.insert_bundles(vec![deserialized_bundle], BundleInsertType::Jito);
+        let summary = bundle_storage.insert_bundles(vec![deserialized_bundle]);
         assert_eq!(summary.num_bundles_inserted, 1);
         assert_eq!(summary.num_packets_inserted, 1);
         assert_eq!(summary.num_bundles_dropped, 0);

@@ -30,34 +30,34 @@ enum PaladinError {
     Crossbeam(#[from] TrySendError<Vec<PacketBundle>>),
 }
 
-pub(crate) struct PaladinStage {
+pub(crate) struct PaladinSocket {
     exit: Arc<AtomicBool>,
     bundle_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
 
     socket: TcpListener,
     stream: Option<Framed<TcpStream, TransactionStreamCodec>>,
 
-    stats: PaladinStageStats,
+    stats: PaladinSocketStats,
     stats_interval: tokio::time::Interval,
     stats_creation: Instant,
 }
 
-impl PaladinStage {
+impl PaladinSocket {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
         paladin_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
     ) -> std::thread::JoinHandle<()> {
-        info!("Spawning PaladinStage");
+        info!("Spawning PaladinSocket");
 
         std::thread::Builder::new()
-            .name("paladin-stage".to_string())
+            .name("paladin-socket".to_string())
             .spawn(move || {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
                     .unwrap()
                     .block_on(async {
-                        let worker = PaladinStage::new(exit, paladin_tx).await;
+                        let worker = PaladinSocket::new(exit, paladin_tx).await;
                         worker.run().await;
                     })
             })
@@ -84,7 +84,7 @@ impl PaladinStage {
             .unwrap();
         info!("Paladin stage socket bound; endpoint={socket_endpoint}");
 
-        PaladinStage {
+        PaladinSocket {
             exit,
             bundle_tx: paladin_tx,
 
@@ -92,7 +92,7 @@ impl PaladinStage {
             stream: None,
             stats_interval: tokio::time::interval(STATS_REPORT_INTERVAL),
 
-            stats: PaladinStageStats::default(),
+            stats: PaladinSocketStats::default(),
             stats_creation: Instant::now(),
         }
     }
@@ -135,7 +135,7 @@ impl PaladinStage {
                     let now = Instant::now();
                     self.stats.report(now.duration_since(self.stats_creation));
 
-                    self.stats = PaladinStageStats::default();
+                    self.stats = PaladinSocketStats::default();
                     self.stats_creation = now;
 
                     if self.exit.load(Ordering::Relaxed) {
@@ -228,11 +228,11 @@ enum TransactionStreamError {
 }
 
 #[derive(Default)]
-struct PaladinStageStats {
+struct PaladinSocketStats {
     num_paladin_bundles: u64,
 }
 
-impl PaladinStageStats {
+impl PaladinSocketStats {
     pub(crate) fn report(&self, age: Duration) {
         datapoint_info!(
             "paladin_stage-stats",
