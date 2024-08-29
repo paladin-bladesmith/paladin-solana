@@ -334,7 +334,11 @@ impl Tpu {
             bank_forks.clone(),
             prioritization_fee_cache,
         );
-        let paladin_bundle_stage = PaladinBundleStage::spawn(exit.clone(), paladin_receiver);
+        let paladin_bundle_stage = PaladinBundleStage::spawn(
+            exit.clone(),
+            paladin_receiver,
+            (cluster_info, poh_recorder.clone()),
+        );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
