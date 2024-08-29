@@ -327,10 +327,11 @@ impl BundleConsumer {
             qos_service,
             log_messages_bytes_limit,
             max_bundle_retry_duration,
-            reserved_space,
+            Some(reserved_space),
             locked_bundle.sanitized_bundle(),
             bank_start,
             bundle_stage_leader_metrics,
+            true,
         )?;
 
         Ok(())
@@ -377,10 +378,11 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                reserved_space,
+                Some(reserved_space),
                 locked_init_tip_programs_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                true,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -430,10 +432,11 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                reserved_space,
+                Some(reserved_space),
                 locked_tip_crank_bundle.sanitized_bundle(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                true,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -492,6 +495,7 @@ impl BundleConsumer {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn update_qos_and_execute_record_commit_bundle(
         committer: &Committer,
         recorder: &TransactionRecorder,
@@ -502,6 +506,7 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        fifo: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -509,17 +514,18 @@ impl BundleConsumer {
             sanitized_bundle.transactions.len()
         );
 
-        if let Some(reserved_space) = reserved_space {
-            let (
-                (transaction_qos_cost_results, _cost_model_throttled_transactions_count),
-                cost_model_elapsed_us,
-            ) = measure_us!(Self::reserve_bundle_blockspace(
+        let (
+            (transaction_qos_cost_results, _cost_model_throttled_transactions_count),
+            cost_model_elapsed_us,
+        ) = match reserved_space {
+            Some(reserved_space) => measure_us!(Self::reserve_bundle_blockspace(
                 qos_service,
                 reserved_space,
                 sanitized_bundle,
                 &bank_start.working_bank
-            )?);
-        }
+            )?),
+            None => ((vec![], 0), 0),
+        };
 
         debug!(
             "bundle: {} executing, recording, and committing",
@@ -533,6 +539,7 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             sanitized_bundle,
             bank_start,
+            fifo,
         ));
 
         bundle_stage_leader_metrics
@@ -617,6 +624,7 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
+        fifo: bool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -638,6 +646,7 @@ impl BundleConsumer {
             None,
             &default_accounts,
             &default_accounts,
+            fifo,
         );
 
         let execution_metrics = bundle_execution_results.metrics();

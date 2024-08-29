@@ -103,6 +103,9 @@ pub enum LoadAndExecuteBundleError {
 
     #[error("Invalid pre or post accounts")]
     InvalidPreOrPostAccounts,
+
+    #[error("Account was in use and transaction was not FIFO")]
+    AccountInUse,
 }
 
 pub struct BundleTransactionsOutput<'a> {
@@ -241,6 +244,7 @@ pub fn load_and_execute_bundle<'a>(
     // will use AccountsOverride + Bank
     pre_execution_accounts: &[Option<Vec<Pubkey>>],
     post_execution_accounts: &[Option<Vec<Pubkey>>],
+    fifo: bool,
 ) -> LoadAndExecuteBundleOutput<'a> {
     if pre_execution_accounts.len() != post_execution_accounts.len()
         || post_execution_accounts.len() != bundle.transactions.len()
@@ -296,6 +300,15 @@ pub fn load_and_execute_bundle<'a>(
         } else {
             bank.prepare_sequential_sanitized_batch_with_results(chunk)
         };
+
+        // If this is not a fifo batch, then bail on any failed locks.
+        if !fifo && batch.lock_results().iter().any(|lock| lock.is_err()) {
+            return LoadAndExecuteBundleOutput {
+                bundle_transaction_results,
+                metrics,
+                result: Err(LoadAndExecuteBundleError::AccountInUse),
+            };
+        }
 
         debug!(
             "bundle: {} batch num locks ok: {}",
@@ -594,6 +607,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
 
         // make sure the bundle succeeded
@@ -671,6 +685,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
 
         assert_eq!(execution_result.bundle_transaction_results.len(), 0);
@@ -680,7 +695,8 @@ mod tests {
         match execution_result.result.unwrap_err() {
             LoadAndExecuteBundleError::ProcessingTimeExceeded(_)
             | LoadAndExecuteBundleError::LockError { .. }
-            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
+            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts
+            | LoadAndExecuteBundleError::AccountInUse => {
                 unreachable!();
             }
             LoadAndExecuteBundleError::TransactionError {
@@ -748,6 +764,7 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
 
         assert!(execution_result.result.is_ok());
@@ -972,11 +989,13 @@ mod tests {
             None,
             &default_accounts,
             &default_accounts,
+            true,
         );
         match execution_result.result.as_ref().unwrap_err() {
             LoadAndExecuteBundleError::ProcessingTimeExceeded(_)
             | LoadAndExecuteBundleError::LockError { .. }
-            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
+            | LoadAndExecuteBundleError::InvalidPreOrPostAccounts
+            | LoadAndExecuteBundleError::AccountInUse => {
                 unreachable!();
             }
 
@@ -1033,6 +1052,7 @@ mod tests {
             None,
             &default,
             &default,
+            true,
         );
         assert_matches!(
             result.result,
@@ -1078,6 +1098,7 @@ mod tests {
             None,
             &default,
             &default,
+            true,
         );
         assert!(result.result.is_ok());
     }
@@ -1136,6 +1157,7 @@ mod tests {
             None,
             &default,
             &default,
+            true,
         );
         assert!(result.result.is_ok());
 
@@ -1171,6 +1193,7 @@ mod tests {
             None,
             &PRE_EXECUTION_ACCOUNTS,
             &vec![None; bundle.transactions.len()],
+            true,
         );
         assert_matches!(
             result.result,
@@ -1191,6 +1214,7 @@ mod tests {
             None,
             &vec![None; bundle.transactions.len()],
             &PRE_EXECUTION_ACCOUNTS,
+            true,
         );
         assert_matches!(
             result.result,

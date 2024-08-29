@@ -323,12 +323,12 @@ impl Tpu {
             cluster_info,
             poh_recorder,
             bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
+            transaction_status_sender.clone(),
+            replay_vote_sender.clone(),
             log_messages_bytes_limit,
             exit.clone(),
-            tip_manager,
-            bundle_account_locker,
+            tip_manager.clone(),
+            bundle_account_locker.clone(),
             &block_builder_fee_info,
             preallocated_bundle_cost,
             bank_forks.clone(),
@@ -337,7 +337,13 @@ impl Tpu {
         let paladin_bundle_stage = PaladinBundleStage::spawn(
             exit.clone(),
             paladin_receiver,
-            (cluster_info, poh_recorder.clone()),
+            cluster_info.clone(),
+            poh_recorder.clone(),
+            transaction_status_sender,
+            replay_vote_sender,
+            log_messages_bytes_limit,
+            bundle_account_locker,
+            prioritization_fee_cache.clone(),
         );
 
         let (entry_receiver, tpu_entry_notifier) =

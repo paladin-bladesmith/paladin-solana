@@ -1,10 +1,7 @@
 use {
     crate::{
         banking_stage::{
-            committer::CommitTransactionDetails,
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
-            leader_slot_metrics::ProcessTransactionsSummary,
-            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
             qos_service::QosService,
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
@@ -14,41 +11,31 @@ use {
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             committer::Committer,
         },
-        consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
-        proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::TipManager,
     },
     crossbeam_channel::Receiver,
-    solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
-    solana_bundle::{
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
-        BundleExecutionError, BundleExecutionResult, TipError,
-    },
-    solana_cost_model::transaction_cost::TransactionCost,
+    solana_bundle::BundleExecutionError,
     solana_gossip::cluster_info::ClusterInfo,
+    solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::{measure, measure_us},
-    solana_poh::poh_recorder::{
-        BankStart, PohRecorder, RecordTransactionsSummary, TransactionRecorder,
-    },
-    solana_runtime::bank::Bank,
-    solana_sdk::{
-        bundle::SanitizedBundle,
-        clock::{Slot, MAX_PROCESSING_AGE},
-        feature_set,
-        pubkey::Pubkey,
-        transaction::{self},
-    },
+    solana_poh::poh_recorder::{BankStart, PohRecorder, TransactionRecorder},
+    solana_runtime::{bank::Bank, prioritization_fee_cache::PrioritizationFeeCache},
+    solana_sdk::bundle::SanitizedBundle,
+    solana_vote::vote_sender_types::ReplayVoteSender,
     std::{
         collections::{HashSet, VecDeque},
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, RwLock,
         },
-        time::{Duration, Instant},
+        time::Duration,
     },
 };
+
+const PALADIN_BUNDLE_STAGE_ID: u32 = 2000;
+const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
 pub(crate) struct PaladinBundleStage {
     exit: Arc<AtomicBool>,
@@ -57,28 +44,36 @@ pub(crate) struct PaladinBundleStage {
 
     decision_maker: DecisionMaker,
 
-    bundles: Vec<PacketBundle>,
+    bundles: Vec<ImmutableDeserializedBundle>,
     bundle_stage_leader_metrics: BundleStageLeaderMetrics,
     bundle_account_locker: BundleAccountLocker,
-    tip_manager: TipManager,
-    cluster_info: Arc<ClusterInfo>,
-    block_builder_fee_info: BlockBuilderFeeInfo,
     committer: Committer,
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
-    max_bundle_retry_duration: Duration,
 }
 
 impl PaladinBundleStage {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
         paladin_rx: Receiver<Vec<PacketBundle>>,
-        (cluster_info, poh_recorder): (Arc<ClusterInfo>, Arc<RwLock<PohRecorder>>),
+        cluster_info: Arc<ClusterInfo>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
+        transaction_status_sender: Option<TransactionStatusSender>,
+        replay_vote_sender: ReplayVoteSender,
+        log_messages_bytes_limit: Option<usize>,
+        bundle_account_locker: BundleAccountLocker,
+        prioritization_fee_cache: Arc<PrioritizationFeeCache>,
     ) -> std::thread::JoinHandle<()> {
         info!("Spawning PaladinBundleStage");
 
+        let transaction_recorder = poh_recorder.read().unwrap().new_recorder();
         let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder);
+        let committer = Committer::new(
+            transaction_status_sender,
+            replay_vote_sender,
+            prioritization_fee_cache,
+        );
 
         std::thread::Builder::new()
             .name("paladin-bundle-stage".to_string())
@@ -91,6 +86,14 @@ impl PaladinBundleStage {
                     decision_maker,
 
                     bundles: Vec::default(),
+                    bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
+                        PALADIN_BUNDLE_STAGE_ID,
+                    ),
+                    bundle_account_locker,
+                    committer,
+                    transaction_recorder,
+                    qos_service: QosService::new(PALADIN_BUNDLE_STAGE_ID),
+                    log_messages_bytes_limit,
                 }
                 .run()
             })
@@ -104,15 +107,32 @@ impl PaladinBundleStage {
                 true => Duration::from_millis(100),
                 false => Duration::from_millis(0),
             };
-            match self.paladin_rx.recv_timeout(timeout) {
-                Ok(bundles) => self.bundles = bundles,
+            let mut bundles = match self.paladin_rx.recv_timeout(timeout) {
+                Ok(bundles) => bundles,
                 Err(_) => continue,
             };
 
             // Drain the socket channel.
-            while let Ok(bundles) = self.paladin_rx.try_recv() {
-                self.bundles = bundles;
+            while let Ok(coalesce) = self.paladin_rx.try_recv() {
+                bundles = coalesce;
             }
+
+            // Update our bundle storage.
+            self.bundles = bundles
+                .into_iter()
+                .filter_map(|mut bundle| {
+                    match ImmutableDeserializedBundle::new(
+                        &mut bundle,
+                        Some(MAX_PACKETS_PER_BUNDLE),
+                    ) {
+                        Ok(bundle) => Some(bundle),
+                        Err(err) => {
+                            warn!("Failed to convert bundle; err={err}");
+                            None
+                        }
+                    }
+                })
+                .collect();
 
             // Process any bundles we have.
             let decision = self.decision_maker.make_consume_or_forward_decision();
@@ -123,54 +143,44 @@ impl PaladinBundleStage {
     }
 
     fn consume_buffered_bundles(&mut self, bank_start: &BankStart) {
-        // Drain all bundles.
-        let bundles = self
-            .bundles
-            .drain(..)
-            .filter_map(|mut bundle| {
-                match ImmutableDeserializedBundle::new(
-                    &mut bundle,
-                    Some(todo!("Find where this is set")),
-                ) {
-                    Ok(bundle) => Some(bundle),
-                    Err(err) => {
-                        warn!("Failed to convert bundle; err={err}");
-                        None
-                    }
-                }
-            })
-            .collect();
+        // Drain our latest bundles.
         let mut unprocessed_transaction_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            bundles,
+            self.bundles.drain(..).collect(),
             VecDeque::with_capacity(self.bundles.len()),
         );
 
-        // Process bundles.
-        unprocessed_transaction_storage.process_bundles(
+        // Process any bundles we can.
+        let _reached_end_of_slot = unprocessed_transaction_storage.process_bundles(
             bank_start.working_bank.clone(),
             &mut self.bundle_stage_leader_metrics,
             &HashSet::default(),
             |bundles, bundle_stage_leader_metrics| {
                 Self::do_process_bundles(
                     &self.bundle_account_locker,
-                    &self.cluster_info,
                     &self.committer,
                     &self.transaction_recorder,
                     &self.qos_service,
                     &self.log_messages_bytes_limit,
-                    self.max_bundle_retry_duration,
+                    MAX_BUNDLE_RETRY_DURATION,
                     bundles,
                     bank_start,
                     bundle_stage_leader_metrics,
                 )
             },
         );
+
+        // Re-buffer any unprocessed bundles.
+        let mut bundle_storage = match unprocessed_transaction_storage {
+            UnprocessedTransactionStorage::BundleStorage(storage) => storage,
+            _ => unreachable!(),
+        };
+        self.bundles
+            .extend(bundle_storage.unprocessed_bundle_storage.drain(..));
     }
 
     #[allow(clippy::too_many_arguments)]
     fn do_process_bundles(
         bundle_account_locker: &BundleAccountLocker,
-        cluster_info: &Arc<ClusterInfo>,
         committer: &Committer,
         recorder: &TransactionRecorder,
         qos_service: &QosService,
@@ -204,8 +214,6 @@ impl PaladinBundleStage {
             .map(|r| match r {
                 Ok(locked_bundle) => {
                     let (r, measure) = measure_us!(Self::process_bundle(
-                        bundle_account_locker,
-                        cluster_info,
                         committer,
                         recorder,
                         qos_service,
@@ -240,8 +248,6 @@ impl PaladinBundleStage {
 
     #[allow(clippy::too_many_arguments)]
     fn process_bundle(
-        bundle_account_locker: &BundleAccountLocker,
-        cluster_info: &Arc<ClusterInfo>,
         committer: &Committer,
         recorder: &TransactionRecorder,
         qos_service: &QosService,
@@ -268,6 +274,7 @@ impl PaladinBundleStage {
             locked_bundle.sanitized_bundle(),
             bank_start,
             bundle_stage_leader_metrics,
+            false,
         )?;
 
         Ok(())

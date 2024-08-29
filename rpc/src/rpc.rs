@@ -4093,6 +4093,7 @@ pub mod rpc_full {
                 None,
                 &pre_execution_accounts,
                 &post_execution_accounts,
+                true,
             );
 
             // only return error if irrecoverable (timeout or tx malformed)
@@ -4119,6 +4120,7 @@ pub mod rpc_full {
                         signature, transaction_error
                     )));
                 }
+                Err(LoadAndExecuteBundleError::AccountInUse) => unreachable!(),
             }
 
             let rpc_bundle_result =
