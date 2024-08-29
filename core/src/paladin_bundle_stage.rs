@@ -143,9 +143,14 @@ impl PaladinBundleStage {
                 .collect();
 
             // Process any bundles we have.
-            let decision = self.decision_maker.make_consume_or_forward_decision();
-            if let BufferedPacketsDecision::Consume(bank_start) = decision {
-                self.consume_buffered_bundles(&bank_start);
+            while self.paladin_rx.is_empty() {
+                let decision = self.decision_maker.make_consume_or_forward_decision();
+                match decision {
+                    BufferedPacketsDecision::Consume(bank_start) => {
+                        self.consume_buffered_bundles(&bank_start)
+                    }
+                    _ => break,
+                }
             }
         }
     }
