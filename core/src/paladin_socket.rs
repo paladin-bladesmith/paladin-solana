@@ -36,6 +36,7 @@ pub(crate) struct PaladinSocket {
 
     socket: TcpListener,
     stream: Option<Framed<TcpStream, TransactionStreamCodec>>,
+    bundle_id: u16,
 
     stats: PaladinSocketStats,
     stats_interval: tokio::time::Interval,
@@ -90,8 +91,9 @@ impl PaladinSocket {
 
             socket,
             stream: None,
-            stats_interval: tokio::time::interval(STATS_REPORT_INTERVAL),
+            bundle_id: 0,
 
+            stats_interval: tokio::time::interval(STATS_REPORT_INTERVAL),
             stats: PaladinSocketStats::default(),
             stats_creation: Instant::now(),
         }
@@ -156,7 +158,7 @@ impl PaladinSocket {
         let bundles: Vec<_> = bundles
             .into_iter()
             .map(|packets| PacketBundle {
-                bundle_id: String::from("P"),
+                bundle_id: format!("P{}", self.next_id()),
                 batch: PacketBatch::new(packets),
             })
             .collect();
@@ -168,6 +170,11 @@ impl PaladinSocket {
 
         // Bon voyage.
         self.bundle_tx.try_send(bundles).map_err(Into::into)
+    }
+
+    fn next_id(&mut self) -> u16 {
+        self.bundle_id = self.bundle_id.wrapping_add(1);
+        self.bundle_id
     }
 }
 
