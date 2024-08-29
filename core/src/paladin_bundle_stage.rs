@@ -15,6 +15,7 @@ use {
         packet_bundle::PacketBundle,
     },
     crossbeam_channel::Receiver,
+    solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::BundleExecutionError,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
@@ -101,6 +102,12 @@ impl PaladinBundleStage {
     }
 
     fn run(mut self) {
+        // This state represents our current locks which is intentionally kept
+        // separate to our thread struct.
+        let bundle_account_locker = self.bundle_account_locker.clone();
+        let mut sanitized_bundles = Vec::default();
+        let mut locked_bundles = Vec::default();
+
         while !self.exit.load(Ordering::Relaxed) {
             // Wait for initial bundles.
             let timeout = match self.bundles.is_empty() {
@@ -142,15 +149,51 @@ impl PaladinBundleStage {
                 })
                 .collect();
 
-            // Process any bundles we have.
+            // Update our locks if bank has started.
+            let mut decision = self.decision_maker.make_consume_or_forward_decision();
+            if let BufferedPacketsDecision::Consume(bank_start) = &decision {
+                // Drop previous locks.
+                drop(locked_bundles);
+                drop(sanitized_bundles);
+
+                // Compute new sanitized bundles.
+                sanitized_bundles = self
+                    .bundles
+                    .iter()
+                    .filter_map(|immutable_bundle| {
+                        match immutable_bundle.build_sanitized_bundle(
+                            &bank_start.working_bank,
+                            &HashSet::default(),
+                            &mut TransactionErrorMetrics::default(),
+                        ) {
+                            Ok(sanitized_bundle) => Some(sanitized_bundle),
+                            Err(err) => {
+                                warn!("Failed to deserialize paladin bundle; err={err}");
+
+                                None
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                // Take new locks.
+                locked_bundles = sanitized_bundles
+                    .iter()
+                    .map(|sanitized_bundle| {
+                        bundle_account_locker
+                            .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                    })
+                    .collect::<Vec<_>>();
+            }
             while self.paladin_rx.is_empty() {
-                let decision = self.decision_maker.make_consume_or_forward_decision();
                 match decision {
                     BufferedPacketsDecision::Consume(bank_start) => {
                         self.consume_buffered_bundles(&bank_start)
                     }
                     _ => break,
                 }
+
+                decision = self.decision_maker.make_consume_or_forward_decision();
             }
         }
     }
