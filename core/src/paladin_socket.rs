@@ -32,7 +32,7 @@ enum PaladinError {
 
 pub(crate) struct PaladinSocket {
     exit: Arc<AtomicBool>,
-    bundle_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+    paladin_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
 
     socket: TcpListener,
     stream: Option<Framed<TcpStream, TransactionStreamCodec>>,
@@ -87,7 +87,7 @@ impl PaladinSocket {
 
         PaladinSocket {
             exit,
-            bundle_tx: paladin_tx,
+            paladin_tx,
 
             socket,
             stream: None,
@@ -149,6 +149,7 @@ impl PaladinSocket {
     }
 
     fn on_bundles(&mut self, bundles: Vec<Vec<Packet>>) -> Result<(), PaladinError> {
+        debug!("Received bundles; count={}", bundles.len());
         self.stats.num_paladin_bundles = self
             .stats
             .num_paladin_bundles
@@ -164,7 +165,7 @@ impl PaladinSocket {
             .collect();
 
         // Bon voyage.
-        self.bundle_tx.try_send(bundles).map_err(Into::into)
+        self.paladin_tx.try_send(bundles).map_err(Into::into)
     }
 
     fn next_id(&mut self) -> u16 {
