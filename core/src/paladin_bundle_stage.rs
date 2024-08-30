@@ -124,14 +124,6 @@ impl PaladinBundleStage {
                 bundles = coalesce;
             }
 
-            // TEMP: Remove.
-            for bundle in &self.bundles {
-                println!("DROP: {}", bundle.bundle_id());
-            }
-            for bundle in &bundles {
-                println!("RECV: {}", bundle.bundle_id);
-            }
-
             // Update our bundle storage.
             self.bundles = bundles
                 .into_iter()

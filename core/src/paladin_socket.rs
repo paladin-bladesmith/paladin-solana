@@ -163,11 +163,6 @@ impl PaladinSocket {
             })
             .collect();
 
-        println!("Received {} bundles", bundles.len());
-        for bundle in &bundles {
-            println!("Bundle ID: {:?}", bundle.bundle_id);
-        }
-
         // Bon voyage.
         self.bundle_tx.try_send(bundles).map_err(Into::into)
     }

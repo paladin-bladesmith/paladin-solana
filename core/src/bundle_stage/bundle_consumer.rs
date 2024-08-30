@@ -672,14 +672,6 @@ impl BundleConsumer {
             bundle_execution_results.result().is_ok()
         );
 
-        // TEMP: Remove.
-        if sanitized_bundle.bundle_id.starts_with('P') {
-            match bundle_execution_results.result() {
-                Ok(_) => println!("OK:   {}", sanitized_bundle.bundle_id),
-                Err(err) => println!("ERR:  {} ({err})", sanitized_bundle.bundle_id),
-            }
-        }
-
         // don't commit bundle if failure executing any part of the bundle
         if let Err(e) = bundle_execution_results.result() {
             return ExecuteRecordCommitResult {
