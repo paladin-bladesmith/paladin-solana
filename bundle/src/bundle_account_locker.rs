@@ -24,9 +24,11 @@ use {
 pub enum BundleAccountLockerError {
     #[error("locking error")]
     LockingError,
-    #[error("couldn't make exclusive")]
-    Exclusive,
 }
+
+#[derive(Clone, Error, Debug)]
+#[error("Failed to get exlcusivity")]
+pub struct ExclusivityError;
 
 pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
 
@@ -38,7 +40,7 @@ pub struct LockedBundle<'a, 'b> {
 }
 
 impl<'a, 'b> LockedBundle<'a, 'b> {
-    pub fn new(
+    fn new(
         bundle_account_locker: &'a BundleAccountLocker,
         sanitized_bundle: &'b SanitizedBundle,
         bank: &Arc<Bank>,
@@ -55,10 +57,11 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
         self.sanitized_bundle
     }
 
-    pub fn try_make_exclusive(&mut self) -> Result<(), BundleAccountLockerError> {
+    pub fn try_make_exclusive(&mut self) -> Result<(), ExclusivityError> {
         // TODO: Avoid HashMap allocations by just returning iterator of locks.
         let (read_locks, write_locks) =
-            BundleAccountLocker::get_read_write_locks(&self.sanitized_bundle, &self.bank)?;
+            BundleAccountLocker::get_read_write_locks(&self.sanitized_bundle, &self.bank)
+                .expect("Existence of locked bundle implies this cannot fail");
         let mut lock = self.bundle_account_locker.account_locks.lock().unwrap();
         match read_locks
             .iter()
@@ -72,7 +75,7 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
 
                 Ok(())
             }
-            false => Err(BundleAccountLockerError::Exclusive),
+            false => Err(ExclusivityError),
         }
     }
 }

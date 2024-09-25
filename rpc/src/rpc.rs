@@ -3410,7 +3410,9 @@ pub mod rpc_full {
         super::*,
         crate::rpc::utils::{account_configs_to_accounts, rpc_bundle_result_from_bank_result},
         jsonrpc_core::ErrorCode,
-        solana_bundle::bundle_execution::{load_and_execute_bundle, LoadAndExecuteBundleError},
+        solana_bundle::bundle_execution::{
+            load_and_execute_bundle, LoadAndExecuteBundleError, MaybeLockedBundle,
+        },
         solana_rpc_client_api::bundles::{
             RpcBundleRequest, RpcSimulateBundleConfig, RpcSimulateBundleResult,
             SimulationSlotConfig,
@@ -4101,6 +4103,7 @@ pub mod rpc_full {
                     .collect::<Result<Vec<SanitizedTransaction>>>()?,
                 bundle_id,
             };
+            let mut maybe_locked_bundle = MaybeLockedBundle::Sanitized(&sanitized_bundle);
 
             if !config.skip_sig_verify {
                 for tx in &sanitized_bundle.transactions {
@@ -4115,7 +4118,7 @@ pub mod rpc_full {
 
             let bundle_execution_result = load_and_execute_bundle(
                 &bank,
-                &sanitized_bundle,
+                &mut maybe_locked_bundle,
                 MAX_PROCESSING_AGE,
                 &MAX_BUNDLE_SIMULATION_TIME,
                 true,

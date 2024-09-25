@@ -1,4 +1,5 @@
 use {
+    crate::bundle_account_locker::{ExclusivityError, LockedBundle},
     itertools::izip,
     log::*,
     solana_accounts_db::{
@@ -23,10 +24,27 @@ use {
     solana_transaction_status::{token_balances::TransactionTokenBalances, PreBalanceInfo},
     std::{
         cmp::{max, min},
+        ops::Deref,
         time::{Duration, Instant},
     },
     thiserror::Error,
 };
+
+pub enum MaybeLockedBundle<'a> {
+    Locked(&'a mut LockedBundle<'a, 'a>),
+    Sanitized(&'a SanitizedBundle),
+}
+
+impl<'a> Deref for MaybeLockedBundle<'a> {
+    type Target = SanitizedBundle;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            MaybeLockedBundle::Locked(locked) => locked.sanitized_bundle(),
+            MaybeLockedBundle::Sanitized(sanitized) => &sanitized,
+        }
+    }
+}
 
 #[derive(Clone, Default)]
 pub struct BundleExecutionMetrics {
@@ -223,7 +241,7 @@ pub fn check_bundle_execution_results<'a>(
 #[allow(clippy::too_many_arguments)]
 pub fn load_and_execute_bundle<'a>(
     bank: &Bank,
-    bundle: &'a SanitizedBundle,
+    bundle: &'a mut MaybeLockedBundle<'a>,
     // Max blockhash age
     max_age: usize,
     // Upper bound on execution time for a bundle
@@ -273,10 +291,25 @@ pub fn load_and_execute_bundle<'a>(
     let mut chunk_start = 0;
     let start_time = Instant::now();
 
-    // We need to make the locks exclusive to avoid races between Paladin & Jito thread.
-
     let mut bundle_transaction_results = vec![];
     let mut metrics = BundleExecutionMetrics::default();
+
+    // We need to make the locks exclusive to avoid races between Paladin & Jito thread.
+    if let MaybeLockedBundle::Locked(locked_bundle) = bundle {
+        loop {
+            match (fifo, locked_bundle.try_make_exclusive()) {
+                (_, Ok(_)) => break,
+                (true, Err(ExclusivityError)) => std::thread::sleep(Duration::from_millis(5)),
+                (false, Err(ExclusivityError)) => {
+                    return LoadAndExecuteBundleOutput {
+                        bundle_transaction_results,
+                        metrics,
+                        result: Err(LoadAndExecuteBundleError::AccountInUse),
+                    };
+                }
+            }
+        }
+    }
 
     while chunk_start != bundle.transactions.len() {
         if start_time.elapsed() > *max_processing_time {

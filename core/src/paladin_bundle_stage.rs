@@ -267,14 +267,14 @@ impl PaladinBundleStage {
         let (execution_results, execute_locked_bundles_elapsed) = measure!(locked_bundle_results
             .into_iter()
             .map(|r| match r {
-                Ok(locked_bundle) => {
+                Ok(mut bundle) => {
                     let (r, measure) = measure_us!(Self::process_bundle(
                         committer,
                         recorder,
                         qos_service,
                         log_messages_bytes_limit,
                         max_bundle_retry_duration,
-                        &locked_bundle,
+                        &mut bundle,
                         bank_start,
                         bundle_stage_leader_metrics,
                     ));
@@ -308,7 +308,7 @@ impl PaladinBundleStage {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        locked_bundle: &LockedBundle,
+        bundle: &mut LockedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -326,7 +326,7 @@ impl PaladinBundleStage {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             None,
-            locked_bundle.sanitized_bundle(),
+            bundle,
             bank_start,
             bundle_stage_leader_metrics,
             false,
