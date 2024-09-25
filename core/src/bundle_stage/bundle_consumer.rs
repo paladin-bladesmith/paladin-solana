@@ -727,7 +727,12 @@ impl BundleConsumer {
         );
 
         // Check if bundle was a front-run.
-        super::front_run_identifier::bundle_is_front_run(&bundle_execution_results);
+        if super::front_run_identifier::bundle_is_front_run(&bundle_execution_results) {
+            info!(
+                "Front run detected; bundle_id={}",
+                sanitized_bundle.bundle_id
+            );
+        }
 
         // don't commit bundle if failed to record
         if let Err(e) = record_transactions_result {

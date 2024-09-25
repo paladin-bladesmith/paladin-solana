@@ -2,7 +2,10 @@ use {
     super::MAX_PACKETS_PER_BUNDLE,
     hashbrown::HashMap,
     solana_bundle::bundle_execution::LoadAndExecuteBundleOutput,
-    solana_sdk::{account::ReadableAccount, pubkey::Pubkey, transaction::MAX_TX_ACCOUNT_LOCKS},
+    solana_sdk::{
+        pubkey::Pubkey,
+        transaction::{SanitizedTransaction, MAX_TX_ACCOUNT_LOCKS},
+    },
     std::cell::RefCell,
 };
 
@@ -26,23 +29,32 @@ thread_local! {
     static AMM_MAP: RefCell<HashMap<&'static Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>> = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
 }
 
-pub(crate) fn bundle_is_front_run(bundle_execution_results: &LoadAndExecuteBundleOutput) -> bool {
+#[must_use]
+pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
     // NB: Clear just in case somehow we broke the control flow (perhaps a future patch) and forgot
     // to clear before return.
     AMM_MAP.with(|map| map.borrow_mut().clear());
 
     // Early return on failed/single TX bundles.
-    let tx_count: usize = bundle_execution_results
-        .bundle_transaction_results()
-        .iter()
-        .map(|batch| batch.transactions().len())
-        .sum();
-    if !bundle_execution_results.executed_ok() || tx_count <= 1 {
+    let tx_count = bundle.transactions().count();
+    if !bundle.executed_ok() || tx_count <= 1 {
         return false;
     }
 
-    // First we insert flags for which TXs touch which write-lock accounts.
-    map_write_lock_usage(bundle_execution_results);
+    // Check all TXs for write-locked pool accounts.
+    for (i, tx) in bundle.transactions().enumerate() {
+        // Find all the AMM owned writeable accounts.
+        let writeable_amm_accounts = tx
+            .writable_account_owners()
+            .filter(|owner| AMM_PROGRAMS.contains(owner));
+
+        // Record this TX's access of the writeable account.
+        for key in writeable_amm_accounts {
+            let key = unsafe { std::mem::transmute::<&Pubkey, &'static Pubkey>(key) };
+
+            AMM_MAP.with_borrow_mut(|map| map.entry(key).or_default()[i] = true);
+        }
+    }
 
     // Compute which TXs overlap with each other.
     let mut overlap_matrix = [[false; MAX_PACKETS_PER_BUNDLE]; MAX_PACKETS_PER_BUNDLE];
@@ -64,36 +76,20 @@ pub(crate) fn bundle_is_front_run(bundle_execution_results: &LoadAndExecuteBundl
     });
 
     // Brute-force signer checks for overlapping TXs.
-    let txs = bundle_execution_results
-        .bundle_transaction_results()
-        .iter()
-        .flat_map(|bundle| bundle.transactions());
     for i in 0..overlap_matrix.len() {
         'outer: for j in i..overlap_matrix.len() {
             if overlap_matrix[i][j] {
-                let Some(i) = txs.clone().nth(i) else {
+                let Some(i) = bundle.transactions().nth(i) else {
                     error!("BUG");
                     return false;
                 };
-                let Some(j) = txs.clone().nth(j) else {
+                let Some(j) = bundle.transactions().nth(j) else {
                     error!("BUG");
                     return false;
                 };
-
-                let i_signers = i
-                    .message()
-                    .account_keys()
-                    .iter()
-                    .take(i.message().num_signatures() as usize);
 
                 // Brute force compare the signers.
-                for (i, j) in i_signers.flat_map(|i| {
-                    j.message()
-                        .account_keys()
-                        .iter()
-                        .take(j.message().num_signatures() as usize)
-                        .map(move |j| (i, j))
-                }) {
+                for (i, j) in i.signers().flat_map(|i| j.signers().map(move |j| (i, j))) {
                     // If any signer matches then this overlap is not a front-run.
                     if i == j {
                         continue 'outer;
@@ -118,54 +114,116 @@ pub(crate) fn bundle_is_front_run(bundle_execution_results: &LoadAndExecuteBundl
     false
 }
 
-fn map_write_lock_usage(bundle_execution_results: &LoadAndExecuteBundleOutput) {
-    // Check all TXs for write-locked pool accounts.
-    for (i, (load_res, sanitized_tx)) in bundle_execution_results
-        .bundle_transaction_results()
-        .iter()
-        .flat_map(|batch| {
-            batch
-                .load_and_execute_transactions_output()
-                .loaded_transactions
-                .iter()
-                .enumerate()
-                .map(|(i, load_res)| (&load_res.0, &batch.transactions()[i]))
-        })
-        .enumerate()
-    {
-        let loaded_tx = match load_res {
-            Ok(tx) => tx,
-            Err(err) => {
-                error!("Unexpected failed bundle; err={err:?}");
-                continue;
-            }
-        };
+pub(crate) trait BundleResult {
+    type Transaction: BundleTransaction;
 
-        // Get the signers for this transaction.
-        let message = sanitized_tx.message();
-        let current_signers: Vec<_> = message
+    fn executed_ok(&self) -> bool;
+    fn transactions(&self) -> impl Iterator<Item = &Self::Transaction>;
+}
+
+pub(crate) trait BundleTransaction {
+    /// Iterator over each signer.
+    fn signers(&self) -> impl Iterator<Item = &Pubkey>;
+    /// Iterator over each loaded account's owner.
+    fn writable_account_owners(&self) -> impl Iterator<Item = &Pubkey>;
+}
+
+impl BundleResult for LoadAndExecuteBundleOutput<'_> {
+    type Transaction = SanitizedTransaction;
+
+    fn executed_ok(&self) -> bool {
+        self.executed_ok()
+    }
+
+    fn transactions(&self) -> impl Iterator<Item = &Self::Transaction> {
+        self.bundle_transaction_results()
+            .iter()
+            .flat_map(|batch| batch.transactions())
+    }
+}
+
+impl BundleTransaction for SanitizedTransaction {
+    fn signers(&self) -> impl Iterator<Item = &Pubkey> {
+        self.message()
             .account_keys()
             .iter()
-            .take(sanitized_tx.message().num_signatures() as usize)
-            .collect();
-        println!("SIGNERS: {current_signers:?}");
+            .take(self.message().num_signatures() as usize)
+    }
 
-        // Find all the AMM owned writeable accounts.
-        let writeable_amm_accounts = message
+    fn writable_account_owners(&self) -> impl Iterator<Item = &Pubkey> {
+        self.message()
             .account_keys()
             .iter()
             .enumerate()
-            .filter(|(i, _)| sanitized_tx.message().is_writable(*i))
-            .map(|(i, _)| &loaded_tx.accounts[i])
-            .filter(|(_, account)| AMM_PROGRAMS.contains(account.owner()));
+            .filter(|(i, _)| self.message().is_writable(*i))
+            .map(|(_, key)| key)
+    }
+}
 
-        // Record this TX's access of the writeable account.
-        for (key, _) in writeable_amm_accounts {
-            println!("WRITE: {key}");
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-            let key = unsafe { std::mem::transmute::<&Pubkey, &'static Pubkey>(key) };
+    const NOT_AMM_0: Pubkey = Pubkey::new_from_array([1; 32]);
+    const NOT_AMM_1: Pubkey = Pubkey::new_from_array([2; 32]);
+    const AMM_0: Pubkey = Pubkey::new_from_array([3; 32]);
+    const AMM_1: Pubkey = Pubkey::new_from_array([4; 32]);
+    const SIGNER_0: Pubkey = Pubkey::new_from_array([5; 32]);
+    const SIGNER_1: Pubkey = Pubkey::new_from_array([6; 32]);
 
-            AMM_MAP.with_borrow_mut(|map| map.entry(key).or_default()[i] = true);
+    struct MockBundleResult {
+        executed_ok: bool,
+        transactions: Vec<MockTransaction>,
+    }
+
+    impl BundleResult for MockBundleResult {
+        type Transaction = MockTransaction;
+
+        fn executed_ok(&self) -> bool {
+            self.executed_ok
         }
+
+        fn transactions(&self) -> impl Iterator<Item = &Self::Transaction> {
+            self.transactions.iter()
+        }
+    }
+
+    struct MockTransaction {
+        signers: Vec<Pubkey>,
+        writeable_account_owners: Vec<Pubkey>,
+    }
+
+    impl BundleTransaction for MockTransaction {
+        fn signers(&self) -> impl Iterator<Item = &Pubkey> {
+            self.signers.iter()
+        }
+
+        fn writable_account_owners(&self) -> impl Iterator<Item = &Pubkey> {
+            self.writeable_account_owners.iter()
+        }
+    }
+
+    #[test]
+    fn non_overlapping_amms() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![AMM_1],
+                },
+            ],
+        };
+
+        // Act.
+        let is_frontrun = bundle_is_front_run(&bundle);
+
+        // Assert.
+        assert_eq!(is_frontrun, false);
     }
 }
