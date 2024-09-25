@@ -59,7 +59,9 @@ pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
     // Compute which TXs overlap with each other.
     let mut overlap_matrix = [[false; MAX_PACKETS_PER_BUNDLE]; MAX_PACKETS_PER_BUNDLE];
     AMM_MAP.with_borrow(|map| {
-        for (_, txs) in map {
+        for (key, txs) in map {
+            println!("{key:?}: {txs:?}");
+
             if txs.iter().filter(|tx| **tx).count() <= 1 {
                 continue;
             }
@@ -166,10 +168,10 @@ mod tests {
 
     const NOT_AMM_0: Pubkey = Pubkey::new_from_array([1; 32]);
     const NOT_AMM_1: Pubkey = Pubkey::new_from_array([2; 32]);
-    const AMM_0: Pubkey = Pubkey::new_from_array([3; 32]);
-    const AMM_1: Pubkey = Pubkey::new_from_array([4; 32]);
-    const SIGNER_0: Pubkey = Pubkey::new_from_array([5; 32]);
-    const SIGNER_1: Pubkey = Pubkey::new_from_array([6; 32]);
+    const AMM_0: Pubkey = AMM_PROGRAMS[0];
+    const AMM_1: Pubkey = AMM_PROGRAMS[1];
+    const SIGNER_0: Pubkey = Pubkey::new_from_array([3; 32]);
+    const SIGNER_1: Pubkey = Pubkey::new_from_array([4; 32]);
 
     struct MockBundleResult {
         executed_ok: bool,
@@ -204,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn non_overlapping_amms() {
+    fn two_amm_no_front_run() {
         // Arrange.
         let bundle = MockBundleResult {
             executed_ok: true,
@@ -225,5 +227,29 @@ mod tests {
 
         // Assert.
         assert_eq!(is_frontrun, false);
+    }
+
+    #[test]
+    fn two_amm_front_run() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![AMM_0],
+                },
+            ],
+        };
+
+        // Act.
+        let is_frontrun = bundle_is_front_run(&bundle);
+
+        // Assert.
+        assert_eq!(is_frontrun, true);
     }
 }
