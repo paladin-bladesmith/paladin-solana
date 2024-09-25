@@ -6,9 +6,7 @@ use {
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
-            bundle_account_locker::{BundleAccountLocker, LockedBundle},
-            bundle_consumer::BundleConsumer,
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics,
+            bundle_consumer::BundleConsumer, bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             committer::Committer,
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
@@ -16,7 +14,10 @@ use {
     },
     crossbeam_channel::Receiver,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
-    solana_bundle::BundleExecutionError,
+    solana_bundle::{
+        bundle_account_locker::{BundleAccountLocker, LockedBundle},
+        BundleExecutionError,
+    },
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::{measure, measure_us},

@@ -10,6 +10,7 @@
 // state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 // replayed improperly and that leader would have produced an invalid block.
 use {
+    log::warn,
     solana_runtime::bank::Bank,
     solana_sdk::{bundle::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks},
     std::{

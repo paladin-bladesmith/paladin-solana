@@ -273,6 +273,8 @@ pub fn load_and_execute_bundle<'a>(
     let mut chunk_start = 0;
     let start_time = Instant::now();
 
+    // We need to make the locks exclusive to avoid races between Paladin & Jito thread.
+
     let mut bundle_transaction_results = vec![];
     let mut metrics = BundleExecutionMetrics::default();
 

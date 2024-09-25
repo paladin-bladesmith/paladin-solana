@@ -6,7 +6,7 @@ use {
     crate::{
         banking_stage::BankingStage,
         banking_trace::{BankingTracer, TracerThread},
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        bundle_stage::BundleStage,
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
@@ -28,6 +28,7 @@ use {
     },
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver},
+    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_client::connection_cache::{ConnectionCache, Protocol},
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{

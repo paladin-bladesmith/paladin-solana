@@ -6,10 +6,8 @@ use {
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
-            bundle_account_locker::{BundleAccountLocker, LockedBundle},
             bundle_reserved_space_manager::BundleReservedSpaceManager,
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-            committer::Committer,
+            bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
         },
         consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
@@ -18,6 +16,7 @@ use {
     },
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
+        bundle_account_locker::{BundleAccountLocker, LockedBundle},
         bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
         BundleExecutionError, BundleExecutionResult, TipError,
     },

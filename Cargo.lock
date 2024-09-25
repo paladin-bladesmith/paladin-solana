@@ -5708,6 +5708,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "rayon",
+ "solana-bundle",
  "solana-client",
  "solana-core",
  "solana-gossip",
