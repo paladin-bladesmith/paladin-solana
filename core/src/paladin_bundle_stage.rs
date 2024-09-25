@@ -256,6 +256,7 @@ impl PaladinBundleStage {
                 .map(|(_, sanitized_bundle)| {
                     bundle_account_locker
                         .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                        .map(|locked_bundle| (locked_bundle, sanitized_bundle))
                 })
                 .collect::<Vec<_>>(),
             "locked_bundles_elapsed"
@@ -267,14 +268,15 @@ impl PaladinBundleStage {
         let (execution_results, execute_locked_bundles_elapsed) = measure!(locked_bundle_results
             .into_iter()
             .map(|r| match r {
-                Ok(mut bundle) => {
+                Ok((locked_bundle, sanitized_bundle)) => {
                     let (r, measure) = measure_us!(Self::process_bundle(
                         committer,
                         recorder,
                         qos_service,
                         log_messages_bytes_limit,
                         max_bundle_retry_duration,
-                        &mut bundle,
+                        locked_bundle,
+                        sanitized_bundle,
                         bank_start,
                         bundle_stage_leader_metrics,
                     ));
@@ -308,7 +310,8 @@ impl PaladinBundleStage {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        bundle: &mut LockedBundle,
+        locked_bundle: LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -326,7 +329,8 @@ impl PaladinBundleStage {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             None,
-            bundle,
+            locked_bundle,
+            sanitized_bundle,
             bank_start,
             bundle_stage_leader_metrics,
             false,

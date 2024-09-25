@@ -17,7 +17,7 @@ use {
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics, MaybeLockedBundle},
+        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
         BundleExecutionError, BundleExecutionResult, TipError,
     },
     solana_cost_model::transaction_cost::TransactionCost,
@@ -214,6 +214,7 @@ impl BundleConsumer {
                 .map(|(_, sanitized_bundle)| {
                     bundle_account_locker
                         .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                        .map(|locked_bundle| (locked_bundle, sanitized_bundle))
                 })
                 .collect::<Vec<_>>(),
             "locked_bundles_elapsed"
@@ -225,7 +226,7 @@ impl BundleConsumer {
         let (execution_results, execute_locked_bundles_elapsed) = measure!(locked_bundle_results
             .into_iter()
             .map(|r| match r {
-                Ok(mut locked_bundle) => {
+                Ok((locked_bundle, sanitized_bundle)) => {
                     let (r, measure) = measure_us!(Self::process_bundle(
                         bundle_account_locker,
                         tip_manager,
@@ -238,7 +239,8 @@ impl BundleConsumer {
                         log_messages_bytes_limit,
                         max_bundle_retry_duration,
                         reserved_space,
-                        &mut locked_bundle,
+                        locked_bundle,
+                        sanitized_bundle,
                         bank_start,
                         bundle_stage_leader_metrics,
                     ));
@@ -278,7 +280,8 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         reserved_space: &BundleReservedSpaceManager,
-        bundle: &mut LockedBundle,
+        locked_bundle: LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -291,7 +294,7 @@ impl BundleConsumer {
 
         if bank_start.working_bank.slot() != *last_tip_updated_slot
             && Self::bundle_touches_tip_pdas(
-                bundle.sanitized_bundle(),
+                locked_bundle.sanitized_bundle(),
                 &tip_manager.get_tip_accounts(),
             )
         {
@@ -327,7 +330,8 @@ impl BundleConsumer {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             Some(reserved_space),
-            bundle,
+            locked_bundle,
+            sanitized_bundle,
             bank_start,
             bundle_stage_leader_metrics,
             true,
@@ -367,7 +371,7 @@ impl BundleConsumer {
                 bundle.bundle_id
             );
 
-            let mut locked_init_tip_programs_bundle = bundle_account_locker
+            let locked_init_tip_programs_bundle = bundle_account_locker
                 .prepare_locked_bundle(&bundle, &bank_start.working_bank)
                 .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
@@ -378,7 +382,8 @@ impl BundleConsumer {
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
                 Some(reserved_space),
-                &mut locked_init_tip_programs_bundle,
+                locked_init_tip_programs_bundle,
+                &bundle,
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
@@ -389,8 +394,7 @@ impl BundleConsumer {
                     .increment_num_init_tip_account_errors(1);
                 error!(
                     "bundle: {} error initializing tip programs: {:?}",
-                    locked_init_tip_programs_bundle.sanitized_bundle().bundle_id,
-                    e
+                    bundle.bundle_id, e
                 );
                 BundleExecutionError::TipError(TipError::InitializeProgramsError)
             })?;
@@ -421,7 +425,7 @@ impl BundleConsumer {
                 bundle.transactions.len()
             );
 
-            let mut locked_tip_crank_bundle = bundle_account_locker
+            let locked_tip_crank_bundle = bundle_account_locker
                 .prepare_locked_bundle(&bundle, &bank_start.working_bank)
                 .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
@@ -432,7 +436,8 @@ impl BundleConsumer {
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
                 Some(reserved_space),
-                &mut locked_tip_crank_bundle,
+                locked_tip_crank_bundle,
+                &bundle,
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
@@ -443,8 +448,7 @@ impl BundleConsumer {
                     .increment_num_change_tip_receiver_errors(1);
                 error!(
                     "bundle: {} error cranking tip programs: {:?}",
-                    locked_tip_crank_bundle.sanitized_bundle().bundle_id,
-                    e
+                    bundle.bundle_id, e
                 );
                 BundleExecutionError::TipError(TipError::CrankTipError)
             })?;
@@ -502,15 +506,16 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         reserved_space: Option<&BundleReservedSpaceManager>,
-        bundle: &mut LockedBundle,
+        locked_bundle: LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         fifo: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
-            bundle.sanitized_bundle().bundle_id,
-            bundle.sanitized_bundle().transactions.len()
+            sanitized_bundle.bundle_id,
+            sanitized_bundle.transactions.len()
         );
 
         let (
@@ -520,7 +525,7 @@ impl BundleConsumer {
             Some(reserved_space) => measure_us!(Self::reserve_bundle_blockspace(
                 qos_service,
                 reserved_space,
-                bundle.sanitized_bundle(),
+                sanitized_bundle,
                 &bank_start.working_bank
             )?),
             None => ((vec![], 0), 0),
@@ -528,7 +533,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executing, recording, and committing",
-            bundle.sanitized_bundle().bundle_id
+            sanitized_bundle.bundle_id
         );
 
         let (result, process_transactions_us) = measure_us!(Self::execute_record_commit_bundle(
@@ -536,7 +541,8 @@ impl BundleConsumer {
             recorder,
             log_messages_bytes_limit,
             max_bundle_retry_duration,
-            bundle,
+            locked_bundle,
+            sanitized_bundle,
             bank_start,
             fifo,
         ));
@@ -571,10 +577,7 @@ impl BundleConsumer {
                     Err(BundleExecutionError::BankProcessingTimeLimitReached)
                         | Err(BundleExecutionError::PohRecordError(_))
                 ),
-                transactions_attempted_execution_count: bundle
-                    .sanitized_bundle()
-                    .transactions
-                    .len(),
+                transactions_attempted_execution_count: sanitized_bundle.transactions.len(),
                 committed_transactions_count: num_committed,
                 // NOTE: this assumes that bundles are committed all-or-nothing
                 committed_transactions_with_successful_result_count: num_committed,
@@ -624,7 +627,8 @@ impl BundleConsumer {
         recorder: &TransactionRecorder,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        bundle: &mut LockedBundle,
+        locked_bundle: LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         fifo: bool,
     ) -> ExecuteRecordCommitResult {
@@ -632,12 +636,12 @@ impl BundleConsumer {
 
         let mut execute_and_commit_timings = LeaderExecuteAndCommitTimings::default();
 
-        debug!("bundle: {} executing", bundle.sanitized_bundle().bundle_id);
-        let default_accounts = vec![None; bundle.sanitized_bundle().transactions.len()];
-        let mut maybe_locked_bundle = MaybeLockedBundle::Locked(bundle);
+        debug!("bundle: {} executing", sanitized_bundle.bundle_id);
+        let default_accounts = vec![None; sanitized_bundle.transactions.len()];
         let mut bundle_execution_results = load_and_execute_bundle(
             &bank_start.working_bank,
-            &mut maybe_locked_bundle,
+            Some(locked_bundle),
+            sanitized_bundle,
             MAX_PROCESSING_AGE,
             &max_bundle_retry_duration,
             transaction_status_sender_enabled,
@@ -675,7 +679,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} executed, is_ok: {}",
-            bundle.sanitized_bundle().bundle_id,
+            sanitized_bundle.bundle_id,
             bundle_execution_results.result().is_ok()
         );
 
@@ -695,7 +699,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} recording {} batches of {:?} transactions",
-            bundle.sanitized_bundle().bundle_id,
+            sanitized_bundle.bundle_id,
             executed_batches.len(),
             executed_batches
                 .iter()
@@ -729,7 +733,7 @@ impl BundleConsumer {
 
         debug!(
             "bundle: {} record result: {}",
-            bundle.sanitized_bundle().bundle_id,
+            sanitized_bundle.bundle_id,
             record_transactions_result.is_ok()
         );
 
@@ -772,8 +776,7 @@ impl BundleConsumer {
             .collect();
         debug!(
             "bundle: {} commit details: {:?}",
-            bundle.sanitized_bundle().bundle_id,
-            commit_transaction_details
+            sanitized_bundle.bundle_id, commit_transaction_details
         );
 
         ExecuteRecordCommitResult {
