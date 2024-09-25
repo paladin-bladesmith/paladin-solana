@@ -23,6 +23,8 @@ use {
 pub enum BundleAccountLockerError {
     #[error("locking error")]
     LockingError,
+    #[error("couldn't make exclusive")]
+    Exclusive,
 }
 
 pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
@@ -31,6 +33,7 @@ pub struct LockedBundle<'a, 'b> {
     bundle_account_locker: &'a BundleAccountLocker,
     sanitized_bundle: &'b SanitizedBundle,
     bank: Arc<Bank>,
+    has_exclusivity: bool,
 }
 
 impl<'a, 'b> LockedBundle<'a, 'b> {
@@ -43,20 +46,44 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
             bundle_account_locker,
             sanitized_bundle,
             bank: bank.clone(),
+            has_exclusivity: false,
         }
     }
 
     pub fn sanitized_bundle(&self) -> &SanitizedBundle {
         self.sanitized_bundle
     }
+
+    pub fn try_make_exclusive(&mut self) -> Result<(), BundleAccountLockerError> {
+        // TODO: Avoid HashMap allocations by just returning iterator of locks.
+        let (read_locks, write_locks) =
+            BundleAccountLocker::get_read_write_locks(&self.sanitized_bundle, &self.bank)?;
+        let mut lock = self.bundle_account_locker.account_locks.lock().unwrap();
+        match read_locks
+            .iter()
+            .chain(&write_locks)
+            .all(|(key, _)| !lock.exclusive_locks.contains(key))
+        {
+            true => {
+                lock.exclusive_locks
+                    .extend(write_locks.iter().map(|(key, _)| key));
+                self.has_exclusivity = true;
+
+                Ok(())
+            }
+            false => Err(BundleAccountLockerError::Exclusive),
+        }
+    }
 }
 
 // Automatically unlock bundle accounts when destructed
 impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
     fn drop(&mut self) {
-        let _ = self
-            .bundle_account_locker
-            .unlock_bundle_accounts(self.sanitized_bundle, &self.bank);
+        let _ = self.bundle_account_locker.unlock_bundle_accounts(
+            self.sanitized_bundle,
+            &self.bank,
+            self.has_exclusivity,
+        );
     }
 }
 
@@ -64,6 +91,7 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
 pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
+    exclusive_locks: HashSet<Pubkey>,
 }
 
 impl BundleAccountLocks {
@@ -163,13 +191,22 @@ impl BundleAccountLocker {
         &self,
         sanitized_bundle: &SanitizedBundle,
         bank: &Bank,
+        has_exclusivity: bool,
     ) -> BundleAccountLockerResult<()> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks
-            .lock()
-            .unwrap()
-            .unlock_accounts(read_locks, write_locks);
+        let mut lock = self.account_locks.lock().unwrap();
+
+        // Remove exclusivity.
+        if has_exclusivity {
+            for (key, _) in &write_locks {
+                lock.exclusive_locks.remove(key);
+            }
+        }
+
+        // Remove interest.
+        lock.unlock_accounts(read_locks, write_locks);
+
         Ok(())
     }
 
