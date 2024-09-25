@@ -18,9 +18,7 @@ use {
     },
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
-        bundle_execution::{
-            load_and_execute_bundle, BundleExecutionMetrics, LoadAndExecuteBundleOutput,
-        },
+        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
         BundleExecutionError, BundleExecutionResult, TipError,
     },
     solana_cost_model::transaction_cost::TransactionCost,
@@ -29,7 +27,6 @@ use {
     solana_poh::poh_recorder::{BankStart, RecordTransactionsSummary, TransactionRecorder},
     solana_runtime::bank::Bank,
     solana_sdk::{
-        account::ReadableAccount,
         bundle::SanitizedBundle,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
@@ -37,7 +34,7 @@ use {
         transaction::{self},
     },
     std::{
-        collections::{hash_map::Entry, HashMap, HashSet},
+        collections::HashSet,
         sync::{Arc, Mutex},
         time::{Duration, Instant},
     },

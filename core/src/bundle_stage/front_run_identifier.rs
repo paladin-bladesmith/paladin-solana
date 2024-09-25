@@ -1,10 +1,10 @@
-use std::cell::RefCell;
-
-use hashbrown::HashMap;
-use solana_bundle::bundle_execution::LoadAndExecuteBundleOutput;
-use solana_sdk::{account::ReadableAccount, pubkey::Pubkey, transaction::MAX_TX_ACCOUNT_LOCKS};
-
-use super::MAX_PACKETS_PER_BUNDLE;
+use {
+    super::MAX_PACKETS_PER_BUNDLE,
+    hashbrown::HashMap,
+    solana_bundle::bundle_execution::LoadAndExecuteBundleOutput,
+    solana_sdk::{account::ReadableAccount, pubkey::Pubkey, transaction::MAX_TX_ACCOUNT_LOCKS},
+    std::cell::RefCell,
+};
 
 const AMM_PROGRAMS: &[Pubkey] = &[
     solana_sdk::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"), // RaydiumV4
@@ -23,10 +23,12 @@ const AMM_PROGRAMS: &[Pubkey] = &[
 ];
 
 thread_local! {
-    static AMM_MAP: RefCell<HashMap<Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>> = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
+    static AMM_MAP: RefCell<HashMap<&'static Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>> = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
 }
 
 pub(crate) fn bundle_is_front_run(bundle_execution_results: &LoadAndExecuteBundleOutput) -> bool {
+    // NB: Clear just in case somehow we broke the control flow (perhaps a future patch) and forgot
+    // to clear before return.
     AMM_MAP.with(|map| map.borrow_mut().clear());
 
     // Early return on failed/single TX bundles.
@@ -42,30 +44,78 @@ pub(crate) fn bundle_is_front_run(bundle_execution_results: &LoadAndExecuteBundl
     // First we insert flags for which TXs touch which write-lock accounts.
     map_write_lock_usage(bundle_execution_results);
 
-    // Now we check all the write lock accounts for overlaps.
-    let mut adjacency_matrix = [[false; MAX_PACKETS_PER_BUNDLE]; MAX_PACKETS_PER_BUNDLE];
+    // Compute which TXs overlap with each other.
+    let mut overlap_matrix = [[false; MAX_PACKETS_PER_BUNDLE]; MAX_PACKETS_PER_BUNDLE];
     AMM_MAP.with_borrow(|map| {
-        for (account, txs) in map {
-            if txs.iter().filter(|tx| **tx).count() > 1 {
-                todo!("Update adjacency matrix");
+        for (_, txs) in map {
+            if txs.iter().filter(|tx| **tx).count() <= 1 {
+                continue;
+            }
+
+            for (i, tx1) in txs.iter().enumerate() {
+                for (j, tx2) in txs.iter().enumerate() {
+                    if *tx1 && *tx2 {
+                        overlap_matrix[i][j] = true;
+                        overlap_matrix[j][i] = true;
+                    }
+                }
             }
         }
     });
 
-    // TODO:
-    //
-    // Our challenge is as follows:
-    //
-    // 1. Identify which TXs have overlapping AMM write locks.
-    //   a. An overlapping AMM write lock is when 2 TXs write lock the exact
-    //      same AMM-owned account. We use write locking as a proxy for
-    //      swapping.
-    //   b. HashMap<Pubkey, [bool; MAX_TX_PER_BUNDLE]> shows which TXs have
-    //      overlapping swaps.
-    // 2. Determine if overlapping TXs have overlapping signers.
-    //   a. For each overlapping TX we need to brute-force compare the signers.
+    // Brute-force signer checks for overlapping TXs.
+    let txs = bundle_execution_results
+        .bundle_transaction_results()
+        .iter()
+        .flat_map(|bundle| bundle.transactions());
+    for i in 0..overlap_matrix.len() {
+        'outer: for j in i..overlap_matrix.len() {
+            if overlap_matrix[i][j] {
+                let Some(i) = txs.clone().nth(i) else {
+                    error!("BUG");
+                    return false;
+                };
+                let Some(j) = txs.clone().nth(j) else {
+                    error!("BUG");
+                    return false;
+                };
 
-    todo!()
+                let i_signers = i
+                    .message()
+                    .account_keys()
+                    .iter()
+                    .take(i.message().num_signatures() as usize);
+
+                // Brute force compare the signers.
+                for (i, j) in i_signers.flat_map(|i| {
+                    j.message()
+                        .account_keys()
+                        .iter()
+                        .take(j.message().num_signatures() as usize)
+                        .map(move |j| (i, j))
+                }) {
+                    // If any signer matches then this overlap is not a front-run.
+                    if i == j {
+                        continue 'outer;
+                    }
+                }
+
+                // If we reach this point it means none of the signers matched and thus this is a
+                // frontrun.
+
+                // NB: We MUST clear this hashmap else it will be full of pointers to
+                // de-allocated memory (whenever the bundle struct gets dropped).
+                AMM_MAP.with_borrow_mut(|map| map.clear());
+                return true;
+            }
+        }
+    }
+
+    // NB: We MUST clear this hashmap else it will be full of pointers to de-allocated
+    // memory (whenever the bundle struct gets dropped).
+    AMM_MAP.with_borrow_mut(|map| map.clear());
+
+    false
 }
 
 fn map_write_lock_usage(bundle_execution_results: &LoadAndExecuteBundleOutput) {
@@ -113,7 +163,9 @@ fn map_write_lock_usage(bundle_execution_results: &LoadAndExecuteBundleOutput) {
         for (key, _) in writeable_amm_accounts {
             println!("WRITE: {key}");
 
-            AMM_MAP.with_borrow_mut(|map| map.entry_ref(key).or_default()[i] = true);
+            let key = unsafe { std::mem::transmute::<&Pubkey, &'static Pubkey>(key) };
+
+            AMM_MAP.with_borrow_mut(|map| map.entry(key).or_default()[i] = true);
         }
     }
 }
