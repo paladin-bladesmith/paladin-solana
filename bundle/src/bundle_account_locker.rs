@@ -62,19 +62,18 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
         let (read_locks, write_locks) =
             BundleAccountLocker::get_read_write_locks(self.sanitized_bundle, &self.bank)
                 .expect("Existence of locked bundle implies this cannot fail");
+        let all_locks = read_locks.keys().chain(write_locks.keys());
 
         // Take lock on bundle_account_locker.
         let mut lock = self.bundle_account_locker.account_locks.lock().unwrap();
-        match read_locks
-            .keys()
-            .chain(write_locks.keys())
+        match all_locks
+            .clone()
             .all(|key| !lock.exclusive_locks.contains(key))
         {
             true => {
                 // NB: We need to exclusively lock both read & write accounts because we can't have
                 // another thread mutate our read account while we're building on top of that state.
-                lock.exclusive_locks
-                    .extend(read_locks.keys().chain(write_locks.keys()));
+                lock.exclusive_locks.extend(all_locks);
                 self.has_exclusivity = true;
 
                 Ok(())
