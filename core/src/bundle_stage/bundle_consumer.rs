@@ -656,10 +656,6 @@ impl BundleConsumer {
             fifo,
         );
 
-        // TODO: bundle_execution_results needs to hold the `&mut` reference for its lifespan. We
-        // may need to pass `Option<&mut BundleLockerStructThingy>`. So we can split the lifetimes
-        // and drop the mut borrow at function return.
-
         let execution_metrics = bundle_execution_results.metrics();
 
         execute_and_commit_timings.collect_balances_us = execution_metrics.collect_balances_us;

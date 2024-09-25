@@ -58,19 +58,23 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
     }
 
     pub fn try_make_exclusive(&mut self) -> Result<(), ExclusivityError> {
-        // TODO: Avoid HashMap allocations by just returning iterator of locks.
+        // Compute read & write locks.
         let (read_locks, write_locks) =
-            BundleAccountLocker::get_read_write_locks(&self.sanitized_bundle, &self.bank)
+            BundleAccountLocker::get_read_write_locks(self.sanitized_bundle, &self.bank)
                 .expect("Existence of locked bundle implies this cannot fail");
+
+        // Take lock on bundle_account_locker.
         let mut lock = self.bundle_account_locker.account_locks.lock().unwrap();
         match read_locks
-            .iter()
-            .chain(&write_locks)
-            .all(|(key, _)| !lock.exclusive_locks.contains(key))
+            .keys()
+            .chain(write_locks.keys())
+            .all(|key| !lock.exclusive_locks.contains(key))
         {
             true => {
+                // NB: We need to exclusively lock both read & write accounts because we can't have
+                // another thread mutate our read account while we're building on top of that state.
                 lock.exclusive_locks
-                    .extend(write_locks.iter().map(|(key, _)| key));
+                    .extend(read_locks.keys().chain(write_locks.keys()));
                 self.has_exclusivity = true;
 
                 Ok(())
@@ -201,9 +205,9 @@ impl BundleAccountLocker {
 
         let mut lock = self.account_locks.lock().unwrap();
 
-        // Remove exclusivity.
+        // Remove exclusive keys.
         if has_exclusivity {
-            for (key, _) in &write_locks {
+            for key in read_locks.keys().chain(write_locks.keys()) {
                 lock.exclusive_locks.remove(key);
             }
         }

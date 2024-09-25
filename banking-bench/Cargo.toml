@@ -14,8 +14,8 @@ crossbeam-channel = { workspace = true }
 log = { workspace = true }
 rand = { workspace = true }
 rayon = { workspace = true }
-solana-client = { workspace = true }
 solana-bundle = { workspace = true }
+solana-client = { workspace = true }
 solana-core = { workspace = true }
 solana-gossip = { workspace = true }
 solana-ledger = { workspace = true }
