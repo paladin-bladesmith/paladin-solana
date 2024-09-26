@@ -10,11 +10,15 @@
 // state for {A, B, C}, A and B would be incorrect and the entries containing the bundle would be
 // replayed improperly and that leader would have produced an invalid block.
 use {
+    hashbrown::{
+        hash_map::{Entry, EntryRef},
+        HashMap,
+    },
     log::warn,
     solana_runtime::bank::Bank,
     solana_sdk::{bundle::SanitizedBundle, pubkey::Pubkey, transaction::TransactionAccountLocks},
     std::{
-        collections::{hash_map::Entry, HashMap, HashSet},
+        collections::HashSet,
         sync::{Arc, Mutex, MutexGuard},
     },
     thiserror::Error,
@@ -62,24 +66,38 @@ impl<'a, 'b> LockedBundle<'a, 'b> {
         let (read_locks, write_locks) =
             BundleAccountLocker::get_read_write_locks(self.sanitized_bundle, &self.bank)
                 .expect("Existence of locked bundle implies this cannot fail");
-        let all_locks = read_locks.keys().chain(write_locks.keys());
 
         // Take lock on bundle_account_locker.
         let mut lock = self.bundle_account_locker.account_locks.lock().unwrap();
-        match all_locks
-            .clone()
-            .all(|key| !lock.exclusive_locks.contains(key))
-        {
-            true => {
-                // NB: We need to exclusively lock both read & write accounts because we can't have
-                // another thread mutate our read account while we're building on top of that state.
-                lock.exclusive_locks.extend(all_locks);
-                self.has_exclusivity = true;
 
-                Ok(())
+        // No read accounts have write locks.
+        for key in read_locks.keys() {
+            match lock.exclusive_locks.get(key) {
+                Some(Lock::Read(_)) | None => {}
+                Some(Lock::Write) => return Err(ExclusivityError),
             }
-            false => Err(ExclusivityError),
         }
+
+        // No write accounts have any lock.
+        for key in write_locks.keys() {
+            if lock.exclusive_locks.contains_key(key) {
+                return Err(ExclusivityError);
+            }
+        }
+
+        // Insert our locks.
+        for key in read_locks.keys() {
+            let lock = lock.exclusive_locks.entry_ref(key).or_insert(Lock::Read(0));
+            match lock {
+                Lock::Read(count) => *count += 1,
+                Lock::Write => unreachable!(),
+            }
+        }
+        for key in write_locks.keys() {
+            assert!(lock.exclusive_locks.insert(*key, Lock::Write).is_none());
+        }
+
+        Ok(())
     }
 }
 
@@ -98,7 +116,7 @@ impl<'a, 'b> Drop for LockedBundle<'a, 'b> {
 pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
-    exclusive_locks: HashSet<Pubkey>,
+    exclusive_locks: HashMap<Pubkey, Lock>,
 }
 
 impl BundleAccountLocks {
@@ -151,6 +169,12 @@ impl BundleAccountLocks {
             }
         }
     }
+}
+
+#[derive(Clone)]
+enum Lock {
+    Write,
+    Read(u64),
 }
 
 #[derive(Clone, Default)]
@@ -206,8 +230,27 @@ impl BundleAccountLocker {
 
         // Remove exclusive keys.
         if has_exclusivity {
-            for key in read_locks.keys().chain(write_locks.keys()) {
-                lock.exclusive_locks.remove(key);
+            for key in read_locks.keys() {
+                match lock.exclusive_locks.entry_ref(key) {
+                    EntryRef::Occupied(mut entry) => {
+                        let count = match entry.get_mut() {
+                            Lock::Read(count) => count,
+                            Lock::Write => unreachable!(),
+                        };
+
+                        *count -= 1;
+
+                        if *count == 0 {
+                            entry.remove();
+                        }
+                    }
+                    EntryRef::Vacant(_) => unreachable!(),
+                }
+            }
+
+            for key in write_locks.keys() {
+                let removed = lock.exclusive_locks.remove(key).unwrap();
+                assert!(matches!(removed, Lock::Write));
             }
         }
 
