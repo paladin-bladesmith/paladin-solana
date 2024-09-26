@@ -31,10 +31,18 @@ thread_local! {
 
 #[must_use]
 pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
-    // NB: Clear just in case somehow we broke the control flow (perhaps a future patch) and forgot
-    // to clear before return.
+    // SAFETY:
+    //
+    // We clear the `AMM_MAP` immediately after calling to prevent any references from living longer
+    // than intended.
+    let is_frontrun = unsafe { bundle_is_front_run_inner(bundle) };
     AMM_MAP.with(|map| map.borrow_mut().clear());
 
+    is_frontrun
+}
+
+#[must_use]
+unsafe fn bundle_is_front_run_inner(bundle: &impl BundleResult) -> bool {
     // Early return on failed/single TX bundles.
     let tx_count = bundle.transactions().count();
     if !bundle.executed_ok() || tx_count <= 1 {
@@ -50,6 +58,11 @@ pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
 
         // Record this TX's access of the writeable account.
         for key in writeable_amm_accounts {
+            // SAFETY:
+            //
+            // This cast is safe because we take care to clear the map before returning from the
+            // function context. Admittedly, this does mean the entire function body must be written
+            // with care.
             let key = unsafe { std::mem::transmute::<&Pubkey, &'static Pubkey>(key) };
 
             AMM_MAP.with_borrow_mut(|map| map.entry(key).or_default()[i] = true);
@@ -59,9 +72,7 @@ pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
     // Compute which TXs overlap with each other.
     let mut overlap_matrix = [[false; MAX_PACKETS_PER_BUNDLE]; MAX_PACKETS_PER_BUNDLE];
     AMM_MAP.with_borrow(|map| {
-        for (key, txs) in map {
-            println!("{key:?}: {txs:?}");
-
+        for txs in map.values() {
             if txs.iter().filter(|tx| **tx).count() <= 1 {
                 continue;
             }
@@ -100,18 +111,10 @@ pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
 
                 // If we reach this point it means none of the signers matched and thus this is a
                 // frontrun.
-
-                // NB: We MUST clear this hashmap else it will be full of pointers to
-                // de-allocated memory (whenever the bundle struct gets dropped).
-                AMM_MAP.with_borrow_mut(|map| map.clear());
                 return true;
             }
         }
     }
-
-    // NB: We MUST clear this hashmap else it will be full of pointers to de-allocated
-    // memory (whenever the bundle struct gets dropped).
-    AMM_MAP.with_borrow_mut(|map| map.clear());
 
     false
 }
@@ -170,8 +173,10 @@ mod tests {
     const NOT_AMM_1: Pubkey = Pubkey::new_from_array([2; 32]);
     const AMM_0: Pubkey = AMM_PROGRAMS[0];
     const AMM_1: Pubkey = AMM_PROGRAMS[1];
+    const AMM_2: Pubkey = AMM_PROGRAMS[2];
     const SIGNER_0: Pubkey = Pubkey::new_from_array([3; 32]);
     const SIGNER_1: Pubkey = Pubkey::new_from_array([4; 32]);
+    const SIGNER_2: Pubkey = Pubkey::new_from_array([5; 32]);
 
     struct MockBundleResult {
         executed_ok: bool,
@@ -222,11 +227,8 @@ mod tests {
             ],
         };
 
-        // Act.
-        let is_frontrun = bundle_is_front_run(&bundle);
-
-        // Assert.
-        assert_eq!(is_frontrun, false);
+        // Act & Assert.
+        assert!(!bundle_is_front_run(&bundle));
     }
 
     #[test]
@@ -246,10 +248,103 @@ mod tests {
             ],
         };
 
-        // Act.
-        let is_frontrun = bundle_is_front_run(&bundle);
+        // Act & Assert.
+        assert!(bundle_is_front_run(&bundle));
+    }
 
-        // Assert.
-        assert_eq!(is_frontrun, true);
+    #[test]
+    fn first_and_third_conflict_middle_not_amm() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![NOT_AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_2],
+                    writeable_account_owners: vec![AMM_0],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(bundle_is_front_run(&bundle));
+    }
+
+    #[test]
+    fn first_and_third_conflict_middle_amm() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![AMM_1],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_2],
+                    writeable_account_owners: vec![AMM_0],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(bundle_is_front_run(&bundle));
+    }
+
+    #[test]
+    fn three_amms_no_conflict() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![AMM_1],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_2],
+                    writeable_account_owners: vec![AMM_2],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(!bundle_is_front_run(&bundle));
+    }
+
+    #[test]
+    fn two_amms_same_signer() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![AMM_0],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(!bundle_is_front_run(&bundle));
     }
 }
