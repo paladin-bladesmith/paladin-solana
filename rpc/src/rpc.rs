@@ -4115,6 +4115,7 @@ pub mod rpc_full {
 
             let bundle_execution_result = load_and_execute_bundle(
                 &bank,
+                None,
                 &sanitized_bundle,
                 MAX_PROCESSING_AGE,
                 &MAX_BUNDLE_SIMULATION_TIME,

@@ -6,10 +6,8 @@ use {
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
-            bundle_account_locker::{BundleAccountLocker, LockedBundle},
             bundle_reserved_space_manager::BundleReservedSpaceManager,
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-            committer::Committer,
+            bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
         },
         consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
@@ -18,6 +16,7 @@ use {
     },
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
+        bundle_account_locker::{BundleAccountLocker, LockedBundle},
         bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
         BundleExecutionError, BundleExecutionResult, TipError,
     },
@@ -31,7 +30,7 @@ use {
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
-        transaction::{self},
+        transaction,
     },
     std::{
         collections::HashSet,
@@ -215,6 +214,7 @@ impl BundleConsumer {
                 .map(|(_, sanitized_bundle)| {
                     bundle_account_locker
                         .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                        .map(|locked_bundle| (locked_bundle, sanitized_bundle))
                 })
                 .collect::<Vec<_>>(),
             "locked_bundles_elapsed"
@@ -226,7 +226,7 @@ impl BundleConsumer {
         let (execution_results, execute_locked_bundles_elapsed) = measure!(locked_bundle_results
             .into_iter()
             .map(|r| match r {
-                Ok(locked_bundle) => {
+                Ok((locked_bundle, sanitized_bundle)) => {
                     let (r, measure) = measure_us!(Self::process_bundle(
                         bundle_account_locker,
                         tip_manager,
@@ -239,7 +239,8 @@ impl BundleConsumer {
                         log_messages_bytes_limit,
                         max_bundle_retry_duration,
                         reserved_space,
-                        &locked_bundle,
+                        locked_bundle,
+                        sanitized_bundle,
                         bank_start,
                         bundle_stage_leader_metrics,
                     ));
@@ -279,7 +280,8 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         reserved_space: &BundleReservedSpaceManager,
-        locked_bundle: &LockedBundle,
+        locked_bundle: LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -328,7 +330,8 @@ impl BundleConsumer {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             Some(reserved_space),
-            locked_bundle.sanitized_bundle(),
+            locked_bundle,
+            sanitized_bundle,
             bank_start,
             bundle_stage_leader_metrics,
             true,
@@ -379,7 +382,8 @@ impl BundleConsumer {
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
                 Some(reserved_space),
-                locked_init_tip_programs_bundle.sanitized_bundle(),
+                locked_init_tip_programs_bundle,
+                &bundle,
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
@@ -390,8 +394,7 @@ impl BundleConsumer {
                     .increment_num_init_tip_account_errors(1);
                 error!(
                     "bundle: {} error initializing tip programs: {:?}",
-                    locked_init_tip_programs_bundle.sanitized_bundle().bundle_id,
-                    e
+                    bundle.bundle_id, e
                 );
                 BundleExecutionError::TipError(TipError::InitializeProgramsError)
             })?;
@@ -433,7 +436,8 @@ impl BundleConsumer {
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
                 Some(reserved_space),
-                locked_tip_crank_bundle.sanitized_bundle(),
+                locked_tip_crank_bundle,
+                &bundle,
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
@@ -444,8 +448,7 @@ impl BundleConsumer {
                     .increment_num_change_tip_receiver_errors(1);
                 error!(
                     "bundle: {} error cranking tip programs: {:?}",
-                    locked_tip_crank_bundle.sanitized_bundle().bundle_id,
-                    e
+                    bundle.bundle_id, e
                 );
                 BundleExecutionError::TipError(TipError::CrankTipError)
             })?;
@@ -503,6 +506,7 @@ impl BundleConsumer {
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
         reserved_space: Option<&BundleReservedSpaceManager>,
+        locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
@@ -537,6 +541,7 @@ impl BundleConsumer {
             recorder,
             log_messages_bytes_limit,
             max_bundle_retry_duration,
+            locked_bundle,
             sanitized_bundle,
             bank_start,
             fifo,
@@ -622,6 +627,7 @@ impl BundleConsumer {
         recorder: &TransactionRecorder,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
+        locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         fifo: bool,
@@ -634,6 +640,7 @@ impl BundleConsumer {
         let default_accounts = vec![None; sanitized_bundle.transactions.len()];
         let mut bundle_execution_results = load_and_execute_bundle(
             &bank_start.working_bank,
+            Some(locked_bundle),
             sanitized_bundle,
             MAX_PROCESSING_AGE,
             &max_bundle_retry_duration,

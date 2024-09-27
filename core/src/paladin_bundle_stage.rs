@@ -6,9 +6,7 @@ use {
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
-            bundle_account_locker::{BundleAccountLocker, LockedBundle},
-            bundle_consumer::BundleConsumer,
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics,
+            bundle_consumer::BundleConsumer, bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             committer::Committer,
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
@@ -16,7 +14,10 @@ use {
     },
     crossbeam_channel::Receiver,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
-    solana_bundle::BundleExecutionError,
+    solana_bundle::{
+        bundle_account_locker::{BundleAccountLocker, LockedBundle},
+        BundleExecutionError,
+    },
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::{measure, measure_us},
@@ -255,6 +256,7 @@ impl PaladinBundleStage {
                 .map(|(_, sanitized_bundle)| {
                     bundle_account_locker
                         .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
+                        .map(|locked_bundle| (locked_bundle, sanitized_bundle))
                 })
                 .collect::<Vec<_>>(),
             "locked_bundles_elapsed"
@@ -266,14 +268,15 @@ impl PaladinBundleStage {
         let (execution_results, execute_locked_bundles_elapsed) = measure!(locked_bundle_results
             .into_iter()
             .map(|r| match r {
-                Ok(locked_bundle) => {
+                Ok((locked_bundle, sanitized_bundle)) => {
                     let (r, measure) = measure_us!(Self::process_bundle(
                         committer,
                         recorder,
                         qos_service,
                         log_messages_bytes_limit,
                         max_bundle_retry_duration,
-                        &locked_bundle,
+                        locked_bundle,
+                        sanitized_bundle,
                         bank_start,
                         bundle_stage_leader_metrics,
                     ));
@@ -307,7 +310,8 @@ impl PaladinBundleStage {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        locked_bundle: &LockedBundle,
+        locked_bundle: LockedBundle,
+        sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -325,7 +329,8 @@ impl PaladinBundleStage {
             log_messages_bytes_limit,
             max_bundle_retry_duration,
             None,
-            locked_bundle.sanitized_bundle(),
+            locked_bundle,
+            sanitized_bundle,
             bank_start,
             bundle_stage_leader_metrics,
             false,
