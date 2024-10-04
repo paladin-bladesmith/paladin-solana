@@ -3,6 +3,7 @@ use {
     bytes::{Buf, BytesMut},
     crossbeam_channel::TrySendError,
     futures::{future::OptionFuture, StreamExt},
+    itertools::Itertools,
     solana_perf::packet::PacketBatch,
     solana_sdk::packet::{Meta, Packet, PACKET_DATA_SIZE},
     std::{
@@ -36,7 +37,6 @@ pub(crate) struct PaladinSocket {
 
     socket: TcpListener,
     stream: Option<Framed<TcpStream, TransactionStreamCodec>>,
-    bundle_id: u16,
 
     metrics: PaladinSocketMetrics,
     metrics_interval: tokio::time::Interval,
@@ -91,7 +91,6 @@ impl PaladinSocket {
 
             socket,
             stream: None,
-            bundle_id: 0,
 
             metrics_interval: tokio::time::interval(METRICS_REPORT_INTERVAL),
             metrics: PaladinSocketMetrics::default(),
@@ -115,7 +114,7 @@ impl PaladinSocket {
                     let (stream, address) = res?;
 
                     info!("Accepted TcpStream; address={address}");
-                    self.stream = Some(Framed::new(stream, TransactionStreamCodec));
+                    self.stream = Some(Framed::new(stream, TransactionStreamCodec::default()));
                 }
                 Some(opt) = OptionFuture::from(self.stream.as_mut().map(|stream| stream.next())) =>
                 {
@@ -148,48 +147,44 @@ impl PaladinSocket {
         }
     }
 
-    fn on_bundles(&mut self, bundles: Vec<Vec<Packet>>) -> Result<(), PaladinError> {
+    fn on_bundles(&mut self, bundles: Vec<PacketBundle>) -> Result<(), PaladinError> {
         debug!("Received bundles; count={}", bundles.len());
         self.metrics.num_paladin_bundles = self
             .metrics
             .num_paladin_bundles
             .saturating_add(bundles.len() as u64);
 
-        // Convert bundles into Jito's expected format.
-        let bundles: Vec<_> = bundles
-            .into_iter()
-            .map(|packets| PacketBundle {
-                bundle_id: format!("P{}", self.next_id()),
-                batch: PacketBatch::new(packets),
-            })
-            .collect();
-
         // Bon voyage.
         self.paladin_tx.try_send(bundles).map_err(Into::into)
     }
+}
 
+#[derive(Default)]
+struct TransactionStreamCodec {
+    bundle_id: u16,
+}
+
+impl TransactionStreamCodec {
     fn next_id(&mut self) -> u16 {
         self.bundle_id = self.bundle_id.wrapping_add(1);
         self.bundle_id
     }
 }
 
-struct TransactionStreamCodec;
-
 impl Decoder for TransactionStreamCodec {
-    type Item = Vec<Vec<Packet>>;
+    type Item = Vec<PacketBundle>;
     type Error = TransactionStreamError;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let mut cursor = std::io::Cursor::new(&src);
-        match bincode::deserialize_from::<_, Vec<Vec<Vec<u8>>>>(&mut cursor).map_err(|err| *err) {
-            Ok(bundles) => {
+        match bincode::deserialize_from::<_, Vec<(bool, Vec<u8>)>>(&mut cursor).map_err(|err| *err)
+        {
+            Ok(txs) => {
                 src.advance(cursor.position() as usize);
 
-                let mut packet_batches = Vec::with_capacity(bundles.len());
-                for bundle in bundles {
-                    let mut batch = Vec::with_capacity(bundle.len());
-                    for tx in bundle {
+                let bundles = txs
+                    .into_iter()
+                    .map(|(retryable, tx)| {
                         if tx.len() > PACKET_DATA_SIZE {
                             return Err(TransactionStreamError::TransactionSize);
                         }
@@ -198,19 +193,27 @@ impl Decoder for TransactionStreamCodec {
                         let mut buffer = [0; PACKET_DATA_SIZE];
                         buffer[0..tx.len()].copy_from_slice(&tx);
 
-                        batch.push(Packet::new(
-                            buffer,
-                            Meta {
-                                size: tx.len(),
-                                ..Meta::default()
-                            },
-                        ));
-                    }
+                        Ok(PacketBundle {
+                            batch: PacketBatch::new(vec![Packet::new(
+                                buffer,
+                                Meta {
+                                    size: tx.len(),
+                                    ..Meta::default()
+                                },
+                            )]),
+                            bundle_id: format!(
+                                "P|{}|{}",
+                                self.next_id(),
+                                match retryable {
+                                    true => 'Y',
+                                    false => 'N',
+                                }
+                            ),
+                        })
+                    })
+                    .try_collect()?;
 
-                    packet_batches.push(batch);
-                }
-
-                Ok(Some(packet_batches))
+                Ok(Some(bundles))
             }
             Err(bincode::ErrorKind::Io(err)) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 Ok(None)

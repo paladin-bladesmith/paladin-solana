@@ -130,10 +130,13 @@ impl PaladinBundleStage {
                 bundles = coalesce;
             }
 
-            // Update our bundle storage.
-            self.bundles = bundles
-                .into_iter()
-                .filter_map(|mut bundle| {
+            // Drop any non-retryable bundles.
+            self.bundles
+                .retain(|bundle| bundle.bundle_id().ends_with('Y'));
+
+            // Add the new bundles.
+            self.bundles
+                .extend(bundles.into_iter().filter_map(|mut bundle| {
                     match ImmutableDeserializedBundle::new(
                         &mut bundle,
                         Some(MAX_PACKETS_PER_BUNDLE),
@@ -144,8 +147,7 @@ impl PaladinBundleStage {
                             None
                         }
                     }
-                })
-                .collect();
+                }));
 
             // Update our locks if bank has started.
             let mut decision = self.decision_maker.make_consume_or_forward_decision();
