@@ -354,7 +354,7 @@ impl PaladinBundleStage {
             self.blacklisted_accounts = self
                 .consensus_cache_updater
                 .consensus_accounts_cache()
-                .into_iter()
+                .iter()
                 .chain(std::iter::once(&jito_tip_payment::id()))
                 .cloned()
                 .collect();
