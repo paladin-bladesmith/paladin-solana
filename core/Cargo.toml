@@ -25,6 +25,7 @@ dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 eager = { workspace = true }
 etcd-client = { workspace = true, features = ["tls"] }
 futures = { workspace = true }
+hashbrown.workspace = true
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
