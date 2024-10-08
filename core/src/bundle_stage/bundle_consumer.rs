@@ -672,7 +672,9 @@ impl BundleConsumer {
             bundle_execution_results.result().is_ok()
         );
 
-        // don't commit bundle if failure executing any part of the bundle
+        // NB: Front run detection relies on the fact that bundles with errors are dropped here. If
+        // that ever changes bundle detection will panic due to unwrapping the loaded transaction
+        // result.
         if let Err(e) = bundle_execution_results.result() {
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],

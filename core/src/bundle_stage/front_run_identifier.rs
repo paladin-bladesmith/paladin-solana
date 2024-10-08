@@ -1,8 +1,10 @@
 use {
     super::MAX_PACKETS_PER_BUNDLE,
     hashbrown::HashMap,
+    solana_accounts_db::accounts::LoadedTransaction,
     solana_bundle::bundle_execution::LoadAndExecuteBundleOutput,
     solana_sdk::{
+        account::ReadableAccount,
         pubkey::Pubkey,
         transaction::{SanitizedTransaction, MAX_TX_ACCOUNT_LOCKS},
     },
@@ -30,7 +32,7 @@ thread_local! {
 }
 
 #[must_use]
-pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
+pub(crate) fn bundle_is_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
     // SAFETY:
     //
     // We clear the `AMM_MAP` immediately after calling to prevent any references from living longer
@@ -42,7 +44,7 @@ pub(crate) fn bundle_is_front_run(bundle: &impl BundleResult) -> bool {
 }
 
 #[must_use]
-unsafe fn bundle_is_front_run_inner(bundle: &impl BundleResult) -> bool {
+unsafe fn bundle_is_front_run_inner<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
     // Early return on failed/single TX bundles.
     let tx_count = bundle.transactions().count();
     if !bundle.executed_ok() || tx_count <= 1 {
@@ -53,7 +55,7 @@ unsafe fn bundle_is_front_run_inner(bundle: &impl BundleResult) -> bool {
     for (i, tx) in bundle.transactions().enumerate() {
         // Find all the AMM owned writeable accounts.
         let writeable_amm_accounts = tx
-            .writable_account_owners()
+            .writable_accounts_owners()
             .filter(|owner| AMM_PROGRAMS.contains(owner));
 
         // Record this TX's access of the writeable account.
@@ -119,49 +121,56 @@ unsafe fn bundle_is_front_run_inner(bundle: &impl BundleResult) -> bool {
     false
 }
 
-pub(crate) trait BundleResult {
+pub(crate) trait BundleResult<'a> {
     type Transaction: BundleTransaction;
 
     fn executed_ok(&self) -> bool;
-    fn transactions(&self) -> impl Iterator<Item = &Self::Transaction>;
+    fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction>;
 }
 
 pub(crate) trait BundleTransaction {
     /// Iterator over each signer.
     fn signers(&self) -> impl Iterator<Item = &Pubkey>;
     /// Iterator over each loaded account's owner.
-    fn writable_account_owners(&self) -> impl Iterator<Item = &Pubkey>;
+    fn writable_accounts_owners(&self) -> impl Iterator<Item = &Pubkey>;
 }
 
-impl BundleResult for LoadAndExecuteBundleOutput<'_> {
-    type Transaction = SanitizedTransaction;
+impl<'a> BundleResult<'a> for LoadAndExecuteBundleOutput<'a> {
+    type Transaction = (&'a SanitizedTransaction, &'a LoadedTransaction);
 
     fn executed_ok(&self) -> bool {
         self.executed_ok()
     }
 
-    fn transactions(&self) -> impl Iterator<Item = &Self::Transaction> {
-        self.bundle_transaction_results()
-            .iter()
-            .flat_map(|batch| batch.transactions())
+    fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
+        self.bundle_transaction_results().iter().flat_map(|batch| {
+            batch
+                .load_and_execute_transactions_output()
+                .loaded_transactions
+                .iter()
+                .enumerate()
+                .map(|(i, (res, _))| (&batch.transactions()[i], res.as_ref().unwrap()))
+        })
     }
 }
 
-impl BundleTransaction for SanitizedTransaction {
+impl<'a> BundleTransaction for (&'a SanitizedTransaction, &'a LoadedTransaction) {
     fn signers(&self) -> impl Iterator<Item = &Pubkey> {
-        self.message()
+        self.0
+            .message()
             .account_keys()
             .iter()
-            .take(self.message().num_signatures() as usize)
+            .take(self.0.message().num_signatures() as usize)
     }
 
-    fn writable_account_owners(&self) -> impl Iterator<Item = &Pubkey> {
-        self.message()
+    fn writable_accounts_owners(&self) -> impl Iterator<Item = &Pubkey> {
+        self.0
+            .message()
             .account_keys()
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.message().is_writable(*i))
-            .map(|(_, key)| key)
+            .filter(|(i, _)| self.0.message().is_writable(*i))
+            .map(|(i, _)| self.1.accounts[i].1.owner())
     }
 }
 
@@ -183,14 +192,14 @@ mod tests {
         transactions: Vec<MockTransaction>,
     }
 
-    impl BundleResult for MockBundleResult {
-        type Transaction = MockTransaction;
+    impl<'a> BundleResult<'a> for MockBundleResult {
+        type Transaction = &'a MockTransaction;
 
         fn executed_ok(&self) -> bool {
             self.executed_ok
         }
 
-        fn transactions(&self) -> impl Iterator<Item = &Self::Transaction> {
+        fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
             self.transactions.iter()
         }
     }
@@ -200,12 +209,12 @@ mod tests {
         writeable_account_owners: Vec<Pubkey>,
     }
 
-    impl BundleTransaction for MockTransaction {
+    impl<'a> BundleTransaction for &'a MockTransaction {
         fn signers(&self) -> impl Iterator<Item = &Pubkey> {
             self.signers.iter()
         }
 
-        fn writable_account_owners(&self) -> impl Iterator<Item = &Pubkey> {
+        fn writable_accounts_owners(&self) -> impl Iterator<Item = &Pubkey> {
             self.writeable_account_owners.iter()
         }
     }
@@ -340,6 +349,48 @@ mod tests {
                 MockTransaction {
                     signers: vec![SIGNER_0],
                     writeable_account_owners: vec![AMM_0],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(!bundle_is_front_run(&bundle));
+    }
+
+    #[test]
+    fn overlapping_non_amms_different_signers() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![NOT_AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![NOT_AMM_0],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(!bundle_is_front_run(&bundle));
+    }
+
+    #[test]
+    fn non_overlapping_non_amms_different_signers() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    writeable_account_owners: vec![NOT_AMM_0],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    writeable_account_owners: vec![NOT_AMM_1],
                 },
             ],
         };
