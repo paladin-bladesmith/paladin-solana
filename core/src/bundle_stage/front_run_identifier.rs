@@ -28,23 +28,13 @@ const AMM_PROGRAMS: &[Pubkey] = &[
 ];
 
 thread_local! {
-    static AMM_MAP: RefCell<HashMap<&'static Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>> = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
+    static AMM_MAP: RefCell<HashMap<Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>> = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
 }
 
 #[must_use]
 pub(crate) fn bundle_is_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
-    // SAFETY:
-    //
-    // We clear the `AMM_MAP` immediately after calling to prevent any references from living longer
-    // than intended.
-    let is_frontrun = unsafe { bundle_is_front_run_inner(bundle) };
-    AMM_MAP.with(|map| map.borrow_mut().clear());
+    AMM_MAP.with_borrow_mut(|map| map.clear());
 
-    is_frontrun
-}
-
-#[must_use]
-unsafe fn bundle_is_front_run_inner<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
     // Early return on failed/single TX bundles.
     let tx_count = bundle.transactions().count();
     if !bundle.executed_ok() || tx_count <= 1 {
@@ -60,14 +50,7 @@ unsafe fn bundle_is_front_run_inner<'a>(bundle: &'a impl BundleResult<'a>) -> bo
 
         // Record this TX's access of the writeable account.
         for key in writeable_amm_accounts {
-            // SAFETY:
-            //
-            // This cast is safe because we take care to clear the map before returning from the
-            // function context. Admittedly, this does mean the entire function body must be written
-            // with care.
-            let key = unsafe { std::mem::transmute::<&Pubkey, &'static Pubkey>(key) };
-
-            AMM_MAP.with_borrow_mut(|map| map.entry(key).or_default()[i] = true);
+            AMM_MAP.with_borrow_mut(|map| map.entry_ref(key).or_default()[i] = true);
         }
     }
 
