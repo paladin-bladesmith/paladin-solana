@@ -9,6 +9,7 @@ use {
             bundle_consumer::BundleConsumer, bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             committer::Committer,
         },
+        consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
     },
@@ -23,7 +24,7 @@ use {
     solana_measure::{measure, measure_us},
     solana_poh::poh_recorder::{BankStart, PohRecorder, TransactionRecorder},
     solana_runtime::{bank::Bank, prioritization_fee_cache::PrioritizationFeeCache},
-    solana_sdk::bundle::SanitizedBundle,
+    solana_sdk::{bundle::SanitizedBundle, pubkey::Pubkey},
     solana_vote::vote_sender_types::ReplayVoteSender,
     std::{
         collections::{HashSet, VecDeque},
@@ -53,6 +54,8 @@ pub(crate) struct PaladinBundleStage {
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
     log_messages_bytes_limit: Option<usize>,
+    consensus_cache_updater: ConsensusCacheUpdater,
+    blacklisted_accounts: HashSet<Pubkey>,
 }
 
 impl PaladinBundleStage {
@@ -96,6 +99,8 @@ impl PaladinBundleStage {
                     transaction_recorder,
                     qos_service: QosService::new(PALADIN_BUNDLE_STAGE_ID),
                     log_messages_bytes_limit,
+                    consensus_cache_updater: ConsensusCacheUpdater::default(),
+                    blacklisted_accounts: HashSet::default(),
                 }
                 .run()
             })
@@ -198,6 +203,8 @@ impl PaladinBundleStage {
     }
 
     fn consume_buffered_bundles(&mut self, bank_start: &BankStart) {
+        self.maybe_update_blacklist(bank_start);
+
         // Drain our latest bundles.
         let mut unprocessed_transaction_storage = UnprocessedTransactionStorage::new_bundle_storage(
             self.bundles.drain(..).collect(),
@@ -208,7 +215,7 @@ impl PaladinBundleStage {
         let _reached_end_of_slot = unprocessed_transaction_storage.process_bundles(
             bank_start.working_bank.clone(),
             &mut self.bundle_stage_leader_metrics,
-            &HashSet::default(),
+            &self.blacklisted_accounts,
             |bundles, bundle_stage_leader_metrics| {
                 Self::do_process_bundles(
                     &self.bundle_account_locker,
@@ -337,5 +344,25 @@ impl PaladinBundleStage {
         )?;
 
         Ok(())
+    }
+
+    fn maybe_update_blacklist(&mut self, bank_start: &BankStart) {
+        if self
+            .consensus_cache_updater
+            .maybe_update(&bank_start.working_bank)
+        {
+            self.blacklisted_accounts = self
+                .consensus_cache_updater
+                .consensus_accounts_cache()
+                .into_iter()
+                .chain(std::iter::once(&jito_tip_payment::id()))
+                .cloned()
+                .collect();
+
+            debug!(
+                "updated blacklist with {} accounts",
+                self.blacklisted_accounts.len()
+            );
+        }
     }
 }
