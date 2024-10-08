@@ -17,9 +17,7 @@ use {
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
-        bundle_execution::{
-            load_and_execute_bundle, BundleExecutionMetrics, LoadAndExecuteBundleOutput,
-        },
+        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
         BundleExecutionError, BundleExecutionResult, TipError,
     },
     solana_cost_model::transaction_cost::TransactionCost,
@@ -813,7 +811,7 @@ mod tests {
     use {
         crate::{
             bundle_stage::{
-                bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
+                bundle_consumer::BundleConsumer,
                 bundle_packet_deserializer::BundlePacketDeserializer,
                 bundle_reserved_space_manager::BundleReservedSpaceManager,
                 bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
@@ -830,6 +828,7 @@ mod tests {
             transaction_error_metrics::TransactionErrorMetrics,
             transaction_results::TransactionCheckResult,
         },
+        solana_bundle::bundle_account_locker::BundleAccountLocker,
         solana_cost_model::{block_cost_limits::MAX_BLOCK_UNITS, cost_model::CostModel},
         solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfo},
         solana_ledger::{

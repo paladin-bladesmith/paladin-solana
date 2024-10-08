@@ -140,12 +140,6 @@ impl From<[u8; 32]> for Pubkey {
     }
 }
 
-impl From<&Pubkey> for Pubkey {
-    fn from(value: &Pubkey) -> Self {
-        *value
-    }
-}
-
 impl TryFrom<&[u8]> for Pubkey {
     type Error = std::array::TryFromSliceError;
 
