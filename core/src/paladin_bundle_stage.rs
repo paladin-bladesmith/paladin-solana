@@ -151,6 +151,7 @@ impl PaladinBundleStage {
                 self.bundles.retain(|bundle| {
                     let drop = bundle.bundle_id().starts_with('A');
                     if drop {
+                        debug!("Dropping stale arb; bundle_id={}", bundle.bundle_id());
                         assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
                     }
 
@@ -167,7 +168,11 @@ impl PaladinBundleStage {
                 ) {
                     Ok(bundle) => bundle,
                     Err(err) => {
-                        warn!("Failed to convert bundle; err={err}");
+                        warn!(
+                            "Failed to convert bundle; bundle_id={}; err={err}",
+                            bundle.bundle_id
+                        );
+
                         continue;
                     }
                 };
@@ -180,7 +185,10 @@ impl PaladinBundleStage {
                 ) {
                     Ok(sanitized_bundle) => sanitized_bundle,
                     Err(err) => {
-                        warn!("Failed to deserialize paladin bundle; err={err}");
+                        warn!(
+                            "Failed to deserialize paladin bundle; bundle_id={}; err={err}",
+                            immutable.bundle_id()
+                        );
 
                         continue;
                     }
@@ -196,6 +204,8 @@ impl PaladinBundleStage {
                 .try_build())
                 {
                     Ok(combined) => {
+                        debug!("Locked bundle built; bundle_id={}", immutable.bundle_id());
+
                         // NB: Silence locked unused warning.
                         let _ = combined.borrow_locked();
 
@@ -204,7 +214,10 @@ impl PaladinBundleStage {
                             .insert(combined.borrow_sanitized().bundle_id.clone(), combined);
                         assert!(prev.is_none());
                     }
-                    Err(err) => warn!("Failed to lock; err={err}"),
+                    Err(err) => warn!(
+                        "Failed to lock; bundle_id={}; err={err}",
+                        immutable.bundle_id()
+                    ),
                 }
             }
 
@@ -220,6 +233,8 @@ impl PaladinBundleStage {
                 match decision {
                     BufferedPacketsDecision::Consume(bank_start) => {
                         for bundle in self.consume_buffered_bundles(&bank_start) {
+                            debug!("Included or dropped; bundle_id={bundle}");
+
                             assert!(locked_bundles.remove(&bundle).is_some());
                         }
 
@@ -300,10 +315,7 @@ impl PaladinBundleStage {
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Vec<Result<(), BundleExecutionError>> {
-        // BundleAccountLocker holds RW locks for ALL accounts in ALL transactions within a single bundle.
-        // By pre-locking bundles before they're ready to be processed, it will prevent BankingStage from
-        // grabbing those locks so BundleStage can process as fast as possible.
-        // A LockedBundle is similar to TransactionBatch; once its dropped the locks are released.
+        // TODO: Can we avoid this needless step?
         #[allow(clippy::needless_collect)]
         let (locked_bundle_results, locked_bundles_elapsed) = measure!(
             bundles
