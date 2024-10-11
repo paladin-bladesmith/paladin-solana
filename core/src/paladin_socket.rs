@@ -202,12 +202,12 @@ impl Decoder for TransactionStreamCodec {
                                 },
                             )]),
                             bundle_id: format!(
-                                "P|{}|{}",
-                                self.next_id(),
+                                "{}|{}",
                                 match is_arb {
-                                    true => 'N',
-                                    false => 'Y',
-                                }
+                                    true => 'A',
+                                    false => 'R',
+                                },
+                                self.next_id(),
                             ),
                         })
                     })

@@ -121,35 +121,41 @@ impl PaladinBundleStage {
                 true => Duration::from_millis(100),
                 false => Duration::from_millis(0),
             };
-            let mut bundles = match self.paladin_rx.recv_timeout(timeout) {
+            let bundles = match self.paladin_rx.recv_timeout(timeout) {
                 Ok(bundles) => bundles,
                 Err(_) => continue,
             };
 
             // Drain the socket channel.
-            while let Ok(coalesce) = self.paladin_rx.try_recv() {
-                // TODO: This no longer makes sense in a post P3 world.
-                bundles = coalesce;
+            let mut arbs = None;
+            for bundles in std::iter::once(bundles)
+                .chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
+            {
+                match &bundles.first().unwrap().bundle_id.chars().next().unwrap() {
+                    'R' => Self::deserialize_extend_bundles(&mut self.bundles, bundles),
+                    'A' => {
+                        assert!(bundles
+                            .iter()
+                            .all(|bundle| bundle.bundle_id.starts_with('A')));
+                        arbs = Some(bundles);
+                    }
+                    prefix => panic!("Unexpected bundle ID prefix; prefix={prefix}"),
+                }
             }
 
-            // Drop any non-retryable bundles.
-            self.bundles
-                .retain(|bundle| bundle.bundle_id().ends_with('Y'));
-
-            // Add the new bundles.
-            self.bundles
-                .extend(bundles.into_iter().filter_map(|mut bundle| {
-                    match ImmutableDeserializedBundle::new(
-                        &mut bundle,
-                        Some(MAX_PACKETS_PER_BUNDLE),
-                    ) {
-                        Ok(bundle) => Some(bundle),
-                        Err(err) => {
-                            warn!("Failed to convert bundle; err={err}");
-                            None
-                        }
+            // Drop any arb bundles if we have a fresher set.
+            if let Some(arbs) = arbs {
+                self.bundles.retain(|bundle| {
+                    let drop = bundle.bundle_id().starts_with('A');
+                    if drop {
+                        assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
                     }
-                }));
+
+                    drop
+                });
+
+                Self::deserialize_extend_bundles(&mut self.bundles, arbs);
+            }
 
             // Update our locks if bank has started.
             let mut decision = self.decision_maker.make_consume_or_forward_decision();
@@ -214,6 +220,21 @@ impl PaladinBundleStage {
                 decision = self.decision_maker.make_consume_or_forward_decision();
             }
         }
+    }
+
+    fn deserialize_extend_bundles(
+        bundles: &mut Vec<ImmutableDeserializedBundle>,
+        additional: Vec<PacketBundle>,
+    ) {
+        bundles.extend(additional.into_iter().filter_map(|mut bundle| {
+            match ImmutableDeserializedBundle::new(&mut bundle, Some(MAX_PACKETS_PER_BUNDLE)) {
+                Ok(bundle) => Some(bundle),
+                Err(err) => {
+                    warn!("Failed to convert bundle; err={err}");
+                    None
+                }
+            }
+        }))
     }
 
     /// Returns the bundles that were processed/dropped.
