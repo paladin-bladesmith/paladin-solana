@@ -177,14 +177,14 @@ impl Decoder for TransactionStreamCodec {
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let mut cursor = std::io::Cursor::new(&src);
-        match bincode::deserialize_from::<_, Vec<(bool, Vec<u8>)>>(&mut cursor).map_err(|err| *err)
+        match bincode::deserialize_from::<_, (bool, Vec<Vec<u8>>)>(&mut cursor).map_err(|err| *err)
         {
-            Ok(txs) => {
+            Ok((is_arb, txs)) => {
                 src.advance(cursor.position() as usize);
 
                 let bundles = txs
                     .into_iter()
-                    .map(|(retryable, tx)| {
+                    .map(|tx| {
                         if tx.len() > PACKET_DATA_SIZE {
                             return Err(TransactionStreamError::TransactionSize);
                         }
@@ -204,9 +204,9 @@ impl Decoder for TransactionStreamCodec {
                             bundle_id: format!(
                                 "P|{}|{}",
                                 self.next_id(),
-                                match retryable {
-                                    true => 'Y',
-                                    false => 'N',
+                                match is_arb {
+                                    true => 'N',
+                                    false => 'Y',
                                 }
                             ),
                         })

@@ -6260,6 +6260,7 @@ dependencies = [
  "lru",
  "min-max-heap",
  "num_enum 0.7.2",
+ "ouroboros",
  "prio-graph",
  "prost",
  "prost-types",

@@ -14,6 +14,8 @@ use {
         packet_bundle::PacketBundle,
     },
     crossbeam_channel::Receiver,
+    hashbrown::HashMap,
+    ouroboros::self_referencing,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
@@ -111,8 +113,7 @@ impl PaladinBundleStage {
         // This state represents our current locks which is intentionally kept
         // separate to our thread struct.
         let bundle_account_locker = self.bundle_account_locker.clone();
-        let mut sanitized_bundles = Vec::default();
-        let mut locked_bundles = Vec::default();
+        let mut locked_bundles: HashMap<String, _> = HashMap::default();
 
         while !self.exit.load(Ordering::Relaxed) {
             // Wait for initial bundles.
@@ -127,6 +128,7 @@ impl PaladinBundleStage {
 
             // Drain the socket channel.
             while let Ok(coalesce) = self.paladin_rx.try_recv() {
+                // TODO: This no longer makes sense in a post P3 world.
                 bundles = coalesce;
             }
 
@@ -152,38 +154,46 @@ impl PaladinBundleStage {
             // Update our locks if bank has started.
             let mut decision = self.decision_maker.make_consume_or_forward_decision();
             if let BufferedPacketsDecision::Consume(bank_start) = &decision {
-                // Drop previous locks.
-                drop(locked_bundles);
-                drop(sanitized_bundles);
+                // Lock any new bundles and insert into the lock bundle map.
+                for sanitized in self.bundles.iter().filter_map(|immutable_bundle| {
+                    match immutable_bundle.build_sanitized_bundle(
+                        &bank_start.working_bank,
+                        &HashSet::default(),
+                        &mut TransactionErrorMetrics::default(),
+                    ) {
+                        Ok(sanitized_bundle) => Some(sanitized_bundle),
+                        Err(err) => {
+                            warn!("Failed to deserialize paladin bundle; err={err}");
 
-                // Compute new sanitized bundles.
-                sanitized_bundles = self
-                    .bundles
-                    .iter()
-                    .filter_map(|immutable_bundle| {
-                        match immutable_bundle.build_sanitized_bundle(
-                            &bank_start.working_bank,
-                            &HashSet::default(),
-                            &mut TransactionErrorMetrics::default(),
-                        ) {
-                            Ok(sanitized_bundle) => Some(sanitized_bundle),
-                            Err(err) => {
-                                warn!("Failed to deserialize paladin bundle; err={err}");
-
-                                None
-                            }
+                            None
                         }
-                    })
-                    .collect::<Vec<_>>();
+                    }
+                }) {
+                    if locked_bundles.contains_key(&sanitized.bundle_id) {
+                        continue;
+                    }
 
-                // Take new locks.
-                locked_bundles = sanitized_bundles
-                    .iter()
-                    .map(|sanitized_bundle| {
-                        bundle_account_locker
-                            .prepare_locked_bundle(sanitized_bundle, &bank_start.working_bank)
-                    })
-                    .collect::<Vec<_>>();
+                    // TODO: Track lock failures via metrics.
+                    if let Ok(combined) = (LockedSanitizedBundleTryBuilder {
+                        sanitized,
+                        locked_builder: |sanitized| {
+                            bundle_account_locker
+                                .prepare_locked_bundle(sanitized, &bank_start.working_bank)
+                        },
+                    }
+                    .try_build())
+                    {
+                        let prev = locked_bundles.insert(
+                            combined
+                                .borrow_locked()
+                                .sanitized_bundle()
+                                .bundle_id
+                                .clone(),
+                            combined,
+                        );
+                        assert!(prev.is_none());
+                    }
+                }
             }
             while self.paladin_rx.is_empty() {
                 let (bundle_action, banking_action) = self
@@ -194,7 +204,9 @@ impl PaladinBundleStage {
 
                 match decision {
                     BufferedPacketsDecision::Consume(bank_start) => {
-                        self.consume_buffered_bundles(&bank_start)
+                        for bundle in self.consume_buffered_bundles(&bank_start) {
+                            assert!(locked_bundles.remove(&bundle).is_some());
+                        }
                     }
                     _ => break,
                 }
@@ -204,12 +216,19 @@ impl PaladinBundleStage {
         }
     }
 
-    fn consume_buffered_bundles(&mut self, bank_start: &BankStart) {
+    /// Returns the bundles that were processed/dropped.
+    #[must_use]
+    fn consume_buffered_bundles(&mut self, bank_start: &BankStart) -> HashSet<String> {
         self.maybe_update_blacklist(bank_start);
 
         // Drain our latest bundles.
+        let bundles: VecDeque<_> = self.bundles.drain(..).collect();
+        let mut bundles_start: HashSet<_> = bundles
+            .iter()
+            .map(|bundle| bundle.bundle_id().to_string())
+            .collect();
         let mut unprocessed_transaction_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            self.bundles.drain(..).collect(),
+            bundles,
             VecDeque::with_capacity(self.bundles.len()),
         );
 
@@ -238,8 +257,15 @@ impl PaladinBundleStage {
             UnprocessedTransactionStorage::BundleStorage(storage) => storage,
             _ => unreachable!(),
         };
-        self.bundles
-            .extend(bundle_storage.unprocessed_bundle_storage.drain(..));
+
+        // Remove the bundles that did not get processed from our bundle ID hashset.
+        for remaining in bundle_storage.unprocessed_bundle_storage.drain(..) {
+            bundles_start.remove(remaining.bundle_id());
+            self.bundles.push(remaining);
+        }
+
+        // `bundles_start` now contains the bundles that **were** processed. We must return this set so we can manually remove these locks.
+        bundles_start
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -367,4 +393,12 @@ impl PaladinBundleStage {
             );
         }
     }
+}
+
+#[self_referencing]
+struct LockedSanitizedBundle<'a> {
+    sanitized: SanitizedBundle,
+    #[covariant]
+    #[borrows(sanitized)]
+    locked: LockedBundle<'a, 'this>,
 }
