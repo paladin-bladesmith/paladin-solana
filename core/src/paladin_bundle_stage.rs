@@ -279,10 +279,10 @@ impl PaladinBundleStage {
             _ => unreachable!(),
         };
 
-        // Remove the bundles that did not get processed from our bundle ID hashset.
-        for remaining in bundle_storage.unprocessed_bundle_storage.drain(..) {
-            bundles_start.remove(remaining.bundle_id());
-            self.bundles.push(remaining);
+        // Remove the bundles that did not get processed from our bundle ID HashSet.
+        for unprocessed in bundle_storage.unprocessed_bundle_storage.drain(..) {
+            bundles_start.remove(unprocessed.bundle_id());
+            self.bundles.push(unprocessed);
         }
 
         // `bundles_start` now contains the bundles that **were** processed. We must return this set so we can manually remove these locks.
