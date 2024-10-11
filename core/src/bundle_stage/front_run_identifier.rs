@@ -32,7 +32,7 @@ thread_local! {
 }
 
 #[must_use]
-pub(crate) fn bundle_is_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
+pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
     AMM_MAP.with_borrow_mut(|map| map.clear());
 
     // Early return on failed/single TX bundles.
@@ -122,7 +122,10 @@ impl<'a> BundleResult<'a> for LoadAndExecuteBundleOutput<'a> {
     type Transaction = (&'a SanitizedTransaction, &'a LoadedTransaction);
 
     fn executed_ok(&self) -> bool {
-        self.executed_ok()
+        self.bundle_transaction_results()
+            .iter()
+            .flat_map(|tx| tx.execution_results())
+            .all(|tx| tx.was_executed_successfully())
     }
 
     fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
@@ -220,7 +223,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(!bundle_is_front_run(&bundle));
+        assert!(!is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -241,7 +244,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(bundle_is_front_run(&bundle));
+        assert!(is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -266,7 +269,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(bundle_is_front_run(&bundle));
+        assert!(is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -291,7 +294,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(bundle_is_front_run(&bundle));
+        assert!(is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -316,7 +319,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(!bundle_is_front_run(&bundle));
+        assert!(!is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -337,7 +340,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(!bundle_is_front_run(&bundle));
+        assert!(!is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -358,7 +361,7 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(!bundle_is_front_run(&bundle));
+        assert!(!is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -379,6 +382,6 @@ mod tests {
         };
 
         // Act & Assert.
-        assert!(!bundle_is_front_run(&bundle));
+        assert!(!is_bundle_front_run(&bundle));
     }
 }

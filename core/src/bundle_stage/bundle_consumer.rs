@@ -679,9 +679,6 @@ impl BundleConsumer {
             bundle_execution_results.result().is_ok()
         );
 
-        // NB: Front run detection relies on the fact that bundles with errors are dropped here. If
-        // that ever changes bundle detection will panic due to unwrapping the loaded transaction
-        // result.
         if let Err(e) = bundle_execution_results.result() {
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],
@@ -690,6 +687,14 @@ impl BundleConsumer {
                 execute_and_commit_timings,
                 transaction_error_counter,
             };
+        }
+
+        // NB: Must run before we start committing the transactions.
+        if super::front_run_identifier::is_bundle_front_run(&bundle_execution_results) {
+            info!(
+                "Front run detected; bundle_id={}",
+                sanitized_bundle.bundle_id
+            );
         }
 
         let (executed_batches, execution_results_to_transactions_us) =
@@ -734,14 +739,6 @@ impl BundleConsumer {
             sanitized_bundle.bundle_id,
             record_transactions_result.is_ok()
         );
-
-        // Check if bundle was a front-run.
-        if super::front_run_identifier::bundle_is_front_run(&bundle_execution_results) {
-            info!(
-                "Front run detected; bundle_id={}",
-                sanitized_bundle.bundle_id
-            );
-        }
 
         // don't commit bundle if failed to record
         if let Err(e) = record_transactions_result {
