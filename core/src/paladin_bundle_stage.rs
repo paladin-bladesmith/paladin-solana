@@ -151,7 +151,6 @@ impl PaladinBundleStage {
                 self.bundles.retain(|bundle| {
                     let drop = bundle.bundle_id().starts_with('A');
                     if drop {
-                        println!("DROP: {}", bundle.bundle_id());
                         assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
                     }
 
@@ -162,7 +161,6 @@ impl PaladinBundleStage {
             // Take all necessary locks, processing the arbs first.
             let bank = self.poh_recorder.read().unwrap().latest_bank();
             for mut bundle in arbs.into_iter().flatten().chain(new_bundles) {
-                println!("BUNDLE: {}", bundle.bundle_id);
                 let immutable = match ImmutableDeserializedBundle::new(
                     &mut bundle,
                     Some(MAX_PACKETS_PER_BUNDLE),
@@ -176,6 +174,7 @@ impl PaladinBundleStage {
 
                 let sanitized = match immutable.build_sanitized_bundle(
                     &bank,
+                    // TODO: This should use the blacklist to filter?
                     &HashSet::default(),
                     &mut TransactionErrorMetrics::default(),
                 ) {
@@ -197,7 +196,10 @@ impl PaladinBundleStage {
                 .try_build())
                 {
                     Ok(combined) => {
-                        println!("LOCKED: {}", combined.borrow_sanitized().bundle_id);
+                        // NB: Silence locked unused warning.
+                        let _ = combined.borrow_locked();
+
+                        self.bundles.push(immutable);
                         let prev = locked_bundles
                             .insert(combined.borrow_sanitized().bundle_id.clone(), combined);
                         assert!(prev.is_none());
@@ -218,9 +220,10 @@ impl PaladinBundleStage {
                 match decision {
                     BufferedPacketsDecision::Consume(bank_start) => {
                         for bundle in self.consume_buffered_bundles(&bank_start) {
-                            println!("REMOVE: {bundle}");
                             assert!(locked_bundles.remove(&bundle).is_some());
                         }
+
+                        assert_eq!(self.bundles.len(), locked_bundles.len());
                     }
                     _ => break,
                 }
@@ -237,14 +240,13 @@ impl PaladinBundleStage {
 
         // Drain our latest bundles.
         let bundles: VecDeque<_> = self.bundles.drain(..).collect();
+        let cost_model_failed_bundles = VecDeque::with_capacity(bundles.len());
         let mut bundles_start: HashSet<_> = bundles
             .iter()
             .map(|bundle| bundle.bundle_id().to_string())
             .collect();
-        let mut unprocessed_transaction_storage = UnprocessedTransactionStorage::new_bundle_storage(
-            bundles,
-            VecDeque::with_capacity(self.bundles.len()),
-        );
+        let mut unprocessed_transaction_storage =
+            UnprocessedTransactionStorage::new_bundle_storage(bundles, cost_model_failed_bundles);
 
         // Process any bundles we can.
         let _reached_end_of_slot = unprocessed_transaction_storage.process_bundles(
@@ -273,8 +275,12 @@ impl PaladinBundleStage {
         };
 
         // Remove the bundles that did not get processed from our bundle ID HashSet.
-        for unprocessed in bundle_storage.unprocessed_bundle_storage.drain(..) {
-            bundles_start.remove(unprocessed.bundle_id());
+        for unprocessed in bundle_storage
+            .unprocessed_bundle_storage
+            .drain(..)
+            .chain(bundle_storage.cost_model_buffered_bundle_storage.drain(..))
+        {
+            assert!(bundles_start.remove(unprocessed.bundle_id()));
             self.bundles.push(unprocessed);
         }
 
