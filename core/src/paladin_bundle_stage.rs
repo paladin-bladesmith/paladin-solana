@@ -48,6 +48,7 @@ pub(crate) struct PaladinBundleStage {
     paladin_rx: Receiver<Vec<PacketBundle>>,
 
     decision_maker: DecisionMaker,
+    poh_recorder: Arc<RwLock<PohRecorder>>,
 
     bundles: Vec<ImmutableDeserializedBundle>,
     bundle_stage_leader_metrics: BundleStageLeaderMetrics,
@@ -75,7 +76,7 @@ impl PaladinBundleStage {
         info!("Spawning PaladinBundleStage");
 
         let transaction_recorder = poh_recorder.read().unwrap().new_recorder();
-        let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder);
+        let decision_maker = DecisionMaker::new(cluster_info.id(), poh_recorder.clone());
         let committer = Committer::new(
             transaction_status_sender,
             replay_vote_sender,
@@ -91,6 +92,7 @@ impl PaladinBundleStage {
                     paladin_rx,
 
                     decision_maker,
+                    poh_recorder,
 
                     bundles: Vec::default(),
                     bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
@@ -128,11 +130,12 @@ impl PaladinBundleStage {
 
             // Drain the socket channel.
             let mut arbs = None;
+            let mut new_bundles = Vec::default();
             for bundles in std::iter::once(bundles)
                 .chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
             {
                 match &bundles.first().unwrap().bundle_id.chars().next().unwrap() {
-                    'R' => Self::deserialize_extend_bundles(&mut self.bundles, bundles),
+                    'R' => new_bundles.extend(bundles),
                     'A' => {
                         assert!(bundles
                             .iter()
@@ -144,63 +147,67 @@ impl PaladinBundleStage {
             }
 
             // Drop any arb bundles if we have a fresher set.
-            if let Some(arbs) = arbs {
+            if arbs.is_some() {
                 self.bundles.retain(|bundle| {
                     let drop = bundle.bundle_id().starts_with('A');
                     if drop {
+                        println!("DROP: {}", bundle.bundle_id());
                         assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
                     }
 
                     drop
                 });
+            }
 
-                Self::deserialize_extend_bundles(&mut self.bundles, arbs);
+            // Take all necessary locks, processing the arbs first.
+            let bank = self.poh_recorder.read().unwrap().latest_bank();
+            for mut bundle in arbs.into_iter().flatten().chain(new_bundles) {
+                println!("BUNDLE: {}", bundle.bundle_id);
+                let immutable = match ImmutableDeserializedBundle::new(
+                    &mut bundle,
+                    Some(MAX_PACKETS_PER_BUNDLE),
+                ) {
+                    Ok(bundle) => bundle,
+                    Err(err) => {
+                        warn!("Failed to convert bundle; err={err}");
+                        continue;
+                    }
+                };
+
+                let sanitized = match immutable.build_sanitized_bundle(
+                    &bank,
+                    &HashSet::default(),
+                    &mut TransactionErrorMetrics::default(),
+                ) {
+                    Ok(sanitized_bundle) => sanitized_bundle,
+                    Err(err) => {
+                        warn!("Failed to deserialize paladin bundle; err={err}");
+
+                        continue;
+                    }
+                };
+
+                // Lock.
+                match (LockedSanitizedBundleTryBuilder {
+                    sanitized,
+                    locked_builder: |sanitized| {
+                        bundle_account_locker.prepare_locked_bundle(sanitized, &bank)
+                    },
+                }
+                .try_build())
+                {
+                    Ok(combined) => {
+                        println!("LOCKED: {}", combined.borrow_sanitized().bundle_id);
+                        let prev = locked_bundles
+                            .insert(combined.borrow_sanitized().bundle_id.clone(), combined);
+                        assert!(prev.is_none());
+                    }
+                    Err(err) => warn!("Failed to lock; err={err}"),
+                }
             }
 
             // Update our locks if bank has started.
             let mut decision = self.decision_maker.make_consume_or_forward_decision();
-            if let BufferedPacketsDecision::Consume(bank_start) = &decision {
-                // Lock any new bundles and insert into the lock bundle map.
-                for sanitized in self.bundles.iter().filter_map(|immutable_bundle| {
-                    match immutable_bundle.build_sanitized_bundle(
-                        &bank_start.working_bank,
-                        &HashSet::default(),
-                        &mut TransactionErrorMetrics::default(),
-                    ) {
-                        Ok(sanitized_bundle) => Some(sanitized_bundle),
-                        Err(err) => {
-                            warn!("Failed to deserialize paladin bundle; err={err}");
-
-                            None
-                        }
-                    }
-                }) {
-                    if locked_bundles.contains_key(&sanitized.bundle_id) {
-                        continue;
-                    }
-
-                    // TODO: Track lock failures via metrics.
-                    if let Ok(combined) = (LockedSanitizedBundleTryBuilder {
-                        sanitized,
-                        locked_builder: |sanitized| {
-                            bundle_account_locker
-                                .prepare_locked_bundle(sanitized, &bank_start.working_bank)
-                        },
-                    }
-                    .try_build())
-                    {
-                        let prev = locked_bundles.insert(
-                            combined
-                                .borrow_locked()
-                                .sanitized_bundle()
-                                .bundle_id
-                                .clone(),
-                            combined,
-                        );
-                        assert!(prev.is_none());
-                    }
-                }
-            }
             while self.paladin_rx.is_empty() {
                 let (bundle_action, banking_action) = self
                     .bundle_stage_leader_metrics
@@ -211,6 +218,7 @@ impl PaladinBundleStage {
                 match decision {
                     BufferedPacketsDecision::Consume(bank_start) => {
                         for bundle in self.consume_buffered_bundles(&bank_start) {
+                            println!("REMOVE: {bundle}");
                             assert!(locked_bundles.remove(&bundle).is_some());
                         }
                     }
@@ -220,21 +228,6 @@ impl PaladinBundleStage {
                 decision = self.decision_maker.make_consume_or_forward_decision();
             }
         }
-    }
-
-    fn deserialize_extend_bundles(
-        bundles: &mut Vec<ImmutableDeserializedBundle>,
-        additional: Vec<PacketBundle>,
-    ) {
-        bundles.extend(additional.into_iter().filter_map(|mut bundle| {
-            match ImmutableDeserializedBundle::new(&mut bundle, Some(MAX_PACKETS_PER_BUNDLE)) {
-                Ok(bundle) => Some(bundle),
-                Err(err) => {
-                    warn!("Failed to convert bundle; err={err}");
-                    None
-                }
-            }
-        }))
     }
 
     /// Returns the bundles that were processed/dropped.
