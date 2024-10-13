@@ -148,6 +148,10 @@ impl PaladinSocket {
     }
 
     fn on_bundles(&mut self, bundles: Vec<PacketBundle>) -> Result<(), PaladinError> {
+        if bundles.is_empty() {
+            return Ok(());
+        }
+
         debug!("Received bundles; count={}", bundles.len());
         self.metrics.num_paladin_bundles = self
             .metrics
