@@ -577,6 +577,14 @@ impl BundleConsumer {
             .iter()
             .filter(|c| matches!(c, CommitTransactionDetails::Committed { .. }))
             .count();
+        let committed_cu = result
+            .commit_transaction_details
+            .iter()
+            .map(|c| match c {
+                CommitTransactionDetails::Committed { compute_units } => *compute_units,
+                CommitTransactionDetails::NotCommitted => 0,
+            })
+            .sum();
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .accumulate_process_transactions_summary(&ProcessTransactionsSummary {
@@ -596,6 +604,19 @@ impl BundleConsumer {
                 execute_and_commit_timings: result.execute_and_commit_timings,
                 error_counters: result.transaction_error_counter,
             });
+
+        // Update packing metrics.
+        let bundle_metrics = bundle_stage_leader_metrics.bundle_stage_metrics_tracker();
+        bundle_metrics.increment_committed(num_committed as u64);
+        bundle_metrics.increment_committed_cu(committed_cu);
+        // TODO: Lamport sum of committed.
+        bundle_metrics.increment_committed_lamports(0);
+        // TODO: When we implement dropping, fix this metric.
+        bundle_metrics.increment_dropped(0);
+        // TODO: When we implement dropping, fix this metric.
+        bundle_metrics.increment_dropped_cu(0);
+        // TODO: When we implement dropping, fix this metric.
+        bundle_metrics.increment_dropped_lamports(0);
 
         match result.result {
             Ok(_) => {
