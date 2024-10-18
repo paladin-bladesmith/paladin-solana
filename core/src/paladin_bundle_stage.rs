@@ -139,14 +139,22 @@ impl PaladinBundleStage {
             self.bundle_stage_leader_metrics
                 .apply_action(bundle_action, banking_action);
 
-            if let BufferedPacketsDecision::Consume(bank_start) = decision {
-                for bundle in self.consume_buffered_bundles(&bank_start) {
-                    debug!("Included or dropped; bundle_id={bundle}");
+            match decision {
+                BufferedPacketsDecision::Consume(bank_start) => {
+                    for bundle in self.consume_buffered_bundles(&bank_start) {
+                        debug!("Included or dropped; bundle_id={bundle}");
 
-                    assert!(locked_bundles.remove(&bundle).is_some());
+                        assert!(locked_bundles.remove(&bundle).is_some());
+                    }
+
+                    assert_eq!(self.bundles.len(), locked_bundles.len());
                 }
-
-                assert_eq!(self.bundles.len(), locked_bundles.len());
+                BufferedPacketsDecision::Forward => {
+                    for bundle in self.bundles.drain(..) {
+                        assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
+                    }
+                }
+                BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {}
             }
         }
     }
