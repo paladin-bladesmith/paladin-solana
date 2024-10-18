@@ -726,6 +726,21 @@ impl BundleConsumer {
             );
         }
 
+        // TODO: Compute lamports revenue.
+        for tx in bundle_execution_results.bundle_transaction_results() {
+            for (res, _) in &tx
+                .load_and_execute_transactions_output()
+                .loaded_transactions
+            {
+                if let Ok(loaded) = res {
+                    for (key, account) in &loaded.accounts {
+                        println!("{key}");
+                        // TODO: Find the tip account and/or coinbase.
+                    }
+                }
+            }
+        }
+
         let (executed_batches, execution_results_to_transactions_us) =
             measure_us!(bundle_execution_results.executed_transaction_batches());
 
