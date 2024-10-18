@@ -40,6 +40,7 @@ use {
 
 const PALADIN_BUNDLE_STAGE_ID: u32 = 2000;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+// TODO: Make this 1?
 const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
 pub(crate) struct PaladinBundleStage {
@@ -299,7 +300,8 @@ impl PaladinBundleStage {
             self.bundles.push(unprocessed);
         }
 
-        // `bundles_start` now contains the bundles that **were** processed. We must return this set so we can manually remove these locks.
+        // `bundles_start` now contains the bundles that **were** processed. We must return this set
+        // so we can manually remove these locks.
         bundles_start
     }
 

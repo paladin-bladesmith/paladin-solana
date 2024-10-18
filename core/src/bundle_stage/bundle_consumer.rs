@@ -39,6 +39,14 @@ use {
     },
 };
 
+// TODO: This will give us the following metrics:
+//
+// - TX count => Tag each TX with a source and revenue: Vec<{ source: Source, revenue_lamports: u64 }>.
+// - CU included => SUM(CommitTransactionDetails).
+// - Each TX either:
+//   - Included.
+//   - Errored.
+//   - Dropped for low payment.
 pub struct ExecuteRecordCommitResult {
     commit_transaction_details: Vec<CommitTransactionDetails>,
     result: BundleExecutionResult<()>,
