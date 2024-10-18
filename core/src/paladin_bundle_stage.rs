@@ -13,7 +13,7 @@ use {
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
     },
-    crossbeam_channel::Receiver,
+    crossbeam_channel::{Receiver, RecvTimeoutError},
     hashbrown::HashMap,
     ouroboros::self_referencing,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
@@ -124,49 +124,75 @@ impl PaladinBundleStage {
                 true => Duration::from_millis(100),
                 false => Duration::from_millis(0),
             };
-            let bundles = match self.paladin_rx.recv_timeout(timeout) {
-                Ok(bundles) => bundles,
-                Err(_) => continue,
+            match self.paladin_rx.recv_timeout(timeout) {
+                Ok(bundles) => {
+                    self.drain_socket(&bundle_account_locker, &mut locked_bundles, bundles)
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => break,
             };
 
-            // Drain the socket channel.
-            let mut arbs = None;
-            let mut new_bundles = Vec::default();
-            for bundles in std::iter::once(bundles)
-                .chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
-            {
-                match &bundles.first().unwrap().bundle_id.chars().next().unwrap() {
-                    'R' => new_bundles.extend(bundles),
-                    'A' => {
-                        assert!(bundles
-                            .iter()
-                            .all(|bundle| bundle.bundle_id.starts_with('A')));
-                        arbs = Some(bundles);
-                    }
-                    prefix => panic!("Unexpected bundle ID prefix; prefix={prefix}"),
+            let decision = self.decision_maker.make_consume_or_forward_decision();
+            let (bundle_action, banking_action) = self
+                .bundle_stage_leader_metrics
+                .check_leader_slot_boundary(decision.bank_start());
+            self.bundle_stage_leader_metrics
+                .apply_action(bundle_action, banking_action);
+
+            if let BufferedPacketsDecision::Consume(bank_start) = decision {
+                for bundle in self.consume_buffered_bundles(&bank_start) {
+                    debug!("Included or dropped; bundle_id={bundle}");
+
+                    assert!(locked_bundles.remove(&bundle).is_some());
                 }
+
+                assert_eq!(self.bundles.len(), locked_bundles.len());
             }
+        }
+    }
 
-            // Drop any arb bundles if we have a fresher set.
-            if arbs.is_some() {
-                self.bundles.retain(|bundle| {
-                    let drop = bundle.bundle_id().starts_with('A');
-                    if drop {
-                        debug!("Dropping stale arb; bundle_id={}", bundle.bundle_id());
-                        assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
-                    }
-
-                    !drop
-                });
+    fn drain_socket<'insert, 'lock>(
+        &mut self,
+        bundle_account_locker: &'lock BundleAccountLocker,
+        locked_bundles: &'insert mut HashMap<String, LockedSanitizedBundle<'lock>>,
+        bundles: Vec<PacketBundle>,
+    ) {
+        // Drain the socket channel.
+        let mut arbs = None;
+        let mut new_bundles = Vec::default();
+        for bundles in
+            std::iter::once(bundles).chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
+        {
+            match &bundles.first().unwrap().bundle_id.chars().next().unwrap() {
+                'R' => new_bundles.extend(bundles),
+                'A' => {
+                    assert!(bundles
+                        .iter()
+                        .all(|bundle| bundle.bundle_id.starts_with('A')));
+                    arbs = Some(bundles);
+                }
+                prefix => panic!("Unexpected bundle ID prefix; prefix={prefix}"),
             }
+        }
 
-            // Take all necessary locks, processing the arbs first.
-            let bank = self.poh_recorder.read().unwrap().latest_bank();
-            for mut bundle in arbs.into_iter().flatten().chain(new_bundles) {
-                let immutable = match ImmutableDeserializedBundle::new(
-                    &mut bundle,
-                    Some(MAX_PACKETS_PER_BUNDLE),
-                ) {
+        // Drop any arb bundles if we have a fresher set.
+        if arbs.is_some() {
+            self.bundles.retain(|bundle| {
+                let drop = bundle.bundle_id().starts_with('A');
+                if drop {
+                    debug!("Dropping stale arb; bundle_id={}", bundle.bundle_id());
+                    assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
+                }
+
+                !drop
+            });
+        }
+
+        // Take all necessary locks, processing the arbs first.
+        let bank = self.poh_recorder.read().unwrap().latest_bank();
+        for mut bundle in arbs.into_iter().flatten().chain(new_bundles) {
+            let immutable =
+                match ImmutableDeserializedBundle::new(&mut bundle, Some(MAX_PACKETS_PER_BUNDLE)) {
                     Ok(bundle) => bundle,
                     Err(err) => {
                         warn!(
@@ -178,73 +204,47 @@ impl PaladinBundleStage {
                     }
                 };
 
-                let sanitized = match immutable.build_sanitized_bundle(
-                    &bank,
-                    // TODO: This should use the blacklist to filter?
-                    &HashSet::default(),
-                    &mut TransactionErrorMetrics::default(),
-                ) {
-                    Ok(sanitized_bundle) => sanitized_bundle,
-                    Err(err) => {
-                        warn!(
-                            "Failed to deserialize paladin bundle; bundle_id={}; err={err}",
-                            immutable.bundle_id()
-                        );
-
-                        continue;
-                    }
-                };
-
-                // Lock.
-                match (LockedSanitizedBundleTryBuilder {
-                    sanitized,
-                    locked_builder: |sanitized| {
-                        bundle_account_locker.prepare_locked_bundle(sanitized, &bank)
-                    },
-                }
-                .try_build())
-                {
-                    Ok(combined) => {
-                        debug!("Locked bundle built; bundle_id={}", immutable.bundle_id());
-
-                        // NB: Silence locked unused warning.
-                        let _ = combined.borrow_locked();
-
-                        self.bundles.push(immutable);
-                        let prev = locked_bundles
-                            .insert(combined.borrow_sanitized().bundle_id.clone(), combined);
-                        assert!(prev.is_none());
-                    }
-                    Err(err) => warn!(
-                        "Failed to lock; bundle_id={}; err={err}",
+            let sanitized = match immutable.build_sanitized_bundle(
+                &bank,
+                // TODO: This should use the blacklist to filter?
+                &HashSet::default(),
+                &mut TransactionErrorMetrics::default(),
+            ) {
+                Ok(sanitized_bundle) => sanitized_bundle,
+                Err(err) => {
+                    warn!(
+                        "Failed to deserialize paladin bundle; bundle_id={}; err={err}",
                         immutable.bundle_id()
-                    ),
+                    );
+
+                    continue;
                 }
+            };
+
+            // Lock.
+            match (LockedSanitizedBundleTryBuilder {
+                sanitized,
+                locked_builder: |sanitized| {
+                    bundle_account_locker.prepare_locked_bundle(sanitized, &bank)
+                },
             }
+            .try_build())
+            {
+                Ok(combined) => {
+                    debug!("Locked bundle built; bundle_id={}", immutable.bundle_id());
 
-            // Update our locks if bank has started.
-            let mut decision = self.decision_maker.make_consume_or_forward_decision();
-            while self.paladin_rx.is_empty() {
-                let (bundle_action, banking_action) = self
-                    .bundle_stage_leader_metrics
-                    .check_leader_slot_boundary(decision.bank_start());
-                self.bundle_stage_leader_metrics
-                    .apply_action(bundle_action, banking_action);
+                    // NB: Silence locked unused warning.
+                    let _ = combined.borrow_locked();
 
-                match decision {
-                    BufferedPacketsDecision::Consume(bank_start) => {
-                        for bundle in self.consume_buffered_bundles(&bank_start) {
-                            debug!("Included or dropped; bundle_id={bundle}");
-
-                            assert!(locked_bundles.remove(&bundle).is_some());
-                        }
-
-                        assert_eq!(self.bundles.len(), locked_bundles.len());
-                    }
-                    _ => break,
+                    self.bundles.push(immutable);
+                    let prev = locked_bundles
+                        .insert(combined.borrow_sanitized().bundle_id.clone(), combined);
+                    assert!(prev.is_none());
                 }
-
-                decision = self.decision_maker.make_consume_or_forward_decision();
+                Err(err) => warn!(
+                    "Failed to lock; bundle_id={}; err={err}",
+                    immutable.bundle_id()
+                ),
             }
         }
     }
