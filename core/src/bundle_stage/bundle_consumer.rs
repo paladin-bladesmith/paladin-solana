@@ -18,7 +18,9 @@ use {
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
-        bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
+        bundle_execution::{
+            load_and_execute_bundle, BundleExecutionMetrics, LoadAndExecuteBundleOutput,
+        },
         BundleExecutionError, BundleExecutionResult, TipError,
     },
     solana_cost_model::transaction_cost::TransactionCost,
@@ -27,7 +29,6 @@ use {
     solana_poh::poh_recorder::{BankStart, RecordTransactionsSummary, TransactionRecorder},
     solana_runtime::bank::Bank,
     solana_sdk::{
-        account::ReadableAccount,
         bundle::SanitizedBundle,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
@@ -743,44 +744,19 @@ impl BundleConsumer {
         }
 
         // Compute the bundles total CUs & lamports paid.
-        let mut cu_used = 1u64;
-        let mut lamports_paid = 1u64;
-        for res in bundle_execution_results.bundle_transaction_results() {
-            for (tx, execution, cost, pre, post) in izip!(
-                res.executed_transactions(),
-                res.execution_results(),
-                transaction_qos_cost_results,
-                &res.pre_balance_info().native,
-                &res.post_balance_info().0,
-            ) {
-                // Compute the tip payments.
-                for (_, (pre, post)) in izip!(pre, post)
-                    .enumerate()
-                    .map(|(i, (pre, post))| {
-                        (tx.message().account_keys().get(i).unwrap(), (pre, post))
-                    })
-                    .filter(|(key, _)| tip_accounts.contains(key))
-                {
-                    lamports_paid = lamports_paid.saturating_add(post.saturating_sub(*pre));
+        match Self::compute_cu_and_lamports(
+            tip_accounts,
+            bank_start,
+            transaction_qos_cost_results,
+            &bundle_execution_results,
+        ) {
+            Some((cu_used, lamports_paid)) => {
+                if lamports_paid.saturating_mul(10) / cu_used < 2 {
+                    println!("Low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
                 }
-
-                // Compute the TX base + priority fee.
-                let cost = cost.as_ref().unwrap();
-                let fee = bank_start
-                    .working_bank
-                    .get_fee_for_message(tx.message())
-                    .unwrap_or(0);
-                let total_cu = cost.sum() + execution.details().unwrap().executed_units;
-
-                // TODO: Factor in burn rate.
-                lamports_paid = lamports_paid.saturating_add(fee);
-                cu_used = cu_used.saturating_add(total_cu);
             }
-        }
-
-        if lamports_paid.saturating_mul(10) / cu_used < 2 {
-            println!("Low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
-        }
+            None => eprintln!("Failed to compute CU & lamports; this shouldn't be possible"),
+        };
 
         let (executed_batches, execution_results_to_transactions_us) =
             measure_us!(bundle_execution_results.executed_transaction_batches());
@@ -885,6 +861,51 @@ impl BundleConsumer {
                 .iter()
                 .any(|a| tip_pdas.contains(a))
         })
+    }
+
+    fn compute_cu_and_lamports(
+        tip_accounts: &HashSet<Pubkey>,
+        bank_start: &BankStart,
+        transaction_qos_cost_results: &[Result<TransactionCost, TransactionError>],
+        bundle_execution_results: &LoadAndExecuteBundleOutput,
+    ) -> Option<(u64, u64)> {
+        let mut cu_used = 1u64;
+        let mut lamports_paid = 1u64;
+        for ((tx, execution, pre, post), cost) in bundle_execution_results
+            .bundle_transaction_results()
+            .iter()
+            .flat_map(|res| {
+                izip!(
+                    res.executed_transactions(),
+                    res.execution_results(),
+                    &res.pre_balance_info().native,
+                    &res.post_balance_info().0,
+                )
+            })
+            .zip(transaction_qos_cost_results)
+        {
+            // Compute the tip payments.
+            for (_, (pre, post)) in izip!(pre, post)
+                .enumerate()
+                .map(|(i, (pre, post))| (tx.message().account_keys().get(i).unwrap(), (pre, post)))
+                .filter(|(key, _)| tip_accounts.contains(key))
+            {
+                lamports_paid = lamports_paid.saturating_add(post.saturating_sub(*pre));
+            }
+
+            // Compute the TX base + priority fee.
+            let cost = cost.as_ref().ok()?;
+            let fee = bank_start.working_bank.get_fee_for_message(tx.message())?;
+            let total_cu = cost
+                .sum()
+                .saturating_add(execution.details().unwrap().executed_units);
+
+            // TODO: Factor in burn rate.
+            lamports_paid = lamports_paid.saturating_add(fee);
+            cu_used = cu_used.saturating_add(total_cu);
+        }
+
+        Some((cu_used, lamports_paid))
     }
 }
 
