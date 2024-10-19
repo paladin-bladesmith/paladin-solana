@@ -441,6 +441,8 @@ impl PaladinBundleStage {
             bank_start,
             bundle_stage_leader_metrics,
             false,
+            // TODO: Should we try and price the bot arb correctly so we can set no_drop = false?
+            true,
         )?;
 
         Ok(())

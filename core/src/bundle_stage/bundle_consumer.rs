@@ -344,6 +344,7 @@ impl BundleConsumer {
             bank_start,
             bundle_stage_leader_metrics,
             true,
+            false,
         )?;
 
         Ok(())
@@ -396,6 +397,7 @@ impl BundleConsumer {
                 tip_manager.get_tip_accounts(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                true,
                 true,
             )
             .map_err(|e| {
@@ -451,6 +453,7 @@ impl BundleConsumer {
                 tip_manager.get_tip_accounts(),
                 bank_start,
                 bundle_stage_leader_metrics,
+                true,
                 true,
             )
             .map_err(|e| {
@@ -523,6 +526,7 @@ impl BundleConsumer {
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         fifo: bool,
+        no_drop: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -556,6 +560,7 @@ impl BundleConsumer {
             tip_accounts,
             bank_start,
             fifo,
+            no_drop,
         ));
 
         bundle_stage_leader_metrics
@@ -670,6 +675,7 @@ impl BundleConsumer {
         tip_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         fifo: bool,
+        no_drop: bool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -736,10 +742,9 @@ impl BundleConsumer {
             );
         }
 
-        // TODO: Compute lamports revenue.
-
-        let mut cu_used = 0;
-        let mut lamports_paid = 0;
+        // Compute the bundles total CUs & lamports paid.
+        let mut cu_used = 1u64;
+        let mut lamports_paid = 1u64;
         for res in bundle_execution_results.bundle_transaction_results() {
             for (tx, execution, cost, pre, post) in izip!(
                 res.executed_transactions(),
@@ -748,39 +753,33 @@ impl BundleConsumer {
                 &res.pre_balance_info().native,
                 &res.post_balance_info().0,
             ) {
-                for (key, (pre, post)) in izip!(pre, post)
+                // Compute the tip payments.
+                for (_, (pre, post)) in izip!(pre, post)
                     .enumerate()
                     .map(|(i, (pre, post))| {
                         (tx.message().account_keys().get(i).unwrap(), (pre, post))
                     })
                     .filter(|(key, _)| tip_accounts.contains(key))
                 {
-                    println!("{key} : {pre} -> {post} (+{})", post.saturating_sub(*pre));
+                    lamports_paid = lamports_paid.saturating_add(post.saturating_sub(*pre));
                 }
 
+                // Compute the TX base + priority fee.
                 let cost = cost.as_ref().unwrap();
                 let fee = bank_start
                     .working_bank
                     .get_fee_for_message(tx.message())
                     .unwrap_or(0);
                 let total_cu = cost.sum() + execution.details().unwrap().executed_units;
-                println!("{}: {fee} ({total_cu} CU)", tx.signature(),);
 
                 // TODO: Factor in burn rate.
-                lamports_paid += fee;
-                cu_used += total_cu;
+                lamports_paid = lamports_paid.saturating_add(fee);
+                cu_used = cu_used.saturating_add(total_cu);
             }
+        }
 
-            for (key, account) in res
-                .load_and_execute_transactions_output()
-                .loaded_transactions
-                .iter()
-                .flat_map(|(res, _)| res.iter().flat_map(|loaded| &loaded.accounts))
-                // TODO: Filter to tip accounts.
-                .filter(|(key, _)| true)
-            {
-                println!("{key}: {}", account.lamports());
-            }
+        if lamports_paid.saturating_mul(10) / cu_used < 2 {
+            println!("Low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
         }
 
         let (executed_batches, execution_results_to_transactions_us) =
