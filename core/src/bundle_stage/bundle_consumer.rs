@@ -337,7 +337,7 @@ impl BundleConsumer {
             qos_service,
             log_messages_bytes_limit,
             max_bundle_retry_duration,
-            Some(reserved_space),
+            reserved_space,
             locked_bundle,
             sanitized_bundle,
             bank_start,
@@ -389,7 +389,7 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                Some(reserved_space),
+                reserved_space,
                 locked_init_tip_programs_bundle,
                 &bundle,
                 bank_start,
@@ -443,7 +443,7 @@ impl BundleConsumer {
                 qos_service,
                 log_messages_bytes_limit,
                 max_bundle_retry_duration,
-                Some(reserved_space),
+                reserved_space,
                 locked_tip_crank_bundle,
                 &bundle,
                 bank_start,
@@ -513,7 +513,7 @@ impl BundleConsumer {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
-        reserved_space: Option<&BundleReservedSpaceManager>,
+        reserved_space: &BundleReservedSpaceManager,
         locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
@@ -529,15 +529,12 @@ impl BundleConsumer {
         let (
             (transaction_qos_cost_results, _cost_model_throttled_transactions_count),
             cost_model_elapsed_us,
-        ) = match reserved_space {
-            Some(reserved_space) => measure_us!(Self::reserve_bundle_blockspace(
-                qos_service,
-                reserved_space,
-                sanitized_bundle,
-                &bank_start.working_bank
-            )?),
-            None => ((vec![], 0), 0),
-        };
+        ) = measure_us!(Self::reserve_bundle_blockspace(
+            qos_service,
+            reserved_space,
+            sanitized_bundle,
+            &bank_start.working_bank
+        )?);
 
         debug!(
             "bundle: {} executing, recording, and committing",
@@ -577,14 +574,6 @@ impl BundleConsumer {
             .iter()
             .filter(|c| matches!(c, CommitTransactionDetails::Committed { .. }))
             .count();
-        let committed_cu = result
-            .commit_transaction_details
-            .iter()
-            .map(|c| match c {
-                CommitTransactionDetails::Committed { compute_units } => *compute_units,
-                CommitTransactionDetails::NotCommitted => 0,
-            })
-            .sum();
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .accumulate_process_transactions_summary(&ProcessTransactionsSummary {
@@ -607,8 +596,21 @@ impl BundleConsumer {
 
         // Update packing metrics.
         let bundle_metrics = bundle_stage_leader_metrics.bundle_stage_metrics_tracker();
+        let committed_cu: u64 = result
+            .commit_transaction_details
+            .iter()
+            .map(|c| match c {
+                CommitTransactionDetails::Committed { compute_units } => *compute_units,
+                CommitTransactionDetails::NotCommitted => 0,
+            })
+            .sum();
+        let intrinsic_cu: u64 = transaction_qos_cost_results
+            .iter()
+            .map(|res| res.as_ref().unwrap().sum())
+            .sum();
+
         bundle_metrics.increment_committed(num_committed as u64);
-        bundle_metrics.increment_committed_cu(committed_cu);
+        bundle_metrics.increment_committed_cu(intrinsic_cu + committed_cu);
         // TODO: Lamport sum of committed.
         bundle_metrics.increment_committed_lamports(0);
         // TODO: When we implement dropping, fix this metric.
@@ -728,6 +730,10 @@ impl BundleConsumer {
 
         // TODO: Compute lamports revenue.
         for tx in bundle_execution_results.bundle_transaction_results() {
+            for tx in tx.execution_results() {
+                println!("CU: {}", tx.details().unwrap().executed_units);
+            }
+
             for (res, _) in &tx
                 .load_and_execute_transactions_output()
                 .loaded_transactions

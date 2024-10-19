@@ -41,7 +41,7 @@ use {
 pub(crate) mod bundle_consumer;
 mod bundle_packet_deserializer;
 mod bundle_packet_receiver;
-mod bundle_reserved_space_manager;
+pub(crate) mod bundle_reserved_space_manager;
 pub(crate) mod bundle_stage_leader_metrics;
 pub(crate) mod committer;
 mod front_run_identifier;

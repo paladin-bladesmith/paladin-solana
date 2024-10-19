@@ -6,8 +6,9 @@ use {
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
-            bundle_consumer::BundleConsumer, bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-            committer::Committer,
+            bundle_consumer::BundleConsumer,
+            bundle_reserved_space_manager::BundleReservedSpaceManager,
+            bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
         },
         consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
@@ -21,6 +22,7 @@ use {
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
         BundleExecutionError,
     },
+    solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::{measure, measure_us},
@@ -57,6 +59,7 @@ pub(crate) struct PaladinBundleStage {
     committer: Committer,
     transaction_recorder: TransactionRecorder,
     qos_service: QosService,
+    reserved_space: BundleReservedSpaceManager,
     log_messages_bytes_limit: Option<usize>,
     consensus_cache_updater: ConsensusCacheUpdater,
     blacklisted_accounts: HashSet<Pubkey>,
@@ -73,6 +76,7 @@ impl PaladinBundleStage {
         log_messages_bytes_limit: Option<usize>,
         bundle_account_locker: BundleAccountLocker,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
+        preallocated_bundle_cost: u64,
     ) -> std::thread::JoinHandle<()> {
         info!("Spawning PaladinBundleStage");
 
@@ -82,6 +86,18 @@ impl PaladinBundleStage {
             transaction_status_sender,
             replay_vote_sender,
             prioritization_fee_cache,
+        );
+
+        let reserved_ticks = poh_recorder
+            .read()
+            .unwrap()
+            .ticks_per_slot()
+            .saturating_mul(8)
+            .saturating_div(10);
+        let reserved_space = BundleReservedSpaceManager::new(
+            MAX_BLOCK_UNITS,
+            preallocated_bundle_cost,
+            reserved_ticks,
         );
 
         std::thread::Builder::new()
@@ -103,6 +119,7 @@ impl PaladinBundleStage {
                     committer,
                     transaction_recorder,
                     qos_service: QosService::new(PALADIN_BUNDLE_STAGE_ID),
+                    reserved_space,
                     log_messages_bytes_limit,
                     consensus_cache_updater: ConsensusCacheUpdater::default(),
                     blacklisted_accounts: HashSet::default(),
@@ -285,6 +302,7 @@ impl PaladinBundleStage {
                     &self.qos_service,
                     &self.log_messages_bytes_limit,
                     MAX_BUNDLE_RETRY_DURATION,
+                    &self.reserved_space,
                     bundles,
                     bank_start,
                     bundle_stage_leader_metrics,
@@ -321,6 +339,7 @@ impl PaladinBundleStage {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
+        reserved_space: &BundleReservedSpaceManager,
         bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
@@ -352,6 +371,7 @@ impl PaladinBundleStage {
                         qos_service,
                         log_messages_bytes_limit,
                         max_bundle_retry_duration,
+                        reserved_space,
                         locked_bundle,
                         sanitized_bundle,
                         bank_start,
@@ -387,6 +407,7 @@ impl PaladinBundleStage {
         qos_service: &QosService,
         log_messages_bytes_limit: &Option<usize>,
         max_bundle_retry_duration: Duration,
+        reserved_space: &BundleReservedSpaceManager,
         locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
@@ -405,7 +426,7 @@ impl PaladinBundleStage {
             qos_service,
             log_messages_bytes_limit,
             max_bundle_retry_duration,
-            None,
+            reserved_space,
             locked_bundle,
             sanitized_bundle,
             bank_start,

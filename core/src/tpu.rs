@@ -345,6 +345,7 @@ impl Tpu {
             log_messages_bytes_limit,
             bundle_account_locker,
             prioritization_fee_cache.clone(),
+            preallocated_bundle_cost,
         );
 
         let (entry_receiver, tpu_entry_notifier) =
