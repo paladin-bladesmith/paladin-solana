@@ -14,6 +14,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    itertools::izip,
     solana_accounts_db::transaction_error_metrics::TransactionErrorMetrics,
     solana_bundle::{
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
@@ -26,11 +27,12 @@ use {
     solana_poh::poh_recorder::{BankStart, RecordTransactionsSummary, TransactionRecorder},
     solana_runtime::bank::Bank,
     solana_sdk::{
+        account::ReadableAccount,
         bundle::SanitizedBundle,
         clock::{Slot, MAX_PROCESSING_AGE},
         feature_set,
         pubkey::Pubkey,
-        transaction,
+        transaction::{self, TransactionError},
     },
     std::{
         collections::HashSet,
@@ -300,11 +302,9 @@ impl BundleConsumer {
             return Err(BundleExecutionError::BankProcessingTimeLimitReached);
         }
 
+        let tip_accounts = tip_manager.get_tip_accounts();
         if bank_start.working_bank.slot() != *last_tip_updated_slot
-            && Self::bundle_touches_tip_pdas(
-                locked_bundle.sanitized_bundle(),
-                &tip_manager.get_tip_accounts(),
-            )
+            && Self::bundle_touches_tip_pdas(locked_bundle.sanitized_bundle(), tip_accounts)
         {
             let start = Instant::now();
             let result = Self::handle_tip_programs(
@@ -340,6 +340,7 @@ impl BundleConsumer {
             reserved_space,
             locked_bundle,
             sanitized_bundle,
+            tip_accounts,
             bank_start,
             bundle_stage_leader_metrics,
             true,
@@ -392,6 +393,7 @@ impl BundleConsumer {
                 reserved_space,
                 locked_init_tip_programs_bundle,
                 &bundle,
+                tip_manager.get_tip_accounts(),
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
@@ -446,6 +448,7 @@ impl BundleConsumer {
                 reserved_space,
                 locked_tip_crank_bundle,
                 &bundle,
+                tip_manager.get_tip_accounts(),
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
@@ -516,6 +519,7 @@ impl BundleConsumer {
         reserved_space: &BundleReservedSpaceManager,
         locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
+        tip_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         fifo: bool,
@@ -548,6 +552,8 @@ impl BundleConsumer {
             max_bundle_retry_duration,
             locked_bundle,
             sanitized_bundle,
+            &transaction_qos_cost_results,
+            tip_accounts,
             bank_start,
             fifo,
         ));
@@ -660,6 +666,8 @@ impl BundleConsumer {
         max_bundle_retry_duration: Duration,
         mut locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
+        transaction_qos_cost_results: &[Result<TransactionCost, TransactionError>],
+        tip_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         fifo: bool,
     ) -> ExecuteRecordCommitResult {
@@ -729,21 +737,49 @@ impl BundleConsumer {
         }
 
         // TODO: Compute lamports revenue.
-        for tx in bundle_execution_results.bundle_transaction_results() {
-            for tx in tx.execution_results() {
-                println!("CU: {}", tx.details().unwrap().executed_units);
+
+        let mut cu_used = 0;
+        let mut lamports_paid = 0;
+        for res in bundle_execution_results.bundle_transaction_results() {
+            for (tx, execution, cost, pre, post) in izip!(
+                res.executed_transactions(),
+                res.execution_results(),
+                transaction_qos_cost_results,
+                &res.pre_balance_info().native,
+                &res.post_balance_info().0,
+            ) {
+                for (key, (pre, post)) in izip!(pre, post)
+                    .enumerate()
+                    .map(|(i, (pre, post))| {
+                        (tx.message().account_keys().get(i).unwrap(), (pre, post))
+                    })
+                    .filter(|(key, _)| tip_accounts.contains(key))
+                {
+                    println!("{key} : {pre} -> {post} (+{})", post.saturating_sub(*pre));
+                }
+
+                let cost = cost.as_ref().unwrap();
+                let fee = bank_start
+                    .working_bank
+                    .get_fee_for_message(tx.message())
+                    .unwrap_or(0);
+                let total_cu = cost.sum() + execution.details().unwrap().executed_units;
+                println!("{}: {fee} ({total_cu} CU)", tx.signature(),);
+
+                // TODO: Factor in burn rate.
+                lamports_paid += fee;
+                cu_used += total_cu;
             }
 
-            for (res, _) in &tx
+            for (key, account) in res
                 .load_and_execute_transactions_output()
                 .loaded_transactions
+                .iter()
+                .flat_map(|(res, _)| res.iter().flat_map(|loaded| &loaded.accounts))
+                // TODO: Filter to tip accounts.
+                .filter(|(key, _)| true)
             {
-                if let Ok(loaded) = res {
-                    for (key, account) in &loaded.accounts {
-                        println!("{key}");
-                        // TODO: Find the tip account and/or coinbase.
-                    }
-                }
+                println!("{key}: {}", account.lamports());
             }
         }
 

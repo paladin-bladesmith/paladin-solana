@@ -13,6 +13,7 @@ use {
         consensus_cache_updater::ConsensusCacheUpdater,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
+        tip_manager::TipManager,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     hashbrown::HashMap,
@@ -55,6 +56,7 @@ pub(crate) struct PaladinBundleStage {
 
     bundles: Vec<ImmutableDeserializedBundle>,
     bundle_stage_leader_metrics: BundleStageLeaderMetrics,
+    tip_manager: TipManager,
     bundle_account_locker: BundleAccountLocker,
     committer: Committer,
     transaction_recorder: TransactionRecorder,
@@ -74,6 +76,7 @@ impl PaladinBundleStage {
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
+        tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         preallocated_bundle_cost: u64,
@@ -115,6 +118,7 @@ impl PaladinBundleStage {
                     bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
                         PALADIN_BUNDLE_STAGE_ID,
                     ),
+                    tip_manager,
                     bundle_account_locker,
                     committer,
                     transaction_recorder,
@@ -304,6 +308,7 @@ impl PaladinBundleStage {
                     MAX_BUNDLE_RETRY_DURATION,
                     &self.reserved_space,
                     bundles,
+                    &self.tip_manager.get_tip_accounts(),
                     bank_start,
                     bundle_stage_leader_metrics,
                 )
@@ -341,6 +346,7 @@ impl PaladinBundleStage {
         max_bundle_retry_duration: Duration,
         reserved_space: &BundleReservedSpaceManager,
         bundles: &[(ImmutableDeserializedBundle, SanitizedBundle)],
+        tip_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Vec<Result<(), BundleExecutionError>> {
@@ -374,6 +380,7 @@ impl PaladinBundleStage {
                         reserved_space,
                         locked_bundle,
                         sanitized_bundle,
+                        tip_accounts,
                         bank_start,
                         bundle_stage_leader_metrics,
                     ));
@@ -410,6 +417,7 @@ impl PaladinBundleStage {
         reserved_space: &BundleReservedSpaceManager,
         locked_bundle: LockedBundle,
         sanitized_bundle: &SanitizedBundle,
+        tip_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), BundleExecutionError> {
@@ -429,6 +437,7 @@ impl PaladinBundleStage {
             reserved_space,
             locked_bundle,
             sanitized_bundle,
+            tip_accounts,
             bank_start,
             bundle_stage_leader_metrics,
             false,

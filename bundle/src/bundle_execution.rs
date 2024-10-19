@@ -167,7 +167,11 @@ impl<'a> BundleTransactionsOutput<'a> {
         &self.load_and_execute_transactions_output.execution_results
     }
 
-    pub fn pre_balance_info(&mut self) -> &mut PreBalanceInfo {
+    pub fn pre_balance_info(&self) -> &PreBalanceInfo {
+        &self.pre_balance_info
+    }
+
+    pub fn pre_balance_info_mut(&mut self) -> &mut PreBalanceInfo {
         &mut self.pre_balance_info
     }
 

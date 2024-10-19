@@ -343,6 +343,7 @@ impl Tpu {
             transaction_status_sender,
             replay_vote_sender,
             log_messages_bytes_limit,
+            tip_manager,
             bundle_account_locker,
             prioritization_fee_cache.clone(),
             preallocated_bundle_cost,
