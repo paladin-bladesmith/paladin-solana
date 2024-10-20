@@ -743,6 +743,8 @@ impl BundleConsumer {
             &bundle_execution_results,
         ) {
             Some((cu_used, lamports_paid)) => {
+                println!("CU: {cu_used}");
+                println!("LAMPORTS: {lamports_paid}");
                 if lamports_paid.saturating_mul(10) / cu_used < 2 {
                     println!("Low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
                 }
