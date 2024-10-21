@@ -743,8 +743,6 @@ impl BundleConsumer {
             &bundle_execution_results,
         ) {
             Some((cu_used, lamports_paid)) => {
-                println!("CU: {cu_used}");
-                println!("LAMPORTS: {lamports_paid}");
                 if lamports_paid.saturating_mul(10) / cu_used < 2 {
                     println!("Low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
                 }
@@ -865,6 +863,12 @@ impl BundleConsumer {
     ) -> Option<(u64, u64)> {
         let mut cu_used = 1u64;
         let mut lamports_paid = 1u64;
+        println!("====================");
+        println!(
+            "BUNDLE_RES: {}",
+            bundle_execution_results.bundle_transaction_results().len()
+        );
+        println!("TX_COST_RESULTS: {}", transaction_qos_cost_results.len());
         for ((tx, execution, pre, post), cost) in bundle_execution_results
             .bundle_transaction_results()
             .iter()
@@ -878,13 +882,17 @@ impl BundleConsumer {
             })
             .zip(transaction_qos_cost_results)
         {
+            println!("TX: {}", tx.signature());
+
             // Compute the tip payments.
             for (_, (pre, post)) in izip!(pre, post)
                 .enumerate()
                 .map(|(i, (pre, post))| (tx.message().account_keys().get(i).unwrap(), (pre, post)))
                 .filter(|(key, _)| tip_accounts.contains(key))
             {
-                lamports_paid = lamports_paid.saturating_add(post.saturating_sub(*pre));
+                let tip = post.saturating_sub(*pre);
+                println!("TIP: {tip}");
+                lamports_paid = lamports_paid.saturating_add(tip);
             }
 
             // Compute the TX base + priority fee.
@@ -892,12 +900,18 @@ impl BundleConsumer {
             let fee = bank_start.working_bank.get_fee_for_message(tx.message())?;
             let total_cu = cost
                 .sum()
-                .saturating_add(execution.details().unwrap().executed_units);
+                .saturating_add(execution.details()?.executed_units);
+            println!("FEE: {fee}");
+            println!("CU: {total_cu}");
 
             // TODO: Factor in burn rate.
             lamports_paid = lamports_paid.saturating_add(fee);
             cu_used = cu_used.saturating_add(total_cu);
         }
+
+        println!("TOTAL:");
+        println!("CU: {cu_used}");
+        println!("LAMPORTS: {lamports_paid}");
 
         Some((cu_used, lamports_paid))
     }
