@@ -861,8 +861,8 @@ impl BundleConsumer {
         transaction_qos_cost_results: &[Result<TransactionCost, TransactionError>],
         bundle_execution_results: &LoadAndExecuteBundleOutput,
     ) -> Option<(u64, u64)> {
-        let mut cu_used = 1u64;
-        let mut lamports_paid = 1u64;
+        let mut cu_used = 0u64;
+        let mut lamports_paid = 0u64;
         println!("====================");
         println!(
             "BUNDLE_RES: {}",
@@ -873,6 +873,11 @@ impl BundleConsumer {
             .bundle_transaction_results()
             .iter()
             .flat_map(|res| {
+                println!("EXECUTED TX: {}", res.executed_transactions().len());
+                println!("EXECUTION RES: {}", res.execution_results().len());
+                println!("PRE BALANCES: {}", res.pre_balance_info().native.len());
+                println!("POST BALANCES: {}", res.post_balance_info().0.len());
+
                 izip!(
                     res.executed_transactions(),
                     res.execution_results(),
@@ -912,6 +917,10 @@ impl BundleConsumer {
         println!("TOTAL:");
         println!("CU: {cu_used}");
         println!("LAMPORTS: {lamports_paid}");
+
+        if cu_used == 0 || lamports_paid == 0 {
+            return None;
+        }
 
         Some((cu_used, lamports_paid))
     }
