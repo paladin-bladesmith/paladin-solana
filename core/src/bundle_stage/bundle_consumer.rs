@@ -685,9 +685,9 @@ impl BundleConsumer {
             transaction_status_sender_enabled,
             transaction_status_sender_enabled,
             transaction_status_sender_enabled,
-            transaction_status_sender_enabled,
+            true, // Enable balance recording.
             log_messages_bytes_limit,
-            false,
+            false, // Is simulation.
             None,
             &default_accounts,
             &default_accounts,
