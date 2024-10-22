@@ -871,21 +871,10 @@ impl BundleConsumer {
     ) -> Option<(u64, u64)> {
         let mut cu_used = 0u64;
         let mut lamports_paid = 0u64;
-        println!("====================");
-        println!(
-            "BUNDLE_RES: {}",
-            bundle_execution_results.bundle_transaction_results().len()
-        );
-        println!("TX_COST_RESULTS: {}", transaction_qos_cost_results.len());
         for ((tx, execution, pre, post), cost) in bundle_execution_results
             .bundle_transaction_results()
             .iter()
             .flat_map(|res| {
-                println!("EXECUTED TX: {}", res.executed_transactions().len());
-                println!("EXECUTION RES: {}", res.execution_results().len());
-                println!("PRE BALANCES: {}", res.pre_balance_info().native.len());
-                println!("POST BALANCES: {}", res.post_balance_info().0.len());
-
                 izip!(
                     res.executed_transactions(),
                     res.execution_results(),
@@ -895,8 +884,6 @@ impl BundleConsumer {
             })
             .zip(transaction_qos_cost_results)
         {
-            println!("TX: {}", tx.signature());
-
             // Compute the tip payments.
             for (_, (pre, post)) in izip!(pre, post)
                 .enumerate()
@@ -904,7 +891,6 @@ impl BundleConsumer {
                 .filter(|(key, _)| tip_accounts.contains(key))
             {
                 let tip = post.saturating_sub(*pre);
-                println!("TIP: {tip}");
                 lamports_paid = lamports_paid.saturating_add(tip);
             }
 
@@ -914,17 +900,11 @@ impl BundleConsumer {
             let total_cu = cost
                 .sum()
                 .saturating_add(execution.details()?.executed_units);
-            println!("FEE: {fee}");
-            println!("CU: {total_cu}");
 
             // TODO: Factor in burn rate.
             lamports_paid = lamports_paid.saturating_add(fee);
             cu_used = cu_used.saturating_add(total_cu);
         }
-
-        println!("TOTAL:");
-        println!("CU: {cu_used}");
-        println!("LAMPORTS: {lamports_paid}");
 
         if cu_used == 0 || lamports_paid == 0 {
             return None;
