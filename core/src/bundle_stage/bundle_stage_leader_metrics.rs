@@ -339,6 +339,18 @@ impl BundleStageStatsMetricsTracker {
         }
     }
 
+    pub(crate) fn increment_reverted(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.reverted, count);
+        }
+    }
+
+    pub(crate) fn increment_reverted_cu(&mut self, count: u64) {
+        if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
+            saturating_add_assign!(bundle_stage_metrics.reverted_cu, count);
+        }
+    }
+
     pub(crate) fn increment_dropped(&mut self, count: u64) {
         if let Some(bundle_stage_metrics) = &mut self.bundle_stage_metrics {
             saturating_add_assign!(bundle_stage_metrics.dropped, count);
@@ -401,17 +413,21 @@ pub struct BundleStageStats {
 
     bad_argument: u64,
 
-    /// Number of committed transactions.
+    /// Bundles that were committed.
     committed: u64,
-    /// CU used by committed transactions.
+    /// CUs used by committed transactions.
     committed_cu: u64,
     /// Lamports paid by committed transactions.
     committed_lamports: u64,
-    /// TXs that underpaid and were dropped.
+    /// Bundles that reverted.
+    reverted: u64,
+    /// CUs that were dropped due to a transaction reverting.
+    reverted_cu: u64,
+    /// TXs that were dropped due to low tips.
     dropped: u64,
-    /// CUs used by dropped bundles.
+    /// CUs that were dropped due to low tips.
     dropped_cu: u64,
-    /// Lamports forgone by dropping bundles.
+    /// Lamports forgone by dropping low tip bundles.
     dropped_lamports: u64,
 }
 

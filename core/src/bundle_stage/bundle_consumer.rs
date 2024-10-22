@@ -48,6 +48,8 @@ pub struct ExecuteRecordCommitResult {
     execution_metrics: BundleExecutionMetrics,
     execute_and_commit_timings: LeaderExecuteAndCommitTimings,
     transaction_error_counter: TransactionErrorMetrics,
+    cu_used: u64,
+    lamports_paid: u64,
 }
 
 pub struct BundleConsumer {
@@ -600,29 +602,23 @@ impl BundleConsumer {
 
         // Update packing metrics.
         let bundle_metrics = bundle_stage_leader_metrics.bundle_stage_metrics_tracker();
-        let committed_cu: u64 = result
-            .commit_transaction_details
-            .iter()
-            .map(|c| match c {
-                CommitTransactionDetails::Committed { compute_units } => *compute_units,
-                CommitTransactionDetails::NotCommitted => 0,
-            })
-            .sum();
-        let intrinsic_cu: u64 = transaction_qos_cost_results
-            .iter()
-            .map(|res| res.as_ref().unwrap().sum())
-            .sum();
 
-        bundle_metrics.increment_committed(num_committed as u64);
-        bundle_metrics.increment_committed_cu(intrinsic_cu + committed_cu);
-        // TODO: Lamport sum of committed.
-        bundle_metrics.increment_committed_lamports(0);
-        // TODO: When we implement dropping, fix this metric.
-        bundle_metrics.increment_dropped(0);
-        // TODO: When we implement dropping, fix this metric.
-        bundle_metrics.increment_dropped_cu(0);
-        // TODO: When we implement dropping, fix this metric.
-        bundle_metrics.increment_dropped_lamports(0);
+        match result.result {
+            Ok(_) => {
+                bundle_metrics.increment_committed(1);
+                bundle_metrics.increment_committed_cu(result.cu_used);
+                bundle_metrics.increment_committed_lamports(result.lamports_paid);
+            }
+            Err(BundleExecutionError::TipTooLow) => {
+                bundle_metrics.increment_dropped(1);
+                bundle_metrics.increment_dropped_cu(result.cu_used);
+                bundle_metrics.increment_dropped_lamports(result.lamports_paid);
+            }
+            Err(_) => {
+                bundle_metrics.increment_reverted(1);
+                bundle_metrics.increment_reverted_cu(result.cu_used);
+            }
+        }
 
         match result.result {
             Ok(_) => {
@@ -718,6 +714,14 @@ impl BundleConsumer {
             bundle_execution_results.result().is_ok()
         );
 
+        let economics = Self::compute_cu_and_lamports(
+            tip_accounts,
+            bank_start,
+            transaction_qos_cost_results,
+            &bundle_execution_results,
+        );
+        let (cu_used, lamports_paid) = economics.unwrap_or_default();
+
         if let Err(e) = bundle_execution_results.result() {
             return ExecuteRecordCommitResult {
                 commit_transaction_details: vec![],
@@ -725,6 +729,8 @@ impl BundleConsumer {
                 execution_metrics,
                 execute_and_commit_timings,
                 transaction_error_counter,
+                cu_used,
+                lamports_paid,
             };
         }
 
@@ -737,12 +743,7 @@ impl BundleConsumer {
         }
 
         // Compute the bundles total CUs & lamports paid.
-        match Self::compute_cu_and_lamports(
-            tip_accounts,
-            bank_start,
-            transaction_qos_cost_results,
-            &bundle_execution_results,
-        ) {
+        match economics {
             Some((cu_used, lamports_paid)) => {
                 if !no_drop && lamports_paid.saturating_mul(10) / cu_used < 2 {
                     println!("Dropping low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
@@ -752,6 +753,8 @@ impl BundleConsumer {
                         execution_metrics,
                         execute_and_commit_timings,
                         transaction_error_counter,
+                        cu_used,
+                        lamports_paid,
                     };
                 }
             }
@@ -809,6 +812,8 @@ impl BundleConsumer {
                 execution_metrics,
                 execute_and_commit_timings,
                 transaction_error_counter,
+                cu_used,
+                lamports_paid,
             };
         }
 
@@ -850,6 +855,8 @@ impl BundleConsumer {
             execution_metrics,
             execute_and_commit_timings,
             transaction_error_counter,
+            cu_used,
+            lamports_paid,
         }
     }
 
