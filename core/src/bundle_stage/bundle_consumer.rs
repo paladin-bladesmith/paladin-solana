@@ -746,7 +746,6 @@ impl BundleConsumer {
         match economics {
             Some((cu_used, lamports_paid)) => {
                 if !no_drop && lamports_paid.saturating_mul(10) / cu_used < 2 {
-                    println!("Dropping low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
                     return ExecuteRecordCommitResult {
                         commit_transaction_details: vec![],
                         result: Err(BundleExecutionError::TipTooLow),
@@ -908,7 +907,6 @@ impl BundleConsumer {
                 .sum()
                 .saturating_add(execution.details()?.executed_units);
 
-            // TODO: Factor in burn rate.
             lamports_paid = lamports_paid.saturating_add(fee);
             cu_used = cu_used.saturating_add(total_cu);
         }
