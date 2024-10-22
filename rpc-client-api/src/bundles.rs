@@ -4,7 +4,7 @@ use {
     crate::config::RpcSimulateTransactionAccountsConfig,
     solana_account_decoder::UiAccount,
     solana_accounts_db::transaction_results::TransactionExecutionResult,
-    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
+    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, TipError},
     solana_sdk::{
         clock::Slot,
         commitment_config::{CommitmentConfig, CommitmentLevel},
@@ -94,6 +94,8 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
             BundleExecutionError::LockError => Self::BundleLockError,
             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
+            // NB: Lie about the error as to not break downstream consumers.
+            BundleExecutionError::TipTooLow => Self::TipError(TipError::CrankTipError.to_string()),
         }
     }
 }

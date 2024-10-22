@@ -657,6 +657,7 @@ impl BundleConsumer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_record_commit_bundle(
         committer: &Committer,
         recorder: &TransactionRecorder,
@@ -743,8 +744,15 @@ impl BundleConsumer {
             &bundle_execution_results,
         ) {
             Some((cu_used, lamports_paid)) => {
-                if lamports_paid.saturating_mul(10) / cu_used < 2 {
-                    println!("Low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
+                if !no_drop && lamports_paid.saturating_mul(10) / cu_used < 2 {
+                    println!("Dropping low value bundle; cu_used={cu_used}; lamports_paid={lamports_paid}");
+                    return ExecuteRecordCommitResult {
+                        commit_transaction_details: vec![],
+                        result: Err(BundleExecutionError::TipTooLow),
+                        execution_metrics,
+                        execute_and_commit_timings,
+                        transaction_error_counter,
+                    };
                 }
             }
             None => eprintln!("Failed to compute CU & lamports; this shouldn't be possible"),

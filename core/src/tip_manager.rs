@@ -456,7 +456,8 @@ impl TipManager {
         accounts
             .iter()
             .map(|account| {
-                let balance = bank.get_balance(&account);
+                let balance = bank.get_balance(account);
+
                 (*account, balance)
             })
             .collect()
@@ -470,7 +471,7 @@ impl TipManager {
     ) -> Vec<(Pubkey, u64)> {
         let accounts = self.get_tip_accounts();
         accounts
-            .into_iter()
+            .iter()
             .map(|account| {
                 let account_data = bank.get_account(account).unwrap_or_default();
                 let balance = bank.get_balance(account);

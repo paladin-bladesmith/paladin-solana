@@ -1310,6 +1310,8 @@ impl BundleStorage {
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }
+                    // NB: Currently the cutoff is static so no point in retrying.
+                    Err(BundleExecutionError::TipTooLow) => {}
                 },
             );
 

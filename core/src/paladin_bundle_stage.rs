@@ -68,6 +68,7 @@ pub(crate) struct PaladinBundleStage {
 }
 
 impl PaladinBundleStage {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
         paladin_rx: Receiver<Vec<PacketBundle>>,
@@ -180,10 +181,10 @@ impl PaladinBundleStage {
         }
     }
 
-    fn drain_socket<'insert, 'lock>(
+    fn drain_socket<'lock>(
         &mut self,
         bundle_account_locker: &'lock BundleAccountLocker,
-        locked_bundles: &'insert mut HashMap<String, LockedSanitizedBundle<'lock>>,
+        locked_bundles: &mut HashMap<String, LockedSanitizedBundle<'lock>>,
         bundles: Vec<PacketBundle>,
     ) {
         // Drain the socket channel.
@@ -308,7 +309,7 @@ impl PaladinBundleStage {
                     MAX_BUNDLE_RETRY_DURATION,
                     &self.reserved_space,
                     bundles,
-                    &self.tip_manager.get_tip_accounts(),
+                    self.tip_manager.get_tip_accounts(),
                     bank_start,
                     bundle_stage_leader_metrics,
                 )
