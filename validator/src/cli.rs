@@ -92,12 +92,6 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
            		.help("p3 socket. Defaults to 0.0.0.0:4818")
              	.takes_value(true)
               	.default_value(P3_SOCKET)
-        ).arg(
-        	Arg::with_name("transaction_socket")
-         		.long("transaction-socket")
-           		.help("Transcation socket. Defaults to 127.0.0.1:4815")
-             	.takes_value(true)
-              	.default_value(TRANSACTION_SOCKET)
         )
         .arg(
             Arg::with_name("block_engine_url")

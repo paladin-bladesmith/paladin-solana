@@ -2,6 +2,7 @@
 
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
+use solana_core::p3::P3Args;
 use {
     agave_validator::{
         admin_rpc_service,
@@ -1582,8 +1583,11 @@ pub fn main() {
         trust_packets: matches.is_present("trust_relayer_packets"),
     };
 
-    let p3_socket = SocketAddr::from(value_of(&matchs, "p3_socket").unwrap());
-    let transcation_socket = SocketAddr::from(value_of(&matchs, "transaction_socket").unwrap());
+    let p3_socket = if matches.is_present("p3_socket") {
+        value_of(&matches, "p3_socket").expect("couldn't parse p3_socket")
+    } else {
+        P3Args::default().p3_socket
+    };
 
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
@@ -1744,7 +1748,7 @@ pub fn main() {
             .is_present("delay_leader_block_for_pending_fork"),
         preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
-
+        p3: P3Args { p3_socket },
         ..ValidatorConfig::default()
     };
 

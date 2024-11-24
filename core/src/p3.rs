@@ -1,5 +1,6 @@
 use std::{
     net::SocketAddr,
+    str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -9,16 +10,23 @@ use std::{
 use crate::express_lane::ExpressLane;
 
 const P3_INCLUSION_BUFFER: usize = 100;
-#[derive(Default, Copy, Clone)]
+
+#[derive(Copy, Clone)]
 pub struct P3Args {
-    pub transaction_socket: SocketAddr,
     pub p3_socket: SocketAddr,
+}
+
+impl Default for P3Args {
+    fn default() -> Self {
+        P3Args {
+            p3_socket: SocketAddr::from_str("0.0.0.0:4818").unwrap(),
+        }
+    }
 }
 
 pub(crate) fn p3_run(args: P3Args) {
     let exit = Arc::new(AtomicBool::new(false));
 
-    let arb_rx = crossbeam_channel::never();
     let (leader_tx, leader_rx) = crossbeam_channel::bounded(P3_INCLUSION_BUFFER);
 
     let p3 = ExpressLane::spawn(exit.clone(), leader_tx, args.p3_socket);
@@ -49,8 +57,5 @@ pub(crate) fn p3_run(args: P3Args) {
             // Wait for P3 to clean up.
             p3.await.unwrap().unwrap();
             info!("P3 exited cleanly");
-
-            // Wait for inclusion to clean up.
-            // inclusion.join().unwrap();
         });
 }
