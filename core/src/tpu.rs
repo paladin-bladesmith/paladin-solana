@@ -2,6 +2,9 @@
 //! multi-stage transaction processing pipeline in software.
 
 pub use solana_sdk::net::DEFAULT_TPU_COALESCE;
+
+use crate::p3::{p3_run, P3Args};
+
 use {
     crate::{
         banking_stage::BankingStage,
@@ -69,7 +72,8 @@ use {
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_PEER: usize = 8;
-
+// P3
+pub(crate) const P3_INCLUSION_BUFFER: usize = 100;
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
     pub transaction_forwards: Vec<UdpSocket>,
@@ -142,6 +146,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
+        p3_args: P3Args,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -266,6 +271,9 @@ impl Tpu {
 
         let (paladin_sender, paladin_receiver) = unbounded();
         let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender);
+        // let (p3_leader_tx, p3_leader_rx) = crossbeam_channel::bounded(P3_INCLUSION_BUFFER);
+
+        // p3_run(args);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(

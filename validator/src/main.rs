@@ -1080,7 +1080,6 @@ pub fn main() {
         )
         .exit();
     });
-
     let logfile = {
         let logfile = matches
             .value_of("logfile")
@@ -1583,6 +1582,9 @@ pub fn main() {
         trust_packets: matches.is_present("trust_relayer_packets"),
     };
 
+    let p3_socket = SocketAddr::from(value_of(&matchs, "p3_socket").unwrap());
+    let transcation_socket = SocketAddr::from(value_of(&matchs, "transaction_socket").unwrap());
+
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -1742,6 +1744,7 @@ pub fn main() {
             .is_present("delay_leader_block_for_pending_fork"),
         preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
+
         ..ValidatorConfig::default()
     };
 
