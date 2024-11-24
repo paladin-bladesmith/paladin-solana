@@ -8,12 +8,14 @@ use crossbeam_channel::TrySendError;
 use solana_sdk::packet::PACKET_DATA_SIZE;
 use solana_sdk::transaction::VersionedTransaction;
 
+use crate::packet_bundle::PacketBundle;
+
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub(crate) struct ExpressLane {
     exit: Arc<AtomicBool>,
 
-    leader_tx: crossbeam_channel::Sender<VersionedTransaction>,
+    leader_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
 
     socket: UdpSocket,
     buffer: [u8; PACKET_DATA_SIZE],
@@ -24,7 +26,7 @@ pub(crate) struct ExpressLane {
 impl ExpressLane {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
-        leader_tx: crossbeam_channel::Sender<VersionedTransaction>,
+        leader_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
         addr: SocketAddr,
     ) -> std::thread::JoinHandle<()> {
         let socket = UdpSocket::bind(addr).unwrap();
@@ -45,14 +47,16 @@ impl ExpressLane {
 
     fn run(mut self) {
         while !self.exit.load(Ordering::Relaxed) {
-            let tx = match self.socket_recv() {
+            let (buffer, tx) = match self.socket_recv() {
                 Some(tx) => tx,
                 None => continue,
             };
 
             trace!("Received TX with signature: {}", tx.signatures[0]);
 
-            match self.leader_tx.try_send(tx) {
+            let pb = PacketBundle::from(buffer);
+
+            match self.leader_tx.try_send(pb) {
                 Ok(_) => {}
                 Err(TrySendError::Disconnected(_)) => break,
                 // TODO: Track dropped TXs via metrics.
@@ -62,13 +66,13 @@ impl ExpressLane {
             }
         }
     }
-    fn socket_recv(&mut self) -> Option<VersionedTransaction> {
+    fn socket_recv(&mut self) -> Option<(Vec<u8>, VersionedTransaction)> {
         match self.socket.recv(&mut self.buffer) {
             Ok(_) => {
                 self.metrics.increment_transactions(1);
-
-                match bincode::deserialize(&self.buffer) {
-                    Ok(tx) => Some(tx),
+                // Deserialize to match tx
+                match bincode::deserialize::<VersionedTransaction>(&self.buffer) {
+                    Ok(tx) => Some((self.buffer.to_vec(), tx)),
                     Err(_) => {
                         self.metrics.increment_err_deserialize(1);
 

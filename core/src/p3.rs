@@ -7,7 +7,10 @@ use std::{
     },
 };
 
-use crate::express_lane::ExpressLane;
+use serde::Serialize;
+use solana_sdk::transaction::VersionedTransaction;
+
+use crate::{express_lane::ExpressLane, packet_bundle::PacketBundle};
 
 const P3_INCLUSION_BUFFER: usize = 100;
 
@@ -24,12 +27,10 @@ impl Default for P3Args {
     }
 }
 
-pub(crate) fn p3_run(args: P3Args) {
+pub(crate) fn p3_run(args: P3Args, p3_tx: crossbeam_channel::Sender<Vec<PacketBundle>>) {
     let exit = Arc::new(AtomicBool::new(false));
 
-    let (leader_tx, leader_rx) = crossbeam_channel::bounded(P3_INCLUSION_BUFFER);
-
-    let p3 = ExpressLane::spawn(exit.clone(), leader_tx, args.p3_socket);
+    let p3 = ExpressLane::spawn(exit.clone(), p3_tx, args.p3_socket);
 
     // Wait for SIGINT or thread exit.
     tokio::runtime::Builder::new_current_thread()
