@@ -16,7 +16,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
 
-pub(crate) struct P3Lane {
+pub(crate) struct P3 {
     exit: Arc<AtomicBool>,
 
     leader_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
@@ -24,10 +24,10 @@ pub(crate) struct P3Lane {
     socket: UdpSocket,
     buffer: [u8; PACKET_DATA_SIZE],
 
-    metrics: P3LaneMetrics,
+    metrics: P3Metrics,
 }
 
-impl P3Lane {
+impl P3 {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
         leader_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
@@ -35,17 +35,17 @@ impl P3Lane {
     ) -> std::thread::JoinHandle<()> {
         let socket = UdpSocket::bind(addr).unwrap();
         socket.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
-        let express_lane = P3Lane {
+        let p3 = Self {
             exit,
             leader_tx,
             socket,
             buffer: [0u8; PACKET_DATA_SIZE],
-            metrics: P3LaneMetrics::default(),
+            metrics: P3Metrics::default(),
         };
 
         std::thread::Builder::new()
-            .name("P3Lane".to_owned())
-            .spawn(|| express_lane.run())
+            .name("p3".to_owned())
+            .spawn(|| p3.run())
             .unwrap()
     }
 
@@ -103,25 +103,17 @@ impl P3Lane {
 }
 
 #[derive(Default)]
-struct P3LaneMetrics {
+struct P3Metrics {
     /// Number of transactions received.
     transactions: u64,
     /// Number of transactions that failed to deserialize.
     err_deserialize: u64,
 }
 
-impl P3LaneMetrics {
-    pub(crate) fn report(&self, age: Duration) {
-        datapoint_info!(
-            "p3-express-lane",
-            ("metrics_age_us", age.as_micros() as i64, i64),
-            ("transactions", self.transactions, i64),
-            ("err_deserialize", self.err_deserialize, i64),
-        );
-    }
+impl P3Metrics {
     pub(crate) fn report_tx_send(&self, tx: String, status: String) {
         datapoint_info!(
-            "p3-express-lane",
+            "p3",
             ("Transcation", tx, String),
             ("Status", status, String)
         );
@@ -143,11 +135,11 @@ pub(crate) fn p3_spawn(
     thread::Builder::new()
         .name("P3Monitor".to_owned())
         .spawn(move || {
-            let p3 = P3Lane::spawn(exit, p3_tx, p3_socket);
+            let p3 = P3::spawn(exit, p3_tx, p3_socket);
 
             // Wait for P3Lane to finish
             if let Err(err) = p3.join() {
-                error!("P3Lane thread failed: {:?}", err);
+                error!("P3 thread failed: {:?}", err);
             } else {
                 info!("P3 exited cleanly");
             }
