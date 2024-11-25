@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use crate::p3_lane::P3_SOCKET_DEFAULT;
+use crate::p3::P3_SOCKET_DEFAULT;
 pub use solana_perf::report_target_features;
 
 use {

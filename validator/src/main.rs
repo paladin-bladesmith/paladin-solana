@@ -2,7 +2,7 @@
 
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
-use solana_core::p3_lane::P3_SOCKET_DEFAULT;
+use solana_core::p3::P3_SOCKET_DEFAULT;
 use {
     agave_validator::{
         admin_rpc_service,

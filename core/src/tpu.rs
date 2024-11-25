@@ -3,7 +3,7 @@
 
 pub use solana_sdk::net::DEFAULT_TPU_COALESCE;
 
-use crate::p3_lane::p3_run;
+use crate::p3::p3_spawn;
 
 use {
     crate::{
@@ -99,7 +99,6 @@ pub struct Tpu {
     jito_bundle_stage: BundleStage,
     paladin_socket: std::thread::JoinHandle<()>,
     paladin_bundle_stage: std::thread::JoinHandle<()>,
-    p3_lane: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -271,7 +270,7 @@ impl Tpu {
         let (paladin_sender, paladin_receiver) = unbounded();
         let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender.clone());
 
-        let p3_lane = p3_run(exit.clone(), p3_socket, paladin_sender);
+        let _ = p3_spawn(exit.clone(), p3_socket, paladin_sender);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
@@ -407,7 +406,6 @@ impl Tpu {
                 fetch_stage_manager,
                 jito_bundle_stage,
                 paladin_bundle_stage,
-                p3_lane,
             },
             vec![key_updater, forwards_key_updater],
         )

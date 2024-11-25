@@ -74,8 +74,7 @@ impl P3Lane {
                         .report_tx_send(bundle_id.clone(), "FAILED".to_string());
                     break;
                 }
-                // TODO: Track dropped TXs via metrics.
-                Err(TrySendError::Full(_tx)) => {
+                Err(TrySendError::Full(_)) => {
                     self.metrics
                         .report_tx_send(bundle_id.clone(), "FAILED".to_string());
                     warn!("Dropping TX, signature: {}", bundle_id)
@@ -136,7 +135,7 @@ impl P3LaneMetrics {
     }
 }
 
-pub(crate) fn p3_run(
+pub(crate) fn p3_spawn(
     exit: Arc<AtomicBool>,
     p3_socket: SocketAddr,
     p3_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
