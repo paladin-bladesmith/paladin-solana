@@ -5,7 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::TrySendError;
-use solana_sdk::packet::PACKET_DATA_SIZE;
+use solana_perf::packet::PacketBatch;
+use solana_sdk::packet::{Packet, PACKET_DATA_SIZE};
 use solana_sdk::transaction::VersionedTransaction;
 
 use crate::packet_bundle::PacketBundle;
@@ -47,32 +48,45 @@ impl ExpressLane {
 
     fn run(mut self) {
         while !self.exit.load(Ordering::Relaxed) {
-            let (buffer, tx) = match self.socket_recv() {
+            let tx = match self.socket_recv() {
                 Some(tx) => tx,
                 None => continue,
             };
 
             trace!("Received TX with signature: {}", tx.signatures[0]);
 
-            let pb = PacketBundle::from(buffer);
+            let bundle_id = tx.signatures[0].to_string();
+            let packet_bundle = PacketBundle {
+                batch: PacketBatch::new(vec![Packet::from_data(None, &tx).unwrap()]),
+                bundle_id: bundle_id.clone(),
+            };
 
-            match self.leader_tx.try_send(pb) {
-                Ok(_) => {}
-                Err(TrySendError::Disconnected(_)) => break,
+            match self.leader_tx.try_send(vec![packet_bundle]) {
+                Ok(_) => {
+                    self.metrics
+                        .report_tx_send(bundle_id.clone(), "SUCCESS".to_string());
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    self.metrics
+                        .report_tx_send(bundle_id.clone(), "FAILED".to_string());
+                    break;
+                }
                 // TODO: Track dropped TXs via metrics.
-                Err(TrySendError::Full(tx)) => {
-                    warn!("Dropping TX, signature: {}", tx.signatures[0])
+                Err(TrySendError::Full(_tx)) => {
+                    self.metrics
+                        .report_tx_send(bundle_id.clone(), "FAILED".to_string());
+                    warn!("Dropping TX, signature: {}", bundle_id)
                 }
             }
         }
     }
-    fn socket_recv(&mut self) -> Option<(Vec<u8>, VersionedTransaction)> {
+    fn socket_recv(&mut self) -> Option<VersionedTransaction> {
         match self.socket.recv(&mut self.buffer) {
             Ok(_) => {
                 self.metrics.increment_transactions(1);
                 // Deserialize to match tx
                 match bincode::deserialize::<VersionedTransaction>(&self.buffer) {
-                    Ok(tx) => Some((self.buffer.to_vec(), tx)),
+                    Ok(tx) => Some(tx),
                     Err(_) => {
                         self.metrics.increment_err_deserialize(1);
 
@@ -101,6 +115,13 @@ impl ExpressLaneMetrics {
             ("metrics_age_us", age.as_micros() as i64, i64),
             ("transactions", self.transactions, i64),
             ("err_deserialize", self.err_deserialize, i64),
+        );
+    }
+    pub(crate) fn report_tx_send(&self, tx: String, status: String) {
+        datapoint_info!(
+            "p3-express-lane",
+            ("Transcation", tx, String),
+            ("Status", status, String)
         );
     }
 

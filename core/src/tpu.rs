@@ -72,8 +72,6 @@ use {
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_PEER: usize = 8;
-// P3
-pub(crate) const P3_INCLUSION_BUFFER: usize = 100;
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
     pub transaction_forwards: Vec<UdpSocket>,
@@ -270,10 +268,9 @@ impl Tpu {
         );
 
         let (paladin_sender, paladin_receiver) = unbounded();
-        let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender);
-        // let (p3_leader_tx, p3_leader_rx) = crossbeam_channel::bounded(P3_INCLUSION_BUFFER);
+        let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender.clone());
 
-        // p3_run(args);
+        p3_run(p3_args, paladin_sender);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(

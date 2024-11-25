@@ -72,7 +72,6 @@ const DEFAULT_PREALLOCATED_BUNDLE_COST: &str = "3000000";
 const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: &str = "500";
 const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: &str = "3";
 const P3_SOCKET: &str = "0.0.0.0:4818";
-const TRANSACTION_SOCKET: &str = "127.0.0.1:4815";
 
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     return App::new(crate_name!())

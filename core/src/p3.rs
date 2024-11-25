@@ -7,12 +7,7 @@ use std::{
     },
 };
 
-use serde::Serialize;
-use solana_sdk::transaction::VersionedTransaction;
-
 use crate::{express_lane::ExpressLane, packet_bundle::PacketBundle};
-
-const P3_INCLUSION_BUFFER: usize = 100;
 
 #[derive(Copy, Clone)]
 pub struct P3Args {
