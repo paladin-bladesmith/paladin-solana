@@ -1,6 +1,8 @@
 //! The `validator` module hosts all the validator microservices.
 
-use crate::p3::P3Args;
+use std::str::FromStr;
+
+use crate::p3_lane::P3_SOCKET_DEFAULT;
 pub use solana_perf::report_target_features;
 
 use {
@@ -296,7 +298,7 @@ pub struct ValidatorConfig {
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
     // p3
-    pub p3: P3Args,
+    pub p3_socket: SocketAddr,
 }
 
 impl Default for ValidatorConfig {
@@ -375,7 +377,7 @@ impl Default for ValidatorConfig {
             shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
-            p3: P3Args::default(),
+            p3_socket: SocketAddr::from_str(P3_SOCKET_DEFAULT).expect("p3 socket"),
         }
     }
 }
@@ -1495,7 +1497,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
-            config.p3.clone(),
+            config.p3_socket.clone(),
         );
 
         datapoint_info!(

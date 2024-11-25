@@ -3,7 +3,7 @@
 
 pub use solana_sdk::net::DEFAULT_TPU_COALESCE;
 
-use crate::p3::{p3_run, P3Args};
+use crate::p3_lane::p3_run;
 
 use {
     crate::{
@@ -99,6 +99,7 @@ pub struct Tpu {
     jito_bundle_stage: BundleStage,
     paladin_socket: std::thread::JoinHandle<()>,
     paladin_bundle_stage: std::thread::JoinHandle<()>,
+    p3_lane: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -144,7 +145,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
-        p3_args: P3Args,
+        p3_socket: SocketAddr,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -270,7 +271,7 @@ impl Tpu {
         let (paladin_sender, paladin_receiver) = unbounded();
         let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender.clone());
 
-        p3_run(p3_args, paladin_sender);
+        let p3_lane = p3_run(exit.clone(), p3_socket, paladin_sender);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
@@ -406,6 +407,7 @@ impl Tpu {
                 fetch_stage_manager,
                 jito_bundle_stage,
                 paladin_bundle_stage,
+                p3_lane,
             },
             vec![key_updater, forwards_key_updater],
         )

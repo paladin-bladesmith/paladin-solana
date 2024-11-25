@@ -2,6 +2,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::ops::AddAssign;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::Duration;
 
 use crossbeam_channel::TrySendError;
@@ -13,7 +14,9 @@ use crate::packet_bundle::PacketBundle;
 
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 
-pub(crate) struct ExpressLane {
+pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
+
+pub(crate) struct P3Lane {
     exit: Arc<AtomicBool>,
 
     leader_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
@@ -21,10 +24,10 @@ pub(crate) struct ExpressLane {
     socket: UdpSocket,
     buffer: [u8; PACKET_DATA_SIZE],
 
-    metrics: ExpressLaneMetrics,
+    metrics: P3LaneMetrics,
 }
 
-impl ExpressLane {
+impl P3Lane {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
         leader_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
@@ -32,16 +35,16 @@ impl ExpressLane {
     ) -> std::thread::JoinHandle<()> {
         let socket = UdpSocket::bind(addr).unwrap();
         socket.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
-        let express_lane = ExpressLane {
+        let express_lane = P3Lane {
             exit,
             leader_tx,
             socket,
             buffer: [0u8; PACKET_DATA_SIZE],
-            metrics: ExpressLaneMetrics::default(),
+            metrics: P3LaneMetrics::default(),
         };
 
         std::thread::Builder::new()
-            .name("ExpressLane".to_owned())
+            .name("P3Lane".to_owned())
             .spawn(|| express_lane.run())
             .unwrap()
     }
@@ -101,14 +104,14 @@ impl ExpressLane {
 }
 
 #[derive(Default)]
-struct ExpressLaneMetrics {
+struct P3LaneMetrics {
     /// Number of transactions received.
     transactions: u64,
     /// Number of transactions that failed to deserialize.
     err_deserialize: u64,
 }
 
-impl ExpressLaneMetrics {
+impl P3LaneMetrics {
     pub(crate) fn report(&self, age: Duration) {
         datapoint_info!(
             "p3-express-lane",
@@ -131,4 +134,24 @@ impl ExpressLaneMetrics {
     pub(crate) fn increment_err_deserialize(&mut self, val: u64) {
         self.err_deserialize.add_assign(val);
     }
+}
+
+pub(crate) fn p3_run(
+    exit: Arc<AtomicBool>,
+    p3_socket: SocketAddr,
+    p3_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name("P3Monitor".to_owned())
+        .spawn(move || {
+            let p3 = P3Lane::spawn(exit, p3_tx, p3_socket);
+
+            // Wait for P3Lane to finish
+            if let Err(err) = p3.join() {
+                error!("P3Lane thread failed: {:?}", err);
+            } else {
+                info!("P3 exited cleanly");
+            }
+        })
+        .expect("Failed to spawn P3Monitor thread")
 }
