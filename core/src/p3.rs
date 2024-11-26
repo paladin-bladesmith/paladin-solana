@@ -13,7 +13,7 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        time::Duration,
+        time::{Duration, Instant},
     },
 };
 
@@ -30,6 +30,7 @@ pub(crate) struct P3 {
     buffer: [u8; PACKET_DATA_SIZE],
 
     metrics: P3Metrics,
+    metrics_creation: Instant,
 }
 
 impl P3 {
@@ -45,7 +46,9 @@ impl P3 {
             leader_tx,
             socket,
             buffer: [0u8; PACKET_DATA_SIZE],
+
             metrics: P3Metrics::default(),
+            metrics_creation: Instant::now(),
         };
 
         std::thread::Builder::new()
@@ -70,15 +73,18 @@ impl P3 {
             };
 
             match self.leader_tx.try_send(vec![packet_bundle]) {
-                Ok(_) => {
-                    self.metrics
-                        .report_tx_send(signature, "SUCCESS".to_string());
-                }
+                Ok(_) => {}
                 Err(TrySendError::Disconnected(_)) => break,
                 Err(TrySendError::Full(_)) => {
                     warn!("Dropping TX; signature={}", signature);
-                    self.metrics.report_tx_send(signature, "FAILED".to_string());
+                    self.metrics.dropped = self.metrics.dropped.saturating_add(1);
                 }
+            }
+
+            let now = Instant::now();
+            if now - self.metrics_creation > Duration::from_secs(1) {
+                self.metrics.report();
+                self.metrics = P3Metrics::default();
             }
         }
     }
@@ -86,9 +92,12 @@ impl P3 {
     fn socket_recv(&mut self) -> Option<VersionedTransaction> {
         match self.socket.recv(&mut self.buffer) {
             Ok(_) => {
-                self.metrics.increment_transactions(1);
+                self.metrics.transactions.add_assign(1);
                 bincode::deserialize::<VersionedTransaction>(&self.buffer)
-                    .inspect_err(|_| self.metrics.increment_err_deserialize(1))
+                    .inspect_err(|_| {
+                        self.metrics.err_deserialize =
+                            self.metrics.err_deserialize.saturating_add(1);
+                    })
                     .ok()
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => None,
@@ -105,24 +114,18 @@ impl P3 {
 struct P3Metrics {
     /// Number of transactions received.
     transactions: u64,
+    /// Number of transactions dropped due to full channel.
+    dropped: u64,
     /// Number of transactions that failed to deserialize.
     err_deserialize: u64,
 }
 
 impl P3Metrics {
-    pub(crate) fn report_tx_send(&self, tx: String, status: String) {
+    fn report(&self) {
         datapoint_info!(
-            "p3",
-            ("Transcation", tx, String),
-            ("Status", status, String)
+            "p3_socket",
+            ("transactions", self.transactions as i64, i64),
+            ("err_deserialize", self.err_deserialize as i64, i64)
         );
-    }
-
-    pub(crate) fn increment_transactions(&mut self, val: u64) {
-        self.transactions.add_assign(val);
-    }
-
-    pub(crate) fn increment_err_deserialize(&mut self, val: u64) {
-        self.err_deserialize.add_assign(val);
     }
 }
