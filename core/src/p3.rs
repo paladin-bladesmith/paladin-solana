@@ -88,18 +88,16 @@ impl P3 {
         match self.socket.recv(&mut self.buffer) {
             Ok(_) => {
                 self.metrics.increment_transactions(1);
-                // Deserialize to match tx
-                match bincode::deserialize::<VersionedTransaction>(&self.buffer) {
-                    Ok(tx) => Some(tx),
-                    Err(_) => {
-                        self.metrics.increment_err_deserialize(1);
-
-                        None
-                    }
-                }
+                bincode::deserialize::<VersionedTransaction>(&self.buffer)
+                    .inspect_err(|_| self.metrics.increment_err_deserialize(1))
+                    .ok()
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => None,
-            Err(err) => panic!("Unexpected IO error; err={err}"),
+            Err(err) => {
+                error!("Unexpected IO error; err={err}");
+
+                None
+            }
         }
     }
 }
