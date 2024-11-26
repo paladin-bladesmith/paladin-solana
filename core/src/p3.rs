@@ -122,6 +122,7 @@ impl P3Metrics {
     pub(crate) fn increment_transactions(&mut self, val: u64) {
         self.transactions.add_assign(val);
     }
+
     pub(crate) fn increment_err_deserialize(&mut self, val: u64) {
         self.err_deserialize.add_assign(val);
     }
