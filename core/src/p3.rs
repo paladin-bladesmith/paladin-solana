@@ -50,7 +50,7 @@ impl P3 {
         };
 
         std::thread::Builder::new()
-            .name("p3".to_owned())
+            .name("P3".to_owned())
             .spawn(|| p3.run())
             .unwrap()
     }
