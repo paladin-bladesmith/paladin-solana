@@ -1081,6 +1081,7 @@ pub fn main() {
         )
         .exit();
     });
+
     let logfile = {
         let logfile = matches
             .value_of("logfile")
