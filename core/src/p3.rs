@@ -62,28 +62,23 @@ impl P3 {
                 None => continue,
             };
 
-            trace!("Received TX with signature: {}", tx.signatures[0]);
+            trace!("Received TX; signature={}", tx.signatures[0]);
 
-            let bundle_id = tx.signatures[0].to_string();
+            let signature = tx.signatures[0].to_string();
             let packet_bundle = PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, &tx).unwrap()]),
-                bundle_id: bundle_id.clone(),
+                bundle_id: signature.clone(),
             };
 
             match self.leader_tx.try_send(vec![packet_bundle]) {
                 Ok(_) => {
                     self.metrics
-                        .report_tx_send(bundle_id.clone(), "SUCCESS".to_string());
+                        .report_tx_send(signature, "SUCCESS".to_string());
                 }
-                Err(TrySendError::Disconnected(_)) => {
-                    self.metrics
-                        .report_tx_send(bundle_id.clone(), "FAILED".to_string());
-                    break;
-                }
+                Err(TrySendError::Disconnected(_)) => break,
                 Err(TrySendError::Full(_)) => {
-                    self.metrics
-                        .report_tx_send(bundle_id.clone(), "FAILED".to_string());
-                    warn!("Dropping TX, signature: {}", bundle_id)
+                    warn!("Dropping TX; signature={}", signature);
+                    self.metrics.report_tx_send(signature, "FAILED".to_string());
                 }
             }
         }
