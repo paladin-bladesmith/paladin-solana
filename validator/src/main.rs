@@ -2,7 +2,6 @@
 
 #[cfg(not(target_env = "msvc"))]
 use jemallocator::Jemalloc;
-use solana_core::p3::P3_SOCKET_DEFAULT;
 use {
     agave_validator::{
         admin_rpc_service,
@@ -32,6 +31,7 @@ use {
     solana_core::{
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
+        p3::P3_SOCKET_DEFAULT,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},

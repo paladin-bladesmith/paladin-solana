@@ -1,10 +1,6 @@
 //! The `validator` module hosts all the validator microservices.
 
-use std::str::FromStr;
-
-use crate::p3::P3_SOCKET_DEFAULT;
 pub use solana_perf::report_target_features;
-
 use {
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
@@ -18,6 +14,7 @@ use {
             tower_storage::{NullTowerStorage, TowerStorage},
             ExternalRootSource, Tower,
         },
+        p3::P3_SOCKET_DEFAULT,
         poh_timing_report_service::PohTimingReportService,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{self, serve_repair::ServeRepair, serve_repair_service::ServeRepairService},
@@ -137,6 +134,7 @@ use {
         net::SocketAddr,
         num::NonZeroUsize,
         path::{Path, PathBuf},
+        str::FromStr,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,

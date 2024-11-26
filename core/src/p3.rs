@@ -1,16 +1,22 @@
-use std::net::{SocketAddr, UdpSocket};
-use std::ops::AddAssign;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
-
-use crossbeam_channel::TrySendError;
-use solana_perf::packet::PacketBatch;
-use solana_sdk::packet::{Packet, PACKET_DATA_SIZE};
-use solana_sdk::transaction::VersionedTransaction;
-
-use crate::packet_bundle::PacketBundle;
+use {
+    crate::packet_bundle::PacketBundle,
+    crossbeam_channel::TrySendError,
+    solana_perf::packet::PacketBatch,
+    solana_sdk::{
+        packet::{Packet, PACKET_DATA_SIZE},
+        transaction::VersionedTransaction,
+    },
+    std::{
+        net::{SocketAddr, UdpSocket},
+        ops::AddAssign,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread,
+        time::Duration,
+    },
+};
 
 const READ_TIMEOUT: Duration = Duration::from_secs(1);
 
@@ -82,6 +88,7 @@ impl P3 {
             }
         }
     }
+
     fn socket_recv(&mut self) -> Option<VersionedTransaction> {
         match self.socket.recv(&mut self.buffer) {
             Ok(_) => {

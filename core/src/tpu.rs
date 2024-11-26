@@ -2,9 +2,6 @@
 //! multi-stage transaction processing pipeline in software.
 
 pub use solana_sdk::net::DEFAULT_TPU_COALESCE;
-
-use crate::p3::p3_spawn;
-
 use {
     crate::{
         banking_stage::BankingStage,
@@ -15,6 +12,7 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
+        p3::p3_spawn,
         paladin_bundle_stage::PaladinBundleStage,
         paladin_socket::PaladinSocket,
         proxy::{
