@@ -137,7 +137,7 @@ pub(crate) fn p3_spawn(
         .spawn(move || {
             let p3 = P3::spawn(exit, p3_tx, p3_socket);
 
-            // Wait for P3Lane to finish
+            // Wait for P3 to finish
             if let Err(err) = p3.join() {
                 error!("P3 thread failed: {:?}", err);
             } else {

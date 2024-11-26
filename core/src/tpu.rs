@@ -99,6 +99,7 @@ pub struct Tpu {
     jito_bundle_stage: BundleStage,
     paladin_socket: std::thread::JoinHandle<()>,
     paladin_bundle_stage: std::thread::JoinHandle<()>,
+    p3: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -270,7 +271,7 @@ impl Tpu {
         let (paladin_sender, paladin_receiver) = unbounded();
         let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender.clone());
 
-        let _ = p3_spawn(exit.clone(), p3_socket, paladin_sender);
+        let p3 = p3_spawn(exit.clone(), p3_socket, paladin_sender);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
@@ -406,6 +407,7 @@ impl Tpu {
                 fetch_stage_manager,
                 jito_bundle_stage,
                 paladin_bundle_stage,
+                p3,
             },
             vec![key_updater, forwards_key_updater],
         )
@@ -427,6 +429,7 @@ impl Tpu {
             self.fetch_stage_manager.join(),
             self.paladin_socket.join(),
             self.paladin_bundle_stage.join(),
+            self.p3.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
