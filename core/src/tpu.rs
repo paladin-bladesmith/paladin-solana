@@ -12,7 +12,7 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
-        p3::p3_spawn,
+        p3::P3,
         paladin_bundle_stage::PaladinBundleStage,
         paladin_socket::PaladinSocket,
         proxy::{
@@ -270,7 +270,7 @@ impl Tpu {
         // Launch paladin threads.
         let (paladin_sender, paladin_receiver) = unbounded();
         let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender.clone());
-        let p3 = P3::spawn(exit.clone(), p3_tx, p3_socket);
+        let p3 = P3::spawn(exit.clone(), paladin_sender, p3_socket);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(

@@ -13,7 +13,6 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        thread,
         time::Duration,
     },
 };
