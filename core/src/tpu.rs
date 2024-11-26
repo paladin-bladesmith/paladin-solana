@@ -70,6 +70,7 @@ use {
 
 // allow multiple connections for NAT and any open/close overlap
 pub const MAX_QUIC_CONNECTIONS_PER_PEER: usize = 8;
+
 pub struct TpuSockets {
     pub transactions: Vec<UdpSocket>,
     pub transaction_forwards: Vec<UdpSocket>,
