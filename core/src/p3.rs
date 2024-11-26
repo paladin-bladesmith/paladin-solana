@@ -133,23 +133,3 @@ impl P3Metrics {
         self.err_deserialize.add_assign(val);
     }
 }
-
-pub(crate) fn p3_spawn(
-    exit: Arc<AtomicBool>,
-    p3_socket: SocketAddr,
-    p3_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
-) -> thread::JoinHandle<()> {
-    thread::Builder::new()
-        .name("P3Monitor".to_owned())
-        .spawn(move || {
-            let p3 = P3::spawn(exit, p3_tx, p3_socket);
-
-            // Wait for P3 to finish
-            if let Err(err) = p3.join() {
-                error!("P3 thread failed: {:?}", err);
-            } else {
-                info!("P3 exited cleanly");
-            }
-        })
-        .expect("Failed to spawn P3Monitor thread")
-}
