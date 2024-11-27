@@ -85,6 +85,7 @@ impl P3 {
             if now - self.metrics_creation > Duration::from_secs(1) {
                 self.metrics.report();
                 self.metrics = P3Metrics::default();
+                self.metrics_creation = now;
             }
         }
     }
