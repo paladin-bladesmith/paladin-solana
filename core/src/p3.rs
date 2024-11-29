@@ -17,7 +17,7 @@ use {
     },
 };
 
-const READ_TIMEOUT: Duration = Duration::from_secs(1);
+const READ_TIMEOUT: Duration = Duration::from_millis(100);
 
 pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
 
@@ -59,6 +59,15 @@ impl P3 {
 
     fn run(mut self) {
         while !self.exit.load(Ordering::Relaxed) {
+            // Check metrics.
+            let now = Instant::now();
+            if now - self.metrics_creation > Duration::from_secs(1) {
+                self.metrics.report();
+                self.metrics = P3Metrics::default();
+                self.metrics_creation = now;
+            }
+
+            // Try recv packets.
             let tx = match self.socket_recv() {
                 Some(tx) => tx,
                 None => continue,
@@ -79,13 +88,6 @@ impl P3 {
                     warn!("Dropping TX; signature={}", signature);
                     self.metrics.dropped = self.metrics.dropped.saturating_add(1);
                 }
-            }
-
-            let now = Instant::now();
-            if now - self.metrics_creation > Duration::from_secs(1) {
-                self.metrics.report();
-                self.metrics = P3Metrics::default();
-                self.metrics_creation = now;
             }
         }
     }
