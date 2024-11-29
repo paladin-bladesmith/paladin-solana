@@ -1495,7 +1495,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
-            config.p3_socket.clone(),
+            config.p3_socket,
         );
 
         datapoint_info!(
