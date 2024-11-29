@@ -113,7 +113,7 @@ impl P3 {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, PartialEq, Eq)]
 struct P3Metrics {
     /// Number of transactions received.
     transactions: u64,
@@ -125,6 +125,11 @@ struct P3Metrics {
 
 impl P3Metrics {
     fn report(&self) {
+        // Suppress logs if there are no recorded metrics.
+        if self == P3Metrics::default() {
+            return;
+        }
+
         datapoint_info!(
             "p3_socket",
             ("transactions", self.transactions as i64, i64),
