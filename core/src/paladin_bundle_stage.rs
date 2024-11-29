@@ -203,7 +203,7 @@ impl PaladinBundleStage {
                         .all(|bundle| bundle.bundle_id.starts_with('A')));
                     arbs = Some(bundles);
                 }
-                prefix => panic!("Unexpected bundle ID prefix; prefix={prefix}"),
+                prefix => error!("Unexpected bundle ID prefix; prefix={prefix}"),
             }
         }
 

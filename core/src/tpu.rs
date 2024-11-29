@@ -12,6 +12,7 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
+        p3::P3,
         paladin_bundle_stage::PaladinBundleStage,
         paladin_socket::PaladinSocket,
         proxy::{
@@ -97,6 +98,7 @@ pub struct Tpu {
     jito_bundle_stage: BundleStage,
     paladin_socket: std::thread::JoinHandle<()>,
     paladin_bundle_stage: std::thread::JoinHandle<()>,
+    p3: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -142,6 +144,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
+        p3_socket: SocketAddr,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -264,8 +267,10 @@ impl Tpu {
             &block_builder_fee_info,
         );
 
+        // Launch paladin threads.
         let (paladin_sender, paladin_receiver) = unbounded();
-        let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender);
+        let paladin_socket = PaladinSocket::spawn(exit.clone(), paladin_sender.clone());
+        let p3 = P3::spawn(exit.clone(), paladin_sender, p3_socket);
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
@@ -401,6 +406,7 @@ impl Tpu {
                 fetch_stage_manager,
                 jito_bundle_stage,
                 paladin_bundle_stage,
+                p3,
             },
             vec![key_updater, forwards_key_updater],
         )
@@ -422,6 +428,7 @@ impl Tpu {
             self.fetch_stage_manager.join(),
             self.paladin_socket.join(),
             self.paladin_bundle_stage.join(),
+            self.p3.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

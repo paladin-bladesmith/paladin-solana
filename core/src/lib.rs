@@ -28,6 +28,7 @@ pub mod gen_keys;
 pub mod immutable_deserialized_bundle;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
+pub mod p3;
 pub mod packet_bundle;
 pub mod paladin_bundle_stage;
 pub mod paladin_socket;
