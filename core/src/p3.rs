@@ -4,11 +4,11 @@ use {
     solana_perf::packet::PacketBatch,
     solana_sdk::{
         packet::{Packet, PACKET_DATA_SIZE},
+        saturating_add_assign,
         transaction::VersionedTransaction,
     },
     std::{
         net::{SocketAddr, UdpSocket},
-        ops::AddAssign,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -86,7 +86,7 @@ impl P3 {
                 Err(TrySendError::Disconnected(_)) => break,
                 Err(TrySendError::Full(_)) => {
                     warn!("Dropping TX; signature={}", signature);
-                    self.metrics.dropped = self.metrics.dropped.saturating_add(1);
+                    saturating_add_assign!(self.metrics.dropped, 1);
                 }
             }
         }
@@ -95,12 +95,9 @@ impl P3 {
     fn socket_recv(&mut self) -> Option<VersionedTransaction> {
         match self.socket.recv(&mut self.buffer) {
             Ok(_) => {
-                self.metrics.transactions.add_assign(1);
+                saturating_add_assign!(self.metrics.transactions, 1);
                 bincode::deserialize::<VersionedTransaction>(&self.buffer)
-                    .inspect_err(|_| {
-                        self.metrics.err_deserialize =
-                            self.metrics.err_deserialize.saturating_add(1);
-                    })
+                    .inspect_err(|_| saturating_add_assign!(self.metrics.err_deserialize, 1))
                     .ok()
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => None,
@@ -126,7 +123,7 @@ struct P3Metrics {
 impl P3Metrics {
     fn report(&self) {
         // Suppress logs if there are no recorded metrics.
-        if self == P3Metrics::default() {
+        if self == &P3Metrics::default() {
             return;
         }
 
