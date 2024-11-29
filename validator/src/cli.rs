@@ -85,7 +85,8 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
             Arg::with_name(SKIP_SEED_PHRASE_VALIDATION_ARG.name)
                 .long(SKIP_SEED_PHRASE_VALIDATION_ARG.long)
                 .help(SKIP_SEED_PHRASE_VALIDATION_ARG.help),
-        ).arg(
+        )
+        .arg(
         	Arg::with_name("p3_socket")
          		.long("p3-socket")
            		.help("p3 socket. Defaults to 0.0.0.0:4818")
