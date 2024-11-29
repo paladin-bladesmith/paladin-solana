@@ -73,12 +73,12 @@ impl P3 {
                 None => continue,
             };
 
-            trace!("Received TX; signature={}", tx.signatures[0]);
+            let signature = tx.signatures[0];
+            trace!("Received TX; signature={signature}");
 
-            let signature = tx.signatures[0].to_string();
             let packet_bundle = PacketBundle {
                 batch: PacketBatch::new(vec![Packet::from_data(None, &tx).unwrap()]),
-                bundle_id: signature.clone(),
+                bundle_id: format!("R{signature}"),
             };
 
             match self.leader_tx.try_send(vec![packet_bundle]) {
