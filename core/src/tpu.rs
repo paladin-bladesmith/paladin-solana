@@ -267,7 +267,12 @@ impl Tpu {
 
         // Launch paladin threads.
         let (paladin_sender, paladin_receiver) = unbounded();
-        let p3 = P3::spawn(exit.clone(), paladin_sender, p3_socket);
+        let p3 = P3::spawn(
+            exit.clone(),
+            paladin_sender,
+            p3_socket,
+            poh_recorder.clone(),
+        );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
         let fetch_stage_manager = FetchStageManager::new(
