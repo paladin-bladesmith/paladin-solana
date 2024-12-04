@@ -223,6 +223,13 @@ impl PaladinBundleStage {
         // Take all necessary locks, processing the arbs first.
         let bank = self.poh_recorder.read().unwrap().latest_bank();
         for mut bundle in arbs.into_iter().flatten().chain(new_bundles) {
+            // NB: We filter duplicate bundles to ensure we always have the same
+            // number of locked and sanitized bundles.
+            if locked_bundles.contains_key(&bundle.bundle_id) {
+                // TODO: Metrics.
+                continue;
+            }
+
             let immutable =
                 match ImmutableDeserializedBundle::new(&mut bundle, Some(MAX_PACKETS_PER_BUNDLE)) {
                     Ok(bundle) => bundle,
