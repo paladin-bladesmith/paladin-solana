@@ -28,7 +28,8 @@ const AMM_PROGRAMS: &[Pubkey] = &[
 ];
 
 thread_local! {
-    static AMM_MAP: RefCell<HashMap<Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>> = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
+    static AMM_MAP: RefCell<HashMap<Pubkey, [bool; MAX_PACKETS_PER_BUNDLE]>>
+        = RefCell::new(HashMap::with_capacity(MAX_TX_ACCOUNT_LOCKS * MAX_PACKETS_PER_BUNDLE));
 }
 
 #[must_use]
@@ -46,11 +47,11 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
         // Find all the AMM owned writeable accounts.
         let writeable_amm_accounts = tx
             .writable_accounts_owners()
-            .filter(|owner| AMM_PROGRAMS.contains(owner));
+            .filter(|account| AMM_PROGRAMS.contains(account.owner));
 
         // Record this TX's access of the writeable account.
-        for key in writeable_amm_accounts {
-            AMM_MAP.with_borrow_mut(|map| map.entry_ref(key).or_default()[i] = true);
+        for account in writeable_amm_accounts {
+            AMM_MAP.with_borrow_mut(|map| map.entry_ref(account.key).or_default()[i] = true);
         }
     }
 
@@ -115,7 +116,12 @@ pub(crate) trait BundleTransaction {
     /// Iterator over each signer.
     fn signers(&self) -> impl Iterator<Item = &Pubkey>;
     /// Iterator over each loaded account's owner.
-    fn writable_accounts_owners(&self) -> impl Iterator<Item = &Pubkey>;
+    fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef>;
+}
+
+pub(crate) struct AccountRef<'a> {
+    key: &'a Pubkey,
+    owner: &'a Pubkey,
 }
 
 impl<'a> BundleResult<'a> for LoadAndExecuteBundleOutput<'a> {
@@ -154,14 +160,17 @@ impl<'a> BundleTransaction for (&'a SanitizedTransaction, &'a LoadedTransaction)
             .take(self.0.message().num_signatures() as usize)
     }
 
-    fn writable_accounts_owners(&self) -> impl Iterator<Item = &Pubkey> {
+    fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef> {
         self.0
             .message()
             .account_keys()
             .iter()
             .enumerate()
             .filter(|(i, _)| self.0.message().is_writable(*i))
-            .map(|(i, _)| self.1.accounts[i].1.owner())
+            .map(|(i, key)| AccountRef {
+                key,
+                owner: self.1.accounts[i].1.owner(),
+            })
     }
 }
 
@@ -197,7 +206,7 @@ mod tests {
 
     struct MockTransaction {
         signers: Vec<Pubkey>,
-        writeable_account_owners: Vec<Pubkey>,
+        accounts: Vec<MockAccount>,
     }
 
     impl<'a> BundleTransaction for &'a MockTransaction {
@@ -205,9 +214,16 @@ mod tests {
             self.signers.iter()
         }
 
-        fn writable_accounts_owners(&self) -> impl Iterator<Item = &Pubkey> {
-            self.writeable_account_owners.iter()
+        fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef> {
+            self.accounts
+                .iter()
+                .map(|MockAccount { key, owner }| AccountRef { key, owner })
         }
+    }
+
+    struct MockAccount {
+        key: Pubkey,
+        owner: Pubkey,
     }
 
     #[test]
@@ -218,11 +234,17 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![AMM_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: AMM_1,
+                    }],
                 },
             ],
         };
@@ -239,11 +261,17 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
             ],
         };
@@ -260,21 +288,64 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![NOT_AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: NOT_AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_2],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
             ],
         };
 
         // Act & Assert.
         assert!(is_bundle_front_run(&bundle));
+    }
+
+    #[test]
+    fn three_txs_first_and_second_same_amm_different_key() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: NOT_AMM_0,
+                    }],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_2],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(!is_bundle_front_run(&bundle));
     }
 
     #[test]
@@ -285,15 +356,24 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![AMM_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: AMM_1,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_2],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
             ],
         };
@@ -303,22 +383,65 @@ mod tests {
     }
 
     #[test]
-    fn three_amms_no_conflict() {
+    fn three_different_amms() {
         // Arrange.
         let bundle = MockBundleResult {
             executed_ok: true,
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![AMM_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: AMM_1,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_2],
-                    writeable_account_owners: vec![AMM_2],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([2; 32]),
+                        owner: AMM_2,
+                    }],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(!is_bundle_front_run(&bundle));
+    }
+
+    #[test]
+    fn three_same_amms_different_accounts() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_2],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([2; 32]),
+                        owner: AMM_0,
+                    }],
                 },
             ],
         };
@@ -335,11 +458,17 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
                 },
             ],
         };
@@ -356,11 +485,17 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![NOT_AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: NOT_AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![NOT_AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: NOT_AMM_0,
+                    }],
                 },
             ],
         };
@@ -377,11 +512,17 @@ mod tests {
             transactions: vec![
                 MockTransaction {
                     signers: vec![SIGNER_0],
-                    writeable_account_owners: vec![NOT_AMM_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: NOT_AMM_0,
+                    }],
                 },
                 MockTransaction {
                     signers: vec![SIGNER_1],
-                    writeable_account_owners: vec![NOT_AMM_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([1; 32]),
+                        owner: NOT_AMM_1,
+                    }],
                 },
             ],
         };
