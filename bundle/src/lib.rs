@@ -61,4 +61,7 @@ pub enum BundleExecutionError {
 
     #[error("Tip was too low")]
     TipTooLow,
+
+    #[error("Bundle contained a front run")]
+    FrontRun,
 }

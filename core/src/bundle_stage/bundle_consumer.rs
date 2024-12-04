@@ -728,9 +728,19 @@ impl BundleConsumer {
         // NB: Must run before we start committing the transactions.
         if super::front_run_identifier::is_bundle_front_run(&bundle_execution_results) {
             info!(
-                "Front run detected; bundle_id={}",
+                "Dropping front run bundle; bundle_id={}",
                 sanitized_bundle.bundle_id
             );
+
+            return ExecuteRecordCommitResult {
+                commit_transaction_details: vec![],
+                result: Err(BundleExecutionError::FrontRun),
+                execution_metrics,
+                execute_and_commit_timings,
+                transaction_error_counter,
+                cu_used,
+                lamports_paid,
+            };
         }
 
         // Compute the bundles total CUs & lamports paid.

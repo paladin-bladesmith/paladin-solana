@@ -95,7 +95,9 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
             // NB: Lie about the error as to not break downstream consumers.
-            BundleExecutionError::TipTooLow => Self::TipError(TipError::CrankTipError.to_string()),
+            BundleExecutionError::TipTooLow | BundleExecutionError::FrontRun => {
+                Self::TipError(TipError::CrankTipError.to_string())
+            }
         }
     }
 }

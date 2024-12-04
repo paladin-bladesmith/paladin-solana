@@ -262,7 +262,8 @@ impl BundleStageStatsMetricsTracker {
                     BundleExecutionError::TransactionFailure(
                         LoadAndExecuteBundleError::AccountInUse,
                     )
-                    | BundleExecutionError::TipTooLow,
+                    | BundleExecutionError::TipTooLow
+                    | BundleExecutionError::FrontRun,
                 ) => {}
             }
         }
