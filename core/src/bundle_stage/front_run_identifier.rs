@@ -36,9 +36,12 @@ thread_local! {
 pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
     AMM_MAP.with_borrow_mut(|map| map.clear());
 
-    // NB: We must first check the bundle executed okay before we can use the iterator. The iterator
-    // will panic if it encounters an error.
+    // If the bundle did not execute okay then the results will not be valid.
     if !bundle.executed_ok() || bundle.transactions().count() <= 1 {
+        println!(
+            "Bundle did not execute okay or single transaction; txs={}",
+            bundle.transactions().count(),
+        );
         return false;
     }
 
@@ -80,10 +83,12 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
             if overlap_matrix[i][j] {
                 let Some(i) = bundle.transactions().nth(i) else {
                     error!("BUG");
+                    println!("BUG");
                     return false;
                 };
                 let Some(j) = bundle.transactions().nth(j) else {
                     error!("BUG");
+                    println!("BUG");
                     return false;
                 };
 
@@ -97,11 +102,13 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
 
                 // If we reach this point it means none of the signers matched and thus this is a
                 // frontrun.
+                println!("FRONT RUN");
                 return true;
             }
         }
     }
 
+    println!("NOT FRONT RUN");
     false
 }
 
@@ -529,5 +536,116 @@ mod tests {
 
         // Act & Assert.
         assert!(!is_bundle_front_run(&bundle));
+    }
+
+    #[test]
+    fn sandwich_bundle_simple() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![MockAccount {
+                        key: Pubkey::new_from_array([0; 32]),
+                        owner: AMM_0,
+                    }],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(is_bundle_front_run(&bundle));
+    }
+
+    #[test]
+    fn sandwich_bundle_complex() {
+        // Arrange.
+        let bundle = MockBundleResult {
+            executed_ok: true,
+            transactions: vec![
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![
+                        MockAccount {
+                            key: Pubkey::new_from_array([20; 32]),
+                            owner: NOT_AMM_0,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([21; 32]),
+                            owner: NOT_AMM_0,
+                        },
+                    ],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![
+                        MockAccount {
+                            key: Pubkey::new_from_array([10; 32]),
+                            owner: NOT_AMM_0,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([0; 32]),
+                            owner: AMM_0,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([11; 32]),
+                            owner: NOT_AMM_0,
+                        },
+                    ],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_1],
+                    accounts: vec![
+                        MockAccount {
+                            key: Pubkey::new_from_array([12; 32]),
+                            owner: NOT_AMM_0,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([13; 32]),
+                            owner: NOT_AMM_1,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([0; 32]),
+                            owner: AMM_0,
+                        },
+                    ],
+                },
+                MockTransaction {
+                    signers: vec![SIGNER_0],
+                    accounts: vec![
+                        MockAccount {
+                            key: Pubkey::new_from_array([0; 32]),
+                            owner: AMM_0,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([14; 32]),
+                            owner: NOT_AMM_0,
+                        },
+                        MockAccount {
+                            key: Pubkey::new_from_array([15; 32]),
+                            owner: NOT_AMM_1,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        // Act & Assert.
+        assert!(is_bundle_front_run(&bundle));
     }
 }
