@@ -1,6 +1,7 @@
 use {
     super::MAX_PACKETS_PER_BUNDLE,
     hashbrown::HashMap,
+    itertools::izip,
     solana_bundle::bundle_execution::LoadAndExecuteBundleOutput,
     solana_sdk::{
         account::ReadableAccount,
@@ -36,12 +37,15 @@ thread_local! {
 pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
     AMM_MAP.with_borrow_mut(|map| map.clear());
 
+    if !bundle.executed_ok() {
+        eprintln!("BUG: Unexpected bundle with ERR (front run identifier)");
+        return false;
+    }
+
     // If the bundle did not execute okay then the results will not be valid.
-    if !bundle.executed_ok() || bundle.transactions().count() <= 1 {
-        println!(
-            "Bundle did not execute okay or single transaction; txs={}",
-            bundle.transactions().count(),
-        );
+    let count = bundle.transactions().count();
+    println!("Bundle TX count; count={count}",);
+    if count <= 1 {
         return false;
     }
 
@@ -135,25 +139,33 @@ impl<'a> BundleResult<'a> for LoadAndExecuteBundleOutput<'a> {
     type Transaction = (&'a SanitizedTransaction, &'a LoadedTransaction);
 
     fn executed_ok(&self) -> bool {
-        self.bundle_transaction_results().iter().all(|tx| {
-            tx.execution_results()
-                .iter()
-                .all(|res| res.was_executed_successfully())
-        })
+        self.executed_ok()
     }
 
     fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
         self.bundle_transaction_results().iter().flat_map(|batch| {
-            batch
-                .load_and_execute_transactions_output()
-                .loaded_transactions
-                .iter()
-                .enumerate()
-                .flat_map(|(i, res)| {
-                    res.as_ref()
-                        .ok()
-                        .map(|loaded| (&batch.transactions()[i], loaded))
-                })
+            let output = batch.load_and_execute_transactions_output();
+            if batch.transactions().len() != output.loaded_transactions.len()
+                || batch.transactions().len() != output.execution_results.len()
+            {
+                eprintln!("BUG: Invalid assumption about batch layout");
+            }
+
+            izip!(
+                batch.transactions(),
+                &output.loaded_transactions,
+                &output.execution_results,
+            )
+            .filter_map(|(sanitized, loaded, exec)| {
+                match (loaded, exec.was_executed_successfully()) {
+                    (Ok(loaded), true) => Some((sanitized, loaded)),
+                    (Err(_), _) => {
+                        eprintln!("BUG: Unexpected load error");
+                        None
+                    }
+                    (Ok(_), false) => None,
+                }
+            })
         })
     }
 }

@@ -343,7 +343,9 @@ pub fn load_and_execute_bundle<'a>(
             bank.prepare_sequential_sanitized_batch_with_results(chunk)
         };
 
-        // If this is not a fifo batch, then bail on any failed locks.
+        // If this is not a fifo batch, then bail on any failed locks. Note that
+        // if this is not fifo then we only support single transaction batches
+        // (as multi transactions may self conflict with write locks).
         if !fifo && batch.lock_results().iter().any(|lock| lock.is_err()) {
             return LoadAndExecuteBundleOutput {
                 bundle_transaction_results,
