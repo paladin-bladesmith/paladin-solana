@@ -38,7 +38,7 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
     AMM_MAP.with_borrow_mut(|map| map.clear());
 
     if !bundle.executed_ok() {
-        eprintln!("BUG: Unexpected bundle with ERR (front run identifier)");
+        eprintln!("BUG: Unexpected bundle with ERR");
         return false;
     }
 
