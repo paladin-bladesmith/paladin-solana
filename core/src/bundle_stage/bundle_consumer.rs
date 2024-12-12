@@ -14,7 +14,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
-    itertools::izip,
+    itertools::{izip, Itertools},
     solana_bundle::{
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
         bundle_execution::{
@@ -726,14 +726,15 @@ impl BundleConsumer {
         }
 
         // NB: Must run before we start committing the transactions.
-        println!(
-            "Checking for front_run; bundle_id={}",
-            sanitized_bundle.bundle_id,
-        );
         if super::front_run_identifier::is_bundle_front_run(&bundle_execution_results) {
             info!(
-                "Dropping front run bundle; bundle_id={}",
-                sanitized_bundle.bundle_id
+                "Dropping front run bundle; bundle_id={}; txs=[{}]",
+                sanitized_bundle.bundle_id,
+                sanitized_bundle
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.signature().to_string())
+                    .join(", ")
             );
 
             return ExecuteRecordCommitResult {

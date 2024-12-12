@@ -44,8 +44,12 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
 
     // If the bundle did not execute okay then the results will not be valid.
     let count = bundle.transactions().count();
-    println!("Bundle TX count; count={count}",);
     if count <= 1 {
+        return false;
+    }
+
+    if count > MAX_PACKETS_PER_BUNDLE {
+        eprintln!("BUG: Too many packets in bundle; packets={count}");
         return false;
     }
 
@@ -86,13 +90,11 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
         'outer: for j in i..overlap_matrix.len() {
             if overlap_matrix[i][j] {
                 let Some(i) = bundle.transactions().nth(i) else {
-                    error!("BUG");
-                    println!("BUG");
+                    eprintln!("BUG: i not found");
                     return false;
                 };
                 let Some(j) = bundle.transactions().nth(j) else {
-                    error!("BUG");
-                    println!("BUG");
+                    eprintln!("BUG: j not found");
                     return false;
                 };
 
@@ -106,13 +108,11 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
 
                 // If we reach this point it means none of the signers matched and thus this is a
                 // frontrun.
-                println!("FRONT RUN");
                 return true;
             }
         }
     }
 
-    println!("NOT FRONT RUN");
     false
 }
 
