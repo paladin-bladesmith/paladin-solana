@@ -4173,6 +4173,7 @@ dependencies = [
  "bytemuck",
  "num-derive",
  "num-traits",
+ "rand 0.8.5",
  "shank",
  "solana-program",
  "solana-program-test",

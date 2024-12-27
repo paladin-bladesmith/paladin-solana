@@ -78,8 +78,9 @@ impl P3 {
     fn run(mut self) {
         while !self.exit.load(Ordering::Relaxed) {
             // Try receive packets.
-            let (tx, src_addr) = match self.socket_recv() {
-                Some(result) => result,
+            let (tx, _) = match self.socket_recv() {
+                Some(Ok(result)) => result,
+                Some(Err(_)) => continue,
                 None => {
                     // NB: Intentionally only check to update rate limits when socket is empty.
                     if self.rate_limits_last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
@@ -121,18 +122,24 @@ impl P3 {
         }
     }
 
-    fn socket_recv(&mut self) -> Option<(VersionedTransaction, SocketAddr)> {
+    fn socket_recv(&mut self) -> Option<Result<(VersionedTransaction, SocketAddr), ()>> {
         match self.socket.recv_from(&mut self.buffer) {
             Ok((_, src_addr)) => {
                 self.metrics.transactions.add_assign(1);
-                bincode::deserialize::<VersionedTransaction>(&self.buffer)
-                    .inspect_err(|_| saturating_add_assign!(self.metrics.err_deserialize, 1))
-                    .ok()
-                    .map(|tx| (tx, src_addr))
+
+                Some(
+                    bincode::deserialize::<VersionedTransaction>(&self.buffer)
+                        .inspect_err(|_| saturating_add_assign!(self.metrics.err_deserialize, 1))
+                        .map(|tx| (tx, src_addr))
+                        .map_err(|_| ()),
+                )
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => None,
             Err(err) => {
                 error!("Unexpected IO error; err={err}");
+
+                // NB: Return None here as we are unsure if the socket has more
+                // packets and do not want to infinite loop.
                 None
             }
         }
