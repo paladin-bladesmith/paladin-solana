@@ -1,6 +1,7 @@
 use {
     crate::packet_bundle::PacketBundle,
     crossbeam_channel::TrySendError,
+    paladin_lockup_program::state::{Lockup, LockupPool, LockupPoolEntry},
     solana_accounts_db::accounts_index::ScanConfig,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
@@ -34,32 +35,6 @@ const LOCKUP_POOL_DISCRIMINATOR: [u8; 8] = [186, 147, 218, 16, 32, 177, 46, 87];
 const LOCKUP_DISCRIMINATOR: [u8; 8] = [57, 179, 94, 35, 220, 100, 165, 9];
 
 type WhitelistedIps = Arc<RwLock<HashMap<IpAddr, u64>>>;
-
-#[derive(Debug)]
-struct LockupPool {
-    discriminator: [u8; 8],
-    entries: [LockupPoolEntry; 256],
-    entries_len: usize,
-}
-
-#[derive(Debug, Copy, Clone)]
-struct LockupPoolEntry {
-    lockup: Pubkey,
-    amount: u64,
-}
-
-#[derive(Debug)]
-struct Lockup {
-    discriminator: [u8; 8],
-    amount: u64,
-    authority: Pubkey,
-    lockup_start_timestamp: u64,
-    lockup_end_timestamp: Option<u64>,
-    mint: Pubkey,
-    pool: Pubkey,
-    metadata: Pubkey, // Will be replaced with ip: Ipv4Addr in future
-    ip: Ipv4Addr,
-}
 
 pub(crate) struct P3 {
     exit: Arc<AtomicBool>,
@@ -153,16 +128,17 @@ impl P3 {
         let scan_config = ScanConfig::default();
 
         if let Ok(accounts) = bank.get_program_accounts(&program_id, &scan_config) {
-            for (_pubkey, account) in accounts {
+            for (_, account) in accounts {
                 // Try to deserialize as LockupPool
-                if let Some(pool) = Self::try_deserialize_lockup_pool(&account) {
+                if let Some(pool) = Self::try_deserialize_lockup_pool(account.data()) {
                     // Process each valid entry
                     for i in 0..pool.entries_len {
                         let entry = pool.entries[i];
                         if entry.lockup != Pubkey::default() {
                             // Get the lockup account
                             if let Some(lockup_account) = bank.get_account(&entry.lockup) {
-                                if let Some(lockup) = Self::try_deserialize_lockup(&lockup_account)
+                                if let Some(lockup) =
+                                    Self::try_deserialize_lockup(lockup_account.data())
                                 {
                                     // TODO: Once the program is updated to include IP addresses directly,
                                     // extract them from the lockup account. For now, use a placeholder:
@@ -177,134 +153,20 @@ impl P3 {
         }
     }
 
-    fn try_deserialize_lockup_pool(account: &AccountSharedData) -> Option<LockupPool> {
-        let data = account.data();
+    fn try_deserialize_lockup_pool(data: &[u8]) -> Option<&LockupPool> {
         if data.len() < 8 || data[0..8] != LOCKUP_POOL_DISCRIMINATOR {
             return None;
         }
 
-        // After discriminator, we have:
-        // - entries: [LockupPoolEntry; 256]
-        // - entries_len: usize
-
-        // Calculate total expected size
-        let expected_size = 8 + // discriminator
-                           256 * (32 + 8) + // entries (Pubkey + u64 for each)
-                           8; // entries_len (usize)
-
-        if data.len() != expected_size {
-            return None;
-        }
-
-        let mut entries = [LockupPoolEntry {
-            lockup: Pubkey::default(),
-            amount: 0,
-        }; 256];
-
-        let mut cursor = 8; // Start after discriminator
-
-        // Deserialize entries
-        for entry in entries.iter_mut() {
-            let mut pubkey_bytes = [0u8; 32];
-            pubkey_bytes.copy_from_slice(&data[cursor..cursor + 32]);
-            entry.lockup = Pubkey::new_from_array(pubkey_bytes);
-            cursor += 32;
-
-            entry.amount = u64::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
-            cursor += 8;
-        }
-
-        // Deserialize entries_len
-        let entries_len = usize::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
-
-        Some(LockupPool {
-            discriminator: LOCKUP_POOL_DISCRIMINATOR,
-            entries,
-            entries_len,
-        })
+        bytemuck::try_from_bytes::<LockupPool>(data).ok()
     }
 
-    fn try_deserialize_lockup(account: &AccountSharedData) -> Option<Lockup> {
-        let data = account.data();
+    fn try_deserialize_lockup(data: &[u8]) -> Option<&Lockup> {
         if data.len() < 8 || data[0..8] != LOCKUP_DISCRIMINATOR {
             return None;
         }
 
-        // After discriminator, we have:
-        // - amount: u64
-        // - authority: Pubkey
-        // - lockup_start_timestamp: u64
-        // - lockup_end_timestamp: Option<u64>
-        // - mint: Pubkey
-        // - pool: Pubkey
-        // - ip: Ipv4Addr
-
-        let expected_size = 8 + // discriminator
-                           8 + // amount
-                           32 + // authority
-                           8 + // lockup_start_timestamp
-                           9 + // lockup_end_timestamp (Option<u64>)
-                           32 + // mint
-                           32 + // pool
-                           4; // ip (Ipv4Addr)
-
-        if data.len() != expected_size {
-            return None;
-        }
-
-        let mut cursor = 8; // Start after discriminator
-
-        // Deserialize amount
-        let amount = u64::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
-        cursor += 8;
-
-        // Deserialize authority
-        let mut authority_bytes = [0u8; 32];
-        authority_bytes.copy_from_slice(&data[cursor..cursor + 32]);
-        let authority = Pubkey::new_from_array(authority_bytes);
-        cursor += 32;
-
-        // Deserialize lockup_start_timestamp
-        let lockup_start_timestamp =
-            u64::from_le_bytes(data[cursor..cursor + 8].try_into().unwrap());
-        cursor += 8;
-
-        // Deserialize lockup_end_timestamp
-        let lockup_end_timestamp = if data[cursor] == 0 {
-            None
-        } else {
-            let val = u64::from_le_bytes(data[cursor + 1..cursor + 9].try_into().unwrap());
-            Some(val)
-        };
-        cursor += 9;
-
-        // Deserialize mint
-        let mut mint_bytes = [0u8; 32];
-        mint_bytes.copy_from_slice(&data[cursor..cursor + 32]);
-        let mint = Pubkey::new_from_array(mint_bytes);
-        cursor += 32;
-
-        // Deserialize pool
-        let mut pool_bytes = [0u8; 32];
-        pool_bytes.copy_from_slice(&data[cursor..cursor + 32]);
-        let pool = Pubkey::new_from_array(pool_bytes);
-        cursor += 32;
-
-        // Deserialize ip (or use default if program not yet updated)
-        // TODO: Once the program is updated, deserialize the actual IP address
-        let ip = Ipv4Addr::new(127, 0, 0, 1); // Default to localhost for now
-
-        Some(Lockup {
-            discriminator: LOCKUP_DISCRIMINATOR,
-            amount,
-            authority,
-            lockup_start_timestamp,
-            lockup_end_timestamp,
-            mint,
-            pool,
-            metadata: Pubkey::new_unique(), // TODO
-            ip,
-        })
+        bytemuck::try_from_bytes::<Lockup>(data).ok()
     }
 
     fn run(mut self) {
