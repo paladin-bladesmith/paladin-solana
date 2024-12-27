@@ -1,29 +1,27 @@
 use {
     crate::packet_bundle::PacketBundle,
     crossbeam_channel::TrySendError,
-    paladin_lockup_program::state::{Lockup, LockupPool, LockupPoolEntry},
-    solana_accounts_db::accounts_index::ScanConfig,
+    paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
-        account::{AccountSharedData, ReadableAccount},
+        account::ReadableAccount,
         packet::{Packet, PACKET_DATA_SIZE},
         pubkey::Pubkey,
         saturating_add_assign,
         transaction::VersionedTransaction,
     },
+    spl_discriminator::discriminator::SplDiscriminate,
     std::{
         collections::HashMap,
-        net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
+        net::{SocketAddr, UdpSocket},
         ops::AddAssign,
-        str::FromStr,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, RwLock,
         },
         time::{Duration, Instant},
     },
-    tokio::runtime::Builder,
 };
 
 pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
@@ -31,10 +29,6 @@ pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
 // Whitelist
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RATE_LIMIT_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
-const LOCKUP_POOL_DISCRIMINATOR: [u8; 8] = [186, 147, 218, 16, 32, 177, 46, 87];
-const LOCKUP_DISCRIMINATOR: [u8; 8] = [57, 179, 94, 35, 220, 100, 165, 9];
-
-type WhitelistedIps = Arc<RwLock<HashMap<IpAddr, u64>>>;
 
 pub(crate) struct P3 {
     exit: Arc<AtomicBool>,
@@ -43,10 +37,11 @@ pub(crate) struct P3 {
 
     socket: UdpSocket,
     buffer: [u8; PACKET_DATA_SIZE],
+    rate_limits: HashMap<Pubkey, RateLimit>,
+    rate_limits_last_update: Instant,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
-    whitelisted_ips: WhitelistedIps,
     poh_recorder: Arc<RwLock<PohRecorder>>,
 }
 
@@ -60,113 +55,54 @@ impl P3 {
         let socket = UdpSocket::bind(addr).unwrap();
         socket.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
 
-        let whitelisted_ips = Arc::new(RwLock::new(HashMap::new()));
-
         let p3 = Self {
             exit: exit.clone(),
             bundle_stage_tx,
             socket,
             buffer: [0u8; PACKET_DATA_SIZE],
+            rate_limits: HashMap::default(),
+            rate_limits_last_update: Instant::now(),
+
             metrics: P3Metrics::default(),
             metrics_creation: Instant::now(),
-            whitelisted_ips: whitelisted_ips.clone(),
             poh_recorder: poh_recorder.clone(),
         };
 
-        let p3_handle = std::thread::Builder::new()
+        std::thread::Builder::new()
             .name("P3".to_owned())
             .spawn(move || p3.run())
-            .unwrap();
-
-        // Spawn a thread to periodically update the whitelist
-        let whitelist_handle = std::thread::Builder::new()
-            .name("P3Whitelist".to_owned())
-            .spawn(move || {
-                let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-
-                runtime.block_on(async move {
-                    let mut last_update = Instant::now();
-                    while !exit.load(Ordering::Relaxed) {
-                        if last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
-                            Self::update_whitelisted_ips(&whitelisted_ips, &poh_recorder);
-                            last_update = Instant::now();
-                        }
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                });
-            })
-            .unwrap();
-
-        // Wait for both threads
-        std::thread::Builder::new()
-            .name("P3Combined".to_owned())
-            .spawn(move || {
-                let _ = p3_handle.join();
-                let _ = whitelist_handle.join();
-            })
             .unwrap()
     }
 
-    fn update_whitelisted_ips(
-        whitelisted_ips: &WhitelistedIps,
-        poh_recorder: &Arc<RwLock<PohRecorder>>,
-    ) {
-        let bank = if let Some(bank) = poh_recorder.read().unwrap().bank() {
-            bank
-        } else {
+    fn update_rate_limits(&self) {
+        let bank = self.poh_recorder.read().unwrap().latest_bank();
+
+        // Load the lockup pool account.
+        let pool_key = solana_sdk::pubkey!("47xQKqqixxMHMS45ykPDNVRcCX3MXr2Qmz6F5igdR1t8");
+        let Some(pool) = bank.get_account(&pool_key) else {
+            warn!("Lockup pool does not exist; pool={pool_key}");
+
             return;
         };
 
-        // Clear existing whitelist
-        whitelisted_ips.write().unwrap().clear();
+        // Try to deserialize the pool.
+        let Some(pool) = Self::try_deserialize_lockup_pool(pool.data()) else {
+            warn!("Failed to deserialize lockup pool; pool={pool_key}");
 
-        // Find all LockupPool accounts
-        let program_id = Pubkey::from_str("GrAkKfEpTKQuVHG2Y97Y2FF4i7y7Q5AHLK94JBy7Y5yv").unwrap();
+            return;
+        };
 
-        // Get all LockupPool accounts
-        // TODO: Is there expected to be only one LockupPool account?
-        let scan_config = ScanConfig::default();
-
-        if let Ok(accounts) = bank.get_program_accounts(&program_id, &scan_config) {
-            for (_, account) in accounts {
-                // Try to deserialize as LockupPool
-                if let Some(pool) = Self::try_deserialize_lockup_pool(account.data()) {
-                    // Process each valid entry
-                    for i in 0..pool.entries_len {
-                        let entry = pool.entries[i];
-                        if entry.lockup != Pubkey::default() {
-                            // Get the lockup account
-                            if let Some(lockup_account) = bank.get_account(&entry.lockup) {
-                                if let Some(lockup) =
-                                    Self::try_deserialize_lockup(lockup_account.data())
-                                {
-                                    // TODO: Once the program is updated to include IP addresses directly,
-                                    // extract them from the lockup account. For now, use a placeholder:
-                                    let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-                                    whitelisted_ips.write().unwrap().insert(ip, entry.amount);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Iterate the new pool and compare with the previous pool, update any
+        // discrepancies and load any missing accounts.
+        todo!();
     }
 
     fn try_deserialize_lockup_pool(data: &[u8]) -> Option<&LockupPool> {
-        if data.len() < 8 || data[0..8] != LOCKUP_POOL_DISCRIMINATOR {
+        if data.len() < 8 || &data[0..8] != LockupPool::SPL_DISCRIMINATOR.as_slice() {
             return None;
         }
 
         bytemuck::try_from_bytes::<LockupPool>(data).ok()
-    }
-
-    fn try_deserialize_lockup(data: &[u8]) -> Option<&Lockup> {
-        if data.len() < 8 || data[0..8] != LOCKUP_DISCRIMINATOR {
-            return None;
-        }
-
-        bytemuck::try_from_bytes::<Lockup>(data).ok()
     }
 
     fn run(mut self) {
@@ -174,14 +110,18 @@ impl P3 {
             // Try receive packets.
             let (tx, src_addr) = match self.socket_recv() {
                 Some(result) => result,
-                None => continue,
+                None => {
+                    // NB: Intentionally only check to update rate limits when socket is empty.
+                    if self.rate_limits_last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
+                        self.update_rate_limits();
+                        self.rate_limits_last_update = Instant::now();
+                    }
+
+                    continue;
+                }
             };
 
-            // Check if the source IP is whitelisted
-            if !self.is_whitelisted(src_addr.ip()) {
-                continue;
-            }
-
+            // Check if we need to report metrics for the last interval.
             let now = Instant::now();
             if now - self.metrics_creation > Duration::from_secs(1) {
                 self.metrics.report();
@@ -211,10 +151,6 @@ impl P3 {
         }
     }
 
-    fn is_whitelisted(&self, ip: IpAddr) -> bool {
-        self.whitelisted_ips.read().unwrap().contains_key(&ip)
-    }
-
     fn socket_recv(&mut self) -> Option<(VersionedTransaction, SocketAddr)> {
         match self.socket.recv_from(&mut self.buffer) {
             Ok((_, src_addr)) => {
@@ -231,6 +167,12 @@ impl P3 {
             }
         }
     }
+}
+
+struct RateLimit {
+    cap: u64,
+    remaining: u64,
+    last: Instant,
 }
 
 #[derive(Default, PartialEq, Eq)]
