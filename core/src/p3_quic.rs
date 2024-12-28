@@ -10,7 +10,7 @@ use {
         packet::{Packet, PACKET_DATA_SIZE},
         pubkey::Pubkey,
         saturating_add_assign,
-        signature::Keypair,
+        signature::{Keypair, Signature},
         transaction::VersionedTransaction,
     },
     solana_streamer::{
@@ -35,6 +35,7 @@ pub const P3_QUIC_SOCKET_DEFAULT: &str = "0.0.0.0:4819";
 const MAX_STAKED_CONNECTIONS: usize = 1024;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
 const MAX_STREAMS_PER_MS: u64 = 5;
+const MAX_STREAMS_PER_SEC: u64 = MAX_STREAMS_PER_MS * 1000;
 const TPU_COALESCE: Duration = Duration::from_millis(5);
 
 const RATE_LIMIT_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
@@ -43,6 +44,7 @@ const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG
 pub(crate) struct P3Quic {
     exit: Arc<AtomicBool>,
 
+    quic_rx: crossbeam_channel::Receiver<PacketBatch>,
     bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
 
     rate_limits: HashMap<Pubkey, RateLimit>,
@@ -72,6 +74,7 @@ impl P3Quic {
         // in streamer (i.e. make it an argument).
 
         // Spawn the P3 QUIC server.
+        let (quic_tx, quic_rx) = crossbeam_channel::unbounded();
         let SpawnServerResult {
             endpoint,
             thread,
@@ -81,10 +84,8 @@ impl P3Quic {
             "p3_quic",
             sock,
             keypair,
-            // TODO: Check our jito bundle stage does sigverify.
-            // TODO: 90% sure banking does sig verify as a pre-execution step -
-            // this is probably enough as P3 is heavily rate-limited.
-            todo!("Map packet batches to bundles; also sig verify?"),
+            // NB: Packets are verified in paladin bundle stage.
+            quic_tx,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -92,6 +93,12 @@ impl P3Quic {
             MAX_UNSTAKED_CONNECTIONS,
             MAX_STREAMS_PER_MS,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+            // TODO: Controls how long we will wait for additional data on a
+            // stream before closing. For P3 we (probably) don't want to limit
+            // connection lifecycles.
+            // TODO: If we make this really big or edit stream to make it
+            // optional, we should make sure we have a way to purge connections
+            // that become unstaked during their life time.
             todo!("Investigate what wait for chunk timeout is"),
             DEFAULT_TPU_COALESCE,
         )
@@ -100,7 +107,10 @@ impl P3Quic {
         // Spawn the P3 management thread.
         let p3 = Self {
             exit: exit.clone(),
+
+            quic_rx,
             bundle_stage_tx,
+
             rate_limits: HashMap::default(),
             rate_limits_last_update: Instant::now(),
 
@@ -120,7 +130,19 @@ impl P3Quic {
 
         while !self.exit.load(Ordering::Relaxed) {
             // Try receive packets.
-            todo!("Receive from QUIC streamer");
+            let packets = match self.quic_rx.recv() {
+                Ok(packets) => packets,
+                Err(err) => {
+                    error!("Quic channel closed unexpectedly");
+                    break;
+                }
+            };
+
+            for packet in &packets {
+                if self.on_packet(packet).is_err() {
+                    return;
+                }
+            }
 
             // Check if we need to report metrics for the last interval.
             let now = Instant::now();
@@ -129,25 +151,32 @@ impl P3Quic {
                 self.metrics = P3Metrics::default();
                 self.metrics_creation = now;
             }
+        }
+    }
 
-            let Some(signature) = tx.signatures.get(0) else {
-                warn!("TX received without signature");
-                continue;
-            };
-            trace!("Received TX; signature={signature}");
+    fn on_packet(&mut self, packet: &Packet) -> Result<(), ()> {
+        // Length of signatures must be encoded in 1 byte as 128 signatures
+        // (which would require two bytes) results in 8192 packet size
+        // (breaching max packet size).
+        let signature = packet
+            .data(1..65)
+            .map(|sig_bytes| Signature::try_from(sig_bytes).unwrap())
+            .ok_or_else(|| saturating_add_assign!(self.metrics.err_deserialize, 1))?;
+        trace!("Received TX; signature={signature}");
 
-            let packet_bundle = PacketBundle {
-                batch: PacketBatch::new(vec![Packet::from_data(None, &tx).unwrap()]),
-                bundle_id: format!("R{signature}"),
-            };
+        let packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![packet.clone()]),
+            bundle_id: format!("R{signature}"),
+        };
 
-            match self.bundle_stage_tx.try_send(vec![packet_bundle]) {
-                Ok(_) => {}
-                Err(TrySendError::Disconnected(_)) => break,
-                Err(TrySendError::Full(_)) => {
-                    warn!("Dropping TX; signature={}", signature);
-                    saturating_add_assign!(self.metrics.dropped, 1);
-                }
+        match self.bundle_stage_tx.try_send(vec![packet_bundle]) {
+            Ok(_) => Ok(()),
+            Err(TrySendError::Disconnected(_)) => Err(()),
+            Err(TrySendError::Full(_)) => {
+                warn!("Dropping TX; signature={}", signature);
+                saturating_add_assign!(self.metrics.dropped, 1);
+
+                Ok(())
             }
         }
     }
@@ -204,7 +233,7 @@ impl P3Quic {
 
     fn compute_cap(amount: u64, total: u64) -> u64 {
         amount
-            .saturating_mul(PACKETS_PER_SECOND)
+            .saturating_mul(MAX_STREAMS_PER_SEC)
             .checked_div(total)
             .unwrap_or_else(|| {
                 println!("ERR: Total == 0 but compute_cap was called");
