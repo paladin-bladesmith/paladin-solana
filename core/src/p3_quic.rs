@@ -1,6 +1,6 @@
 use {
     crate::{packet_bundle::PacketBundle, tpu::MAX_QUIC_CONNECTIONS_PER_PEER},
-    crossbeam_channel::TrySendError,
+    crossbeam_channel::{RecvError, TrySendError},
     paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
@@ -37,7 +37,6 @@ const MAX_UNSTAKED_CONNECTIONS: usize = 0;
 /// results in 1000 streams to be shared amongst PAL staked connections.
 const MAX_STREAMS_PER_MS: u64 = 100;
 const MAX_STREAMS_PER_SEC: u64 = MAX_STREAMS_PER_MS * 1000;
-const TPU_COALESCE: Duration = Duration::from_millis(5);
 
 const RATE_LIMIT_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
@@ -135,20 +134,14 @@ impl P3Quic {
         self.update_rate_limits();
 
         while !self.exit.load(Ordering::Relaxed) {
-            // Try receive packets.
+            // Block until we can receive packets.
             let packets = match self.quic_rx.recv() {
                 Ok(packets) => packets,
-                Err(_) => {
+                Err(RecvError) => {
                     error!("Quic channel closed unexpectedly");
                     break;
                 }
             };
-
-            for packet in &packets {
-                if self.on_packet(packet).is_err() {
-                    return;
-                }
-            }
 
             // Check if we need to report metrics for the last interval.
             let now = Instant::now();
@@ -156,6 +149,20 @@ impl P3Quic {
                 self.metrics.report();
                 self.metrics = P3Metrics::default();
                 self.metrics_creation = now;
+            }
+
+            // Process the batch.
+            for packet in &packets {
+                if self.on_packet(packet).is_err() {
+                    return;
+                }
+            }
+
+            // Check if we need to update rate limits.
+            if self.rate_limits_last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
+                self.update_rate_limits();
+                self.rate_limits_last_update = Instant::now();
+                trace!("Update rate limits; rate_limits={:?}", self.rate_limits);
             }
         }
 

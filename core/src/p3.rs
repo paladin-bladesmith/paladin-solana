@@ -2,10 +2,8 @@ use {
     crate::packet_bundle::PacketBundle,
     crossbeam_channel::TrySendError,
     solana_perf::packet::PacketBatch,
-    solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
         packet::{Packet, PACKET_DATA_SIZE},
-        pubkey::Pubkey,
         saturating_add_assign,
         transaction::VersionedTransaction,
     },
@@ -14,7 +12,7 @@ use {
         ops::AddAssign,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc,
         },
         time::{Duration, Instant},
     },
@@ -23,9 +21,6 @@ use {
 pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
 
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
-const RATE_LIMIT_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
-const PACKETS_PER_SECOND: u64 = 5_000;
-const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
 
 pub(crate) struct P3 {
     exit: Arc<AtomicBool>,
@@ -37,7 +32,6 @@ pub(crate) struct P3 {
 
     metrics: P3Metrics,
     metrics_creation: Instant,
-    poh_recorder: Arc<RwLock<PohRecorder>>,
 }
 
 impl P3 {
@@ -45,7 +39,6 @@ impl P3 {
         exit: Arc<AtomicBool>,
         bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
         addr: SocketAddr,
-        poh_recorder: Arc<RwLock<PohRecorder>>,
     ) -> std::thread::JoinHandle<()> {
         let socket = UdpSocket::bind(addr).unwrap();
         socket.set_read_timeout(Some(READ_TIMEOUT)).unwrap();
@@ -58,7 +51,6 @@ impl P3 {
 
             metrics: P3Metrics::default(),
             metrics_creation: Instant::now(),
-            poh_recorder: poh_recorder.clone(),
         };
 
         std::thread::Builder::new()

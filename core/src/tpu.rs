@@ -269,12 +269,7 @@ impl Tpu {
 
         // Launch paladin threads.
         let (paladin_sender, paladin_receiver) = unbounded();
-        let p3 = P3::spawn(
-            exit.clone(),
-            paladin_sender.clone(),
-            p3_socket,
-            poh_recorder.clone(),
-        );
+        let p3 = P3::spawn(exit.clone(), paladin_sender.clone(), p3_socket);
         let (p3_quic, p3_quic_key_updater) = P3Quic::spawn(
             exit.clone(),
             paladin_sender,
@@ -439,6 +434,7 @@ impl Tpu {
             self.fetch_stage_manager.join(),
             self.paladin_bundle_stage.join(),
             self.p3.join(),
+            self.p3_quic.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {
