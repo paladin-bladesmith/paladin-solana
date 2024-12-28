@@ -7,21 +7,20 @@ use {
     solana_sdk::{
         account::ReadableAccount,
         net::DEFAULT_TPU_COALESCE,
-        packet::{Packet, PACKET_DATA_SIZE},
+        packet::Packet,
         pubkey::Pubkey,
         saturating_add_assign,
         signature::{Keypair, Signature},
-        transaction::VersionedTransaction,
     },
     solana_streamer::{
-        nonblocking::quic::DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, quic::SpawnServerResult,
+        nonblocking::quic::DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+        quic::{EndpointKeyUpdater, SpawnServerResult},
         streamer::StakedNodes,
     },
     spl_discriminator::discriminator::SplDiscriminate,
     std::{
         collections::HashMap,
         net::{SocketAddr, UdpSocket},
-        ops::AddAssign,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, RwLock,
@@ -43,6 +42,7 @@ const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG
 
 pub(crate) struct P3Quic {
     exit: Arc<AtomicBool>,
+    quic_server: std::thread::JoinHandle<()>,
 
     quic_rx: crossbeam_channel::Receiver<PacketBatch>,
     bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
@@ -62,7 +62,7 @@ impl P3Quic {
         addr: SocketAddr,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         keypair: &Keypair,
-    ) -> std::thread::JoinHandle<()> {
+    ) -> (std::thread::JoinHandle<()>, Arc<EndpointKeyUpdater>) {
         // Bind the P3 QUIC UDP socket.
         let sock = UdpSocket::bind(addr).unwrap();
 
@@ -76,8 +76,8 @@ impl P3Quic {
         // Spawn the P3 QUIC server.
         let (quic_tx, quic_rx) = crossbeam_channel::unbounded();
         let SpawnServerResult {
-            endpoint,
-            thread,
+            endpoint: _,
+            thread: quic_server,
             key_updater,
         } = solana_streamer::quic::spawn_server(
             "p3Quic",
@@ -99,7 +99,7 @@ impl P3Quic {
             // TODO: If we make this really big or edit stream to make it
             // optional, we should make sure we have a way to purge connections
             // that become unstaked during their life time.
-            todo!("Investigate what wait for chunk timeout is"),
+            Duration::from_secs(180),
             DEFAULT_TPU_COALESCE,
         )
         .unwrap();
@@ -107,6 +107,7 @@ impl P3Quic {
         // Spawn the P3 management thread.
         let p3 = Self {
             exit: exit.clone(),
+            quic_server,
 
             quic_rx,
             bundle_stage_tx,
@@ -119,10 +120,13 @@ impl P3Quic {
             poh_recorder: poh_recorder.clone(),
         };
 
-        std::thread::Builder::new()
-            .name("P3".to_owned())
-            .spawn(move || p3.run())
-            .unwrap()
+        (
+            std::thread::Builder::new()
+                .name("P3".to_owned())
+                .spawn(move || p3.run())
+                .unwrap(),
+            key_updater,
+        )
     }
 
     fn run(mut self) {
@@ -132,7 +136,7 @@ impl P3Quic {
             // Try receive packets.
             let packets = match self.quic_rx.recv() {
                 Ok(packets) => packets,
-                Err(err) => {
+                Err(_) => {
                     error!("Quic channel closed unexpectedly");
                     break;
                 }
@@ -152,6 +156,8 @@ impl P3Quic {
                 self.metrics_creation = now;
             }
         }
+
+        self.quic_server.join().unwrap();
     }
 
     fn on_packet(&mut self, packet: &Packet) -> Result<(), ()> {
