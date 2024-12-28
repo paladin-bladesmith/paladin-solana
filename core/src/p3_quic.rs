@@ -33,7 +33,9 @@ pub const P3_QUIC_SOCKET_DEFAULT: &str = "0.0.0.0:4819";
 
 const MAX_STAKED_CONNECTIONS: usize = 1024;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
-const MAX_STREAMS_PER_MS: u64 = 5;
+/// This implies 100 * 100 streams per `STREAM_THROTTLING_INTERVAL_MS`, which
+/// results in 1000 streams to be shared amongst PAL staked connections.
+const MAX_STREAMS_PER_MS: u64 = 100;
 const MAX_STREAMS_PER_SEC: u64 = MAX_STREAMS_PER_MS * 1000;
 const TPU_COALESCE: Duration = Duration::from_millis(5);
 
