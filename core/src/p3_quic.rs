@@ -36,9 +36,8 @@ const MAX_UNSTAKED_CONNECTIONS: usize = 0;
 /// This implies 100 * 100 streams per `STREAM_THROTTLING_INTERVAL_MS`, which
 /// results in 1000 streams to be shared amongst PAL staked connections.
 const MAX_STREAMS_PER_MS: u64 = 100;
-const MAX_STREAMS_PER_SEC: u64 = MAX_STREAMS_PER_MS * 1000;
 
-const RATE_LIMIT_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
 
 pub(crate) struct P3Quic {
@@ -48,8 +47,8 @@ pub(crate) struct P3Quic {
     quic_rx: crossbeam_channel::Receiver<PacketBatch>,
     bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
 
-    rate_limits: HashMap<Pubkey, RateLimit>,
-    rate_limits_last_update: Instant,
+    staked_nodes: Arc<RwLock<StakedNodes>>,
+    staked_nodes_last_update: Instant,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
@@ -113,8 +112,8 @@ impl P3Quic {
             quic_rx,
             bundle_stage_tx,
 
-            rate_limits: HashMap::default(),
-            rate_limits_last_update: Instant::now(),
+            staked_nodes,
+            staked_nodes_last_update: Instant::now(),
 
             metrics: P3Metrics::default(),
             metrics_creation: Instant::now(),
@@ -138,7 +137,10 @@ impl P3Quic {
             let packets = match self.quic_rx.recv() {
                 Ok(packets) => packets,
                 Err(RecvError) => {
-                    error!("Quic channel closed unexpectedly");
+                    if !self.exit.load(Ordering::Relaxed) {
+                        error!("Quic channel closed unexpectedly");
+                    }
+
                     break;
                 }
             };
@@ -159,10 +161,13 @@ impl P3Quic {
             }
 
             // Check if we need to update rate limits.
-            if self.rate_limits_last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
+            if self.staked_nodes_last_update.elapsed() >= STAKED_NODES_UPDATE_INTERVAL {
                 self.update_rate_limits();
-                self.rate_limits_last_update = Instant::now();
-                trace!("Update rate limits; rate_limits={:?}", self.rate_limits);
+                self.staked_nodes_last_update = Instant::now();
+                trace!(
+                    "Updated staked_nodes; stakes={:?}",
+                    self.staked_nodes.read().unwrap().stakes,
+                );
             }
         }
 
@@ -213,29 +218,18 @@ impl P3Quic {
             return;
         };
 
-        // Compute the new total locked PAL.
-        let entries = pool
+        // Setup a new staked nodes map.
+        let stakes = pool
             .entries
             .iter()
-            .take_while(|entry| entry.lockup != Pubkey::default());
-        let total_pal = entries.clone().map(|entry| entry.amount).sum();
+            .take_while(|entry| entry.lockup != Pubkey::default())
+            .clone()
+            .map(|entry| (Pubkey::new_from_array(entry.metadata), entry.amount))
+            .collect();
 
-        // Clear the old entries & write the new ones.
-        self.rate_limits.clear();
-        self.rate_limits.extend(entries.clone().map(|entry| {
-            let cap = Self::compute_cap(entry.amount, total_pal);
-
-            (
-                Pubkey::new_from_array(entry.metadata),
-                RateLimit {
-                    cap,
-                    remaining: cap,
-                    last: Instant::now(),
-                },
-            )
-        }));
-
-        todo!("Update staked nodes")
+        // Swap the old for the new.
+        let mut staked_nodes = self.staked_nodes.write().unwrap();
+        *staked_nodes = StakedNodes::new(Arc::new(stakes), HashMap::default());
     }
 
     fn try_deserialize_lockup_pool(data: &[u8]) -> Option<&LockupPool> {
@@ -244,17 +238,6 @@ impl P3Quic {
         }
 
         bytemuck::try_from_bytes::<LockupPool>(data).ok()
-    }
-
-    fn compute_cap(amount: u64, total: u64) -> u64 {
-        amount
-            .saturating_mul(MAX_STREAMS_PER_SEC)
-            .checked_div(total)
-            .unwrap_or_else(|| {
-                println!("ERR: Total == 0 but compute_cap was called");
-
-                0
-            })
     }
 }
 
