@@ -15,6 +15,7 @@ use {
             ExternalRootSource, Tower,
         },
         p3::P3_SOCKET_DEFAULT,
+        p3_quic::P3_QUIC_SOCKET_DEFAULT,
         poh_timing_report_service::PohTimingReportService,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{self, serve_repair::ServeRepair, serve_repair_service::ServeRepairService},
@@ -297,6 +298,7 @@ pub struct ValidatorConfig {
     pub preallocated_bundle_cost: u64,
     // p3
     pub p3_socket: SocketAddr,
+    pub p3_quic_socket: SocketAddr,
 }
 
 impl Default for ValidatorConfig {
@@ -376,6 +378,7 @@ impl Default for ValidatorConfig {
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
             p3_socket: SocketAddr::from_str(P3_SOCKET_DEFAULT).expect("p3 socket"),
+            p3_quic_socket: SocketAddr::from_str(P3_QUIC_SOCKET_DEFAULT).expect("p3_quic socket"),
         }
     }
 }
@@ -1497,7 +1500,7 @@ impl Validator {
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
-            config.p3_socket,
+            (config.p3_socket, config.p3_quic_socket),
         );
 
         datapoint_info!(
