@@ -86,6 +86,7 @@ impl P3 {
                     if self.rate_limits_last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
                         self.update_rate_limits();
                         self.rate_limits_last_update = Instant::now();
+                        trace!("Update rate limits; rate_limit={:?}", self.rate_limits);
                     }
 
                     continue;
@@ -163,18 +164,6 @@ impl P3 {
             return;
         };
 
-        // TODO:
-        //
-        // 1. Take the old map.
-        // 2. Iterate the entry list.
-        // 3. Insert entries into the new map - using the previous state if available, else fetching from bank.
-
-        // Grab the old state.
-        let old = std::mem::replace(
-            &mut self.rate_limits,
-            HashMap::with_capacity(LockupPool::LOCKUP_CAPACITY),
-        );
-
         // Compute the new total locked PAL.
         let entries = pool
             .entries
@@ -182,14 +171,13 @@ impl P3 {
             .take_while(|entry| entry.lockup != Pubkey::default());
         let total_pal = entries.clone().map(|entry| entry.amount).sum();
 
-        // Insert all the new entries (using the old state as a cache).
+        // Clear the old entries & write the new ones.
+        self.rate_limits.clear();
         self.rate_limits.extend(entries.clone().map(|entry| {
             let cap = Self::compute_cap(entry.amount, total_pal);
 
             (
-                // TODO: This is not correct, we need to resolve the pubkey/IP
-                // from the lockup account.
-                entry.lockup,
+                Pubkey::new_from_array(entry.metadata),
                 RateLimit {
                     cap,
                     remaining: cap,
@@ -211,10 +199,16 @@ impl P3 {
         amount
             .saturating_mul(PACKETS_PER_SECOND)
             .checked_div(total)
-            .unwrap_or(0)
+            .unwrap_or_else(|| {
+                println!("ERR: Total == 0 but compute_cap was called");
+
+                0
+            })
     }
 }
 
+#[allow(dead_code)]
+#[derive(Debug)]
 struct RateLimit {
     cap: u64,
     remaining: u64,
