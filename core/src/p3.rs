@@ -26,10 +26,10 @@ use {
 
 pub const P3_SOCKET_DEFAULT: &str = "0.0.0.0:4818";
 
-// Whitelist
 const READ_TIMEOUT: Duration = Duration::from_millis(100);
 const RATE_LIMIT_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const PACKETS_PER_SECOND: u64 = 5_000;
+const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
 
 pub(crate) struct P3 {
     exit: Arc<AtomicBool>,
@@ -76,6 +76,8 @@ impl P3 {
     }
 
     fn run(mut self) {
+        self.update_rate_limits();
+
         while !self.exit.load(Ordering::Relaxed) {
             // Try receive packets.
             let (tx, _) = match self.socket_recv() {
@@ -150,16 +152,15 @@ impl P3 {
         let bank = self.poh_recorder.read().unwrap().latest_bank();
 
         // Load the lockup pool account.
-        let pool_key = solana_sdk::pubkey!("47xQKqqixxMHMS45ykPDNVRcCX3MXr2Qmz6F5igdR1t8");
-        let Some(pool) = bank.get_account(&pool_key) else {
-            warn!("Lockup pool does not exist; pool={pool_key}");
+        let Some(pool) = bank.get_account(&POOL_KEY) else {
+            warn!("Lockup pool does not exist; pool={POOL_KEY}");
 
             return;
         };
 
         // Try to deserialize the pool.
         let Some(pool) = Self::try_deserialize_lockup_pool(pool.data()) else {
-            warn!("Failed to deserialize lockup pool; pool={pool_key}");
+            warn!("Failed to deserialize lockup pool; pool={POOL_KEY}");
 
             return;
         };
