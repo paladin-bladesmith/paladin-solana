@@ -86,7 +86,7 @@ impl P3 {
                     if self.rate_limits_last_update.elapsed() >= RATE_LIMIT_UPDATE_INTERVAL {
                         self.update_rate_limits();
                         self.rate_limits_last_update = Instant::now();
-                        trace!("Update rate limits; rate_limit={:?}", self.rate_limits);
+                        trace!("Update rate limits; rate_limits={:?}", self.rate_limits);
                     }
 
                     continue;
