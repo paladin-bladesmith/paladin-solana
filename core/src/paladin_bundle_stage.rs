@@ -193,8 +193,11 @@ impl PaladinBundleStage {
         for bundles in
             std::iter::once(bundles).chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
         {
+            // TODO: Could this panic on empty bundles? If so, is that possible?
+            // TODO: This will panic on bundle_id = "", is this possible/should be handled?
             match &bundles.first().unwrap().bundle_id.chars().next().unwrap() {
                 'R' => new_bundles.extend(bundles),
+                // TODO: Remove concept of arb bundles.
                 'A' => {
                     assert!(bundles
                         .iter()
@@ -204,6 +207,8 @@ impl PaladinBundleStage {
                 prefix => error!("Unexpected bundle ID prefix; prefix={prefix}"),
             }
         }
+
+        // TODO: Remove concept of arb bundles.
 
         // Drop any arb bundles if we have a fresher set.
         if arbs.is_some() {
