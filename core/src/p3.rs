@@ -150,7 +150,7 @@ impl P3Metrics {
             "p3_socket",
             ("transactions", self.transactions as i64, i64),
             ("dropped", self.dropped as i64, i64),
-            ("err_deserialize", self.err_deserialize as i64, i64)
+            ("err_deserialize", self.err_deserialize as i64, i64),
         );
     }
 }
