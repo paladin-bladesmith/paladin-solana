@@ -130,7 +130,12 @@ impl P3Quic {
     }
 
     fn run(mut self) {
-        self.update_rate_limits();
+        let start = Instant::now();
+        self.update_staked_nodes();
+        saturating_add_assign!(
+            self.metrics.staked_nodes_us,
+            start.elapsed().as_micros() as u64
+        );
 
         while !self.exit.load(Ordering::Relaxed) {
             // Block until we can receive packets.
@@ -147,8 +152,9 @@ impl P3Quic {
 
             // Check if we need to report metrics for the last interval.
             let now = Instant::now();
-            if now - self.metrics_creation > Duration::from_secs(1) {
-                self.metrics.report();
+            let age = now - self.metrics_creation;
+            if age > Duration::from_secs(1) {
+                self.metrics.report(age.as_millis() as u64);
                 self.metrics = P3Metrics::default();
                 self.metrics_creation = now;
             }
@@ -161,9 +167,15 @@ impl P3Quic {
                 }
             }
 
-            // Check if we need to update rate limits.
+            // Check if we need to update staked nodes.
             if self.staked_nodes_last_update.elapsed() >= STAKED_NODES_UPDATE_INTERVAL {
-                self.update_rate_limits();
+                let start = Instant::now();
+                self.update_staked_nodes();
+                saturating_add_assign!(
+                    self.metrics.staked_nodes_us,
+                    start.elapsed().as_micros() as u64
+                );
+
                 self.staked_nodes_last_update = Instant::now();
                 trace!(
                     "Updated staked_nodes; stakes={:?}",
@@ -202,7 +214,7 @@ impl P3Quic {
         }
     }
 
-    fn update_rate_limits(&mut self) {
+    fn update_staked_nodes(&mut self) {
         let bank = self.poh_recorder.read().unwrap().latest_bank();
 
         // Load the lockup pool account.
@@ -258,10 +270,12 @@ struct P3Metrics {
     dropped: u64,
     /// Number of packets that failed to deserialize to a valid transaction.
     err_deserialize: u64,
+    /// Time taken to update staked nodes.
+    staked_nodes_us: u64,
 }
 
 impl P3Metrics {
-    fn report(&self) {
+    fn report(&self, age_ms: u64) {
         // Suppress logs if there are no recorded metrics.
         if self == &P3Metrics::default() {
             return;
@@ -269,9 +283,11 @@ impl P3Metrics {
 
         datapoint_info!(
             "p3_quic",
+            ("age_ms", age_ms as i64, i64),
             ("transactions", self.packets as i64, i64),
             ("dropped", self.dropped as i64, i64),
-            ("err_deserialize", self.err_deserialize as i64, i64)
+            ("err_deserialize", self.err_deserialize as i64, i64),
+            ("staked_nodes_us", self.staked_nodes_us as i64, i64),
         );
     }
 }
