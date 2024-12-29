@@ -154,6 +154,7 @@ impl P3Quic {
             }
 
             // Process the batch.
+            saturating_add_assign!(self.metrics.packets, packets.len() as u64);
             for packet in &packets {
                 if self.on_packet(packet).is_err() {
                     return;
@@ -251,11 +252,11 @@ struct RateLimit {
 
 #[derive(Default, PartialEq, Eq)]
 struct P3Metrics {
-    /// Number of transactions received.
-    transactions: u64,
+    /// Number of packets (transactions) received.
+    packets: u64,
     /// Number of transactions dropped due to full channel.
     dropped: u64,
-    /// Number of transactions that failed to deserialize.
+    /// Number of packets that failed to deserialize to a valid transaction.
     err_deserialize: u64,
 }
 
@@ -267,8 +268,8 @@ impl P3Metrics {
         }
 
         datapoint_info!(
-            "p3_socket",
-            ("transactions", self.transactions as i64, i64),
+            "p3_quic",
+            ("transactions", self.packets as i64, i64),
             ("dropped", self.dropped as i64, i64),
             ("err_deserialize", self.err_deserialize as i64, i64)
         );
