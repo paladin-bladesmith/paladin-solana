@@ -20,8 +20,8 @@ use {
             consume_worker::ConsumeWorker,
             packet_deserializer::PacketDeserializer,
             transaction_scheduler::{
-                prio_graph_scheduler::PrioGraphScheduler,
-                scheduler_controller::SchedulerController, scheduler_error::SchedulerError,
+                greedy_scheduler::GreedyScheduler, scheduler_controller::SchedulerController,
+                scheduler_error::SchedulerError,
             },
         },
         banking_trace::BankingPacketReceiver,
@@ -651,7 +651,7 @@ impl BankingStage {
         // Spawn the central scheduler thread
         bank_thread_hdls.push({
             let packet_deserializer = PacketDeserializer::new(non_vote_receiver);
-            let scheduler = PrioGraphScheduler::new(work_senders, finished_work_receiver);
+            let scheduler = GreedyScheduler::new(work_senders, finished_work_receiver);
             let scheduler_controller = SchedulerController::new(
                 decision_maker.clone(),
                 packet_deserializer,
