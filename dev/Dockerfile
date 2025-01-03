@@ -34,4 +34,3 @@ RUN --mount=type=cache,mode=0777,target=/solana/target \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/registry \
     --mount=type=cache,mode=0777,target=/usr/local/cargo/git \
     ./scripts/cargo-install-all.sh --validator-only /solana/docker-output
-#    ./cargo stable build --release && cp target/release/solana* ./docker-output && cp target/release/agave* ./docker-output;
