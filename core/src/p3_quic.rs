@@ -31,11 +31,11 @@ use {
 
 pub const P3_QUIC_SOCKET_DEFAULT: &str = "0.0.0.0:4819";
 
-const MAX_STAKED_CONNECTIONS: usize = 1024;
+const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
-/// This implies 100 * 100 streams per `STREAM_THROTTLING_INTERVAL_MS`, which
-/// results in 1000 streams to be shared amongst PAL staked connections.
-const MAX_STREAMS_PER_MS: u64 = 100;
+/// This results in 100 streams per 100ms, i.e. 1000 global TPS. Users with less
+/// than 1% stake will be rounded up to 1 stream per 100ms.
+const MAX_STREAMS_PER_MS: u64 = 1;
 
 const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
@@ -80,7 +80,7 @@ impl P3Quic {
             thread: quic_server,
             key_updater,
         } = solana_streamer::quic::spawn_server(
-            "p3Quic",
+            "p3Quic-streamer",
             "p3_quic",
             sock,
             keypair,
@@ -93,13 +93,8 @@ impl P3Quic {
             MAX_UNSTAKED_CONNECTIONS,
             MAX_STREAMS_PER_MS,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            // TODO: Controls how long we will wait for additional data on a
-            // stream before closing. For P3 we (probably) don't want to limit
-            // connection lifecycles.
-            // TODO: If we make this really big or edit stream to make it
-            // optional, we should make sure we have a way to purge connections
-            // that become unstaked during their life time.
-            Duration::from_secs(180),
+            // Streams will be kept alive for 300s (5min) if no data is sent.
+            Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
         )
         .unwrap();
@@ -122,7 +117,7 @@ impl P3Quic {
 
         (
             std::thread::Builder::new()
-                .name("P3".to_owned())
+                .name("P3Quic".to_owned())
                 .spawn(move || p3.run())
                 .unwrap(),
             key_updater,
