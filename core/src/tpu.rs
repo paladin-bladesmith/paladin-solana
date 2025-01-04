@@ -33,7 +33,7 @@ use {
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{
         blockstore::Blockstore, blockstore_processor::TransactionStatusSender,
-        entry_notifier_service::EntryNotifierSender,
+        entry_notifier_service::EntryNotifierSender, leader_schedule_cache::LeaderScheduleCache,
     },
     solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry},
     solana_rpc::{
@@ -139,6 +139,7 @@ impl Tpu {
         _generator_config: Option<GeneratorConfig>, /* vestigial code for replay invalidator */
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
@@ -308,7 +309,12 @@ impl Tpu {
             duplicate_confirmed_slot_sender,
         );
 
-        let tip_manager = TipManager::new(tip_manager_config);
+        let tip_manager = TipManager::new(
+            blockstore.clone(),
+            cluster_info.clone(),
+            leader_schedule_cache.clone(),
+            tip_manager_config,
+        );
 
         let bundle_account_locker = BundleAccountLocker::default();
 

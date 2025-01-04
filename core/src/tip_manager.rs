@@ -1,6 +1,7 @@
 use {
     crate::proxy::block_engine_stage::BlockBuilderFeeInfo,
     anchor_lang::{AccountDeserialize, InstructionData, ToAccountMetas},
+    funnel::{instructions::become_receiver::BecomeReceiverAccounts, Funnel},
     jito_tip_distribution::sdk::{
         derive_config_account_address, derive_tip_distribution_account_address,
         instruction::{
@@ -16,10 +17,13 @@ use {
     },
     log::warn,
     solana_bundle::TipError,
+    solana_gossip::cluster_info::ClusterInfo,
+    solana_ledger::{blockstore::Blockstore, leader_schedule_cache::LeaderScheduleCache},
     solana_runtime::bank::Bank,
     solana_sdk::{
         account::ReadableAccount,
         bundle::{derive_bundle_id_from_sanitized_transactions, SanitizedBundle},
+        clock::Slot,
         instruction::Instruction,
         pubkey::Pubkey,
         signature::Keypair,
@@ -28,10 +32,17 @@ use {
         system_program,
         transaction::{SanitizedTransaction, Transaction},
     },
+    solana_transaction_status::RewardType,
     std::{collections::HashSet, sync::Arc},
 };
 
+const FUNNEL: Pubkey = solana_sdk::pubkey!("11111111111111111111111111111111");
+
 pub type Result<T> = std::result::Result<T, TipError>;
+
+fn calculate_funnel_take(reward: u64) -> u64 {
+    reward / 10
+}
 
 #[derive(Debug, Clone)]
 struct TipPaymentProgramInfo {
@@ -82,8 +93,13 @@ impl Default for TipDistributionAccountConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TipManager {
+    rewards: Arc<dyn ReadRewards + Send + Sync>,
+    cluster_info: Arc<ClusterInfo>,
+    leader_schedule_cache: Arc<LeaderScheduleCache>,
+
+    funnel: Pubkey,
     tip_payment_program_info: TipPaymentProgramInfo,
     tip_distribution_program_info: TipDistributionProgramInfo,
     tip_distribution_account_config: TipDistributionAccountConfig,
@@ -108,7 +124,12 @@ impl Default for TipManagerConfig {
 }
 
 impl TipManager {
-    pub fn new(config: TipManagerConfig) -> TipManager {
+    pub(crate) fn new(
+        rewards: Arc<dyn ReadRewards + Send + Sync>,
+        cluster_info: Arc<ClusterInfo>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
+        config: TipManagerConfig,
+    ) -> TipManager {
         let TipManagerConfig {
             tip_payment_program_id,
             tip_distribution_program_id,
@@ -138,6 +159,11 @@ impl TipManager {
         let config_pda_and_bump = derive_config_account_address(&tip_distribution_program_id);
 
         TipManager {
+            rewards,
+            cluster_info,
+            leader_schedule_cache,
+
+            funnel: FUNNEL,
             tip_payment_program_info: TipPaymentProgramInfo {
                 program_id: tip_payment_program_id,
                 config_pda_bump,
@@ -203,6 +229,16 @@ impl TipManager {
             ))?;
 
         Ok(Config::try_deserialize(&mut config_data.data())?)
+    }
+
+    pub fn get_funnel_account(&self, bank: &Bank) -> Result<Funnel> {
+        let funnel_data = bank
+            .get_account(&self.funnel)
+            .ok_or(TipError::AccountMissing(self.funnel))?;
+
+        Funnel::try_from_bytes(funnel_data.data())
+            .copied()
+            .map_err(|err| TipError::AnchorError(err.to_string()))
     }
 
     /// Only called once during contract creation.
@@ -376,54 +412,53 @@ impl TipManager {
     /// before changing ownership.
     pub fn change_tip_receiver_and_block_builder_tx(
         &self,
-        new_tip_receiver: &Pubkey,
+        new_funnel_receiver: &Pubkey,
         bank: &Bank,
         keypair: &Keypair,
         block_builder: &Pubkey,
         block_builder_commission: u64,
     ) -> Result<SanitizedTransaction> {
-        let config = self.get_tip_payment_config_account(bank)?;
+        let jito_config = self.get_tip_payment_config_account(bank)?;
+        let funnel = self.get_funnel_account(bank)?;
+
         Ok(self.build_change_tip_receiver_and_block_builder_tx(
-            &config.tip_receiver,
-            new_tip_receiver,
+            &jito_config.tip_receiver,
+            new_funnel_receiver,
             bank,
             keypair,
-            &config.block_builder,
+            &jito_config.block_builder,
             block_builder,
             block_builder_commission,
+            &funnel,
         ))
     }
 
     pub fn build_change_tip_receiver_and_block_builder_tx(
         &self,
         old_tip_receiver: &Pubkey,
-        new_tip_receiver: &Pubkey,
+        new_funnel_receiver: &Pubkey,
         bank: &Bank,
         keypair: &Keypair,
         old_block_builder: &Pubkey,
         block_builder: &Pubkey,
         block_builder_commission: u64,
+        funnel: &Funnel,
     ) -> SanitizedTransaction {
-        let change_tip_ix = Instruction {
-            program_id: self.tip_payment_program_info.program_id,
-            data: jito_tip_payment::instruction::ChangeTipReceiver {}.data(),
-            accounts: jito_tip_payment::accounts::ChangeTipReceiver {
-                config: self.tip_payment_program_info.config_pda_bump.0,
-                old_tip_receiver: *old_tip_receiver,
-                new_tip_receiver: *new_tip_receiver,
-                block_builder: *old_block_builder,
-                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
-                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
-                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
-                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
-                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
-                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
-                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
-                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
-                signer: keypair.pubkey(),
-            }
-            .to_account_metas(None),
-        };
+        let additional_lamports = self.compute_additional_lamports(bank);
+
+        let become_receiver = funnel::instructions::become_receiver::ix(
+            BecomeReceiverAccounts {
+                payer: keypair.pubkey(),
+                funnel_config: self.funnel,
+                block_builder_old: *old_block_builder,
+                tip_receiver_old: *old_tip_receiver,
+                paladin_receiver_old: funnel.receiver,
+                paladin_receiver_new: *new_funnel_receiver,
+                paladin_receiver_new_state: funnel::find_leader_state(new_funnel_receiver).0,
+            },
+            &funnel.config,
+            additional_lamports,
+        );
         let change_block_builder_ix = Instruction {
             program_id: self.tip_payment_program_info.program_id,
             data: jito_tip_payment::instruction::ChangeBlockBuilder {
@@ -432,7 +467,7 @@ impl TipManager {
             .data(),
             accounts: jito_tip_payment::accounts::ChangeBlockBuilder {
                 config: self.tip_payment_program_info.config_pda_bump.0,
-                tip_receiver: *new_tip_receiver, // tip receiver will have just changed in previous ix
+                tip_receiver: self.funnel, // tip receiver will have just changed in previous ix
                 old_block_builder: *old_block_builder,
                 new_block_builder: *block_builder,
                 tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
@@ -449,7 +484,7 @@ impl TipManager {
         };
         SanitizedTransaction::try_from_legacy_transaction(
             Transaction::new_signed_with_payer(
-                &[change_tip_ix, change_block_builder_ix],
+                &[become_receiver, change_block_builder_ix],
                 Some(&keypair.pubkey()),
                 &[keypair],
                 bank.last_blockhash(),
@@ -552,16 +587,18 @@ impl TipManager {
         };
 
         let tip_payment_config = self.get_tip_payment_config_account(bank)?;
+        let configured_funnel_receiver = self.get_funnel_account(bank)?.receiver;
+        let my_funnel_receiver = self.get_my_tip_distribution_pda(bank.epoch());
 
-        let my_tip_receiver = self.get_my_tip_distribution_pda(bank.epoch());
-        let maybe_change_tip_receiver_tx = if tip_payment_config.tip_receiver != my_tip_receiver
+        let maybe_change_tip_receiver_tx = if tip_payment_config.tip_receiver != self.funnel
+            || configured_funnel_receiver != my_funnel_receiver
             || tip_payment_config.block_builder != block_builder_fee_info.block_builder
             || tip_payment_config.block_builder_commission_pct
                 != block_builder_fee_info.block_builder_commission
         {
             debug!("change_tip_receiver=true");
             Some(self.change_tip_receiver_and_block_builder_tx(
-                &my_tip_receiver,
+                &my_funnel_receiver,
                 bank,
                 keypair,
                 &block_builder_fee_info.block_builder,
@@ -592,5 +629,412 @@ impl TipManager {
                 bundle_id,
             }))
         }
+    }
+
+    fn compute_additional_lamports(&self, bank: &Bank) -> u64 {
+        let identity = self.my_identity();
+        let current_slot = bank.slot();
+        let current_epoch = bank.epoch();
+        let previous_epoch = bank.epoch().checked_sub(1);
+
+        // Lookup last payment slot, defaulting to current slot.
+        let last_paid_slot = self.highest_paid(bank, &identity).unwrap_or(current_slot);
+        let (last_paid_epoch, last_paid_offset) = bank.get_epoch_and_slot_index(last_paid_slot);
+
+        // We only process the current and previous epoch. If no payment was
+        // made in either of these we just assume 0.
+        match (last_paid_epoch, previous_epoch) {
+            (_, Some(previous_epoch)) if last_paid_epoch >= previous_epoch => {}
+            (_, None) if last_paid_epoch >= current_epoch => {}
+            _ => return 0,
+        }
+
+        // Get the leader schedule (should never fail).
+        let Some(leader_schedule) = self
+            .leader_schedule_cache
+            .get_epoch_leader_schedule(last_paid_epoch)
+        else {
+            eprintln!("BUG: Missing leader schedule for last_paid_epoch");
+
+            return 0;
+        };
+
+        // Binary search to find the index of this slot in our leader slots.
+        let last_paid_offset = last_paid_offset as usize;
+        let indexes = leader_schedule
+            .get_index()
+            .get(&identity)
+            .cloned()
+            .unwrap_or_default();
+        let Ok(start_index) = indexes.binary_search(&(last_paid_offset as usize)) else {
+            eprintln!(
+                "BUG: highest_paid_offset not in indexes; identity={identity}; indexes={indexes:?}"
+            );
+
+            return 0;
+        };
+
+        // If our last paid epoch was not the current epoch, then search all the
+        // processed slots in this epoch.
+        let first_slot_in_current_epoch =
+            bank.epoch_schedule().get_first_slot_in_epoch(current_epoch);
+        let additional_indexes = match last_paid_epoch == current_epoch {
+            true => Arc::default(),
+            false => {
+                let leader_schedule = match self
+                    .leader_schedule_cache
+                    .get_epoch_leader_schedule(current_epoch)
+                {
+                    Some(schedule) => schedule,
+                    None => {
+                        eprintln!("BUG: Current leader schedule missing?");
+                        return 0;
+                    }
+                };
+
+                leader_schedule
+                    .get_index()
+                    .get(&identity)
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        };
+
+        // Iterator that converts offsets to slots.
+        let first_slot_in_epoch = bank
+            .epoch_schedule()
+            .get_first_slot_in_epoch(last_paid_epoch);
+        let indexes_to_search = indexes[start_index..]
+            .iter()
+            .map(|offset| first_slot_in_epoch + *offset as u64)
+            .chain(
+                additional_indexes
+                    .iter()
+                    .map(|offset| first_slot_in_current_epoch + *offset as u64),
+            );
+
+        // Sum our outstanding rewards (i.e. rewards that have not been split
+        // with the funnel).
+        let mut outstanding_rewards = 0;
+        for slot in indexes_to_search {
+            // If we've caught up to the current slot, break.
+            if slot == current_slot {
+                break;
+            }
+            if slot > current_slot {
+                eprintln!("BUG: Current slot not in indexes, are we the leader?");
+
+                return 0;
+            }
+
+            // Accumulate the rewards for the block.
+            outstanding_rewards += self.rewards.read_rewards(slot);
+        }
+
+        calculate_funnel_take(outstanding_rewards)
+    }
+
+    fn highest_paid(&self, bank: &Bank, identity: &Pubkey) -> Option<Slot> {
+        bank.get_account(&funnel::find_leader_state(identity).0)
+            .and_then(|account| {
+                funnel::LeaderState::try_from_bytes(account.data())
+                    .ok()
+                    .map(|state| state.last_slot)
+            })
+    }
+
+    fn my_identity(&self) -> Pubkey {
+        self.cluster_info.id()
+    }
+}
+
+pub(crate) trait ReadRewards {
+    fn read_rewards(&self, slot: Slot) -> u64;
+}
+
+impl ReadRewards for Blockstore {
+    fn read_rewards(&self, slot: Slot) -> u64 {
+        self.read_rewards(slot)
+            .ok()
+            .flatten()
+            .unwrap_or(vec![])
+            .into_iter()
+            .map(|reward| match reward.reward_type {
+                Some(RewardType::Fee) => reward.lamports,
+                _ => 0,
+            })
+            .sum::<i64>()
+            .try_into()
+            .unwrap()
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use {
+        super::*,
+        funnel::LeaderState,
+        solana_gossip::contact_info::ContactInfo,
+        solana_ledger::leader_schedule::LeaderSchedule,
+        solana_program_test::programs::spl_programs,
+        solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
+        solana_sdk::{
+            account::Account,
+            fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
+            genesis_config::ClusterType,
+            native_token::sol_to_lamports,
+            rent::Rent,
+        },
+        solana_streamer::socket::SocketAddrSpace,
+        solana_vote_program::vote_state::VoteState,
+        std::sync::RwLock,
+    };
+
+    #[derive(Default)]
+    pub(crate) struct MockBlockstore(pub(crate) Vec<u64>);
+
+    impl ReadRewards for RwLock<MockBlockstore> {
+        fn read_rewards(&self, slot: Slot) -> u64 {
+            self.read()
+                .unwrap()
+                .0
+                .get(slot as usize)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    struct TestFixture {
+        bank: Bank,
+        blockstore: Arc<RwLock<MockBlockstore>>,
+        leader_keypair: Arc<Keypair>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
+        tip_manager: TipManager,
+    }
+
+    fn create_fixture() -> TestFixture {
+        let mint_keypair = Keypair::new();
+        let leader_keypair = Arc::new(Keypair::new());
+        let voting_keypair = Keypair::new();
+
+        // Setup genesis.
+        let rent = Rent::default();
+        let genesis_config = create_genesis_config_with_leader_ex(
+            sol_to_lamports(1000.0 as f64),
+            &mint_keypair.pubkey(),
+            &leader_keypair.pubkey(),
+            &voting_keypair.pubkey(),
+            &solana_sdk::pubkey::new_rand(),
+            rent.minimum_balance(VoteState::size_of()) + sol_to_lamports(1_000_000.0),
+            sol_to_lamports(1_000_000.0),
+            FeeRateGovernor {
+                // Initialize with a non-zero fee
+                lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
+                ..FeeRateGovernor::default()
+            },
+            rent.clone(), // most tests don't expect rent
+            ClusterType::Development,
+            spl_programs(&rent),
+        );
+
+        // Setup TipManager dependencies.
+        let mut rng = rand::thread_rng();
+        let blockstore = Arc::new(RwLock::new(MockBlockstore::default()));
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new_rand(&mut rng, Some(leader_keypair.pubkey())),
+            leader_keypair.clone(),
+            SocketAddrSpace::Unspecified,
+        ));
+        let bank = Bank::new_for_tests(&genesis_config);
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+        let config = TipManagerConfig::default();
+
+        // Setup the leader state.
+        let (leader_state, _) = funnel::find_leader_state(&leader_keypair.pubkey());
+        bank.store_account(
+            &leader_state,
+            &Account {
+                lamports: rent.minimum_balance(LeaderState::LEN),
+                data: LeaderState { last_slot: 0 }.as_bytes().to_vec(),
+                ..Account::default()
+            }
+            .into(),
+        );
+
+        TestFixture {
+            bank,
+            blockstore: blockstore.clone(),
+            leader_keypair,
+            leader_schedule_cache: leader_schedule_cache.clone(),
+            tip_manager: TipManager::new(blockstore, cluster_info, leader_schedule_cache, config),
+        }
+    }
+
+    #[test]
+    fn compute_additional_lamports_base() {
+        // Arrange.
+        let fixture = create_fixture();
+
+        // Act.
+        let additional = fixture
+            .tip_manager
+            .compute_additional_lamports(&fixture.bank);
+
+        // Assert.
+        assert_eq!(additional, 0);
+    }
+
+    #[test]
+    fn compute_additional_lamports_prior_slot_no_rewards() {
+        // Arrange.
+        let fixture = create_fixture();
+        let child_bank =
+            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 1);
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&child_bank);
+
+        // Assert.
+        assert_eq!(additional, 0);
+    }
+
+    #[test]
+    fn compute_additional_lamports_prior_slot_rewards() {
+        // Arrange.
+        let fixture = create_fixture();
+        let child_bank =
+            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 1);
+        fixture.blockstore.write().unwrap().0.push(100);
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&child_bank);
+
+        // Assert.
+        assert_eq!(additional, calculate_funnel_take(100));
+    }
+
+    #[test]
+    fn compute_additional_lamports_prior_slot_not_our_leader() {
+        // Arrange.
+        let fixture = create_fixture();
+        let child_bank =
+            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 1);
+        fixture.blockstore.write().unwrap().0.push(100);
+        let mut slot_leaders = fixture
+            .leader_schedule_cache
+            .get_epoch_leader_schedule(0)
+            .unwrap()
+            .get_slot_leaders()
+            .to_vec();
+        slot_leaders[0] = Pubkey::new_unique();
+        let leader_schedule = LeaderSchedule::new_from_schedule(slot_leaders);
+        *fixture
+            .leader_schedule_cache
+            .cached_schedules
+            .write()
+            .unwrap()
+            .0
+            .get_mut(&0)
+            .unwrap() = Arc::new(leader_schedule);
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&child_bank);
+
+        // Assert.
+        assert_eq!(additional, 0);
+    }
+
+    #[test]
+    fn compute_additional_lamports_multiple_prior_slots_with_gaps() {
+        // Arrange.
+        let fixture = create_fixture();
+
+        // Create a bank at slot 8.
+        let child_bank =
+            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 8);
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend(std::iter::repeat(100).take(8));
+
+        // Update the leader schedule
+        let mut slot_leaders = fixture
+            .leader_schedule_cache
+            .get_epoch_leader_schedule(0)
+            .unwrap()
+            .get_slot_leaders()
+            .to_vec();
+        slot_leaders[1] = Pubkey::new_unique();
+        slot_leaders[2] = Pubkey::new_unique();
+        slot_leaders[4] = Pubkey::new_unique();
+        slot_leaders[6] = Pubkey::new_unique();
+        let leader_schedule = LeaderSchedule::new_from_schedule(slot_leaders);
+        *fixture
+            .leader_schedule_cache
+            .cached_schedules
+            .write()
+            .unwrap()
+            .0
+            .get_mut(&0)
+            .unwrap() = Arc::new(leader_schedule);
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&child_bank);
+
+        // Assert.
+        assert_eq!(additional, calculate_funnel_take(400));
+    }
+
+    #[test]
+    fn compute_additional_lamports_use_slots_from_previous_epoch() {
+        // Arrange.
+        let fixture = create_fixture();
+
+        // Set the block reward to to the slot index.
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend((0..64).map(|i| i * 100));
+
+        // Set all slots to random leaders.
+        let mut epoch_0_leaders = fixture
+            .leader_schedule_cache
+            .get_epoch_leader_schedule(0)
+            .unwrap()
+            .get_slot_leaders()
+            .to_vec();
+        epoch_0_leaders
+            .iter_mut()
+            .for_each(|leader| *leader = Pubkey::new_unique());
+
+        // Set 3 slots for our leader.
+        epoch_0_leaders[0] = fixture.leader_keypair.pubkey();
+        epoch_0_leaders[12] = fixture.leader_keypair.pubkey();
+        epoch_0_leaders[20] = fixture.leader_keypair.pubkey();
+
+        // Update the leader schedule.
+        *fixture
+            .leader_schedule_cache
+            .cached_schedules
+            .write()
+            .unwrap()
+            .0
+            .get_mut(&0)
+            .unwrap() = Arc::new(LeaderSchedule::new_from_schedule(epoch_0_leaders));
+
+        // Roll to the next epoch.
+        let next_epoch =
+            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 33);
+        assert_eq!(next_epoch.epoch(), 1);
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&next_epoch);
+
+        // Assert.
+        assert_eq!(additional, calculate_funnel_take(0 + 1200 + 2000 + 3200));
     }
 }

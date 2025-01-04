@@ -1492,6 +1492,7 @@ impl Validator {
             config.generator_config.clone(),
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
+            leader_schedule_cache.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
