@@ -36,7 +36,7 @@ use {
     std::{collections::HashSet, sync::Arc},
 };
 
-const FUNNEL_CONFIG: Pubkey = solana_sdk::pubkey!("11111111111111111111111111111111");
+const FUNNEL_CONFIG: Pubkey = solana_sdk::pubkey!("6RfdhWwnNBKwchqPex7RPBw2c8Cku8y4QyUqjX71YoBq");
 
 pub type Result<T> = std::result::Result<T, TipError>;
 
