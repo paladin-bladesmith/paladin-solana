@@ -36,8 +36,6 @@ use {
     std::{collections::HashSet, sync::Arc},
 };
 
-const FUNNEL_CONFIG: Pubkey = solana_sdk::pubkey!("6RfdhWwnNBKwchqPex7RPBw2c8Cku8y4QyUqjX71YoBq");
-
 pub type Result<T> = std::result::Result<T, TipError>;
 
 fn calculate_funnel_take(reward: u64) -> u64 {
@@ -424,8 +422,8 @@ impl TipManager {
         let jito_config = self.get_tip_payment_config_account(bank)?;
 
         Ok(match self.funnel {
-            Some(funnel) => {
-                let funnel = Self::get_funnel_account(bank, funnel)?;
+            Some(funnel_key) => {
+                let funnel = Self::get_funnel_account(bank, funnel_key)?;
                 self.build_become_receiver_tx(
                     &jito_config.tip_receiver,
                     new_tip_receiver,
@@ -434,7 +432,7 @@ impl TipManager {
                     &jito_config.block_builder,
                     block_builder,
                     block_builder_commission,
-                    &funnel,
+                    (&funnel, funnel_key),
                 )
             }
             None => self.build_change_tip_receiver_and_block_builder_tx(
@@ -458,14 +456,14 @@ impl TipManager {
         old_block_builder: &Pubkey,
         block_builder: &Pubkey,
         block_builder_commission: u64,
-        funnel: &Funnel,
+        (funnel, funnel_key): (&Funnel, Pubkey),
     ) -> SanitizedTransaction {
         let additional_lamports = self.compute_additional_lamports(bank);
 
         let become_receiver = funnel::instructions::become_receiver::ix(
             BecomeReceiverAccounts {
                 payer: keypair.pubkey(),
-                funnel_config: FUNNEL_CONFIG,
+                funnel_config: funnel_key,
                 block_builder_old: *old_block_builder,
                 tip_receiver_old: *old_tip_receiver,
                 paladin_receiver_old: funnel.receiver,
@@ -483,7 +481,7 @@ impl TipManager {
             .data(),
             accounts: jito_tip_payment::accounts::ChangeBlockBuilder {
                 config: self.tip_payment_program_info.config_pda_bump.0,
-                tip_receiver: FUNNEL_CONFIG, // tip receiver will have just changed in previous ix
+                tip_receiver: funnel_key,
                 old_block_builder: *old_block_builder,
                 new_block_builder: *block_builder,
                 tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
@@ -673,7 +671,7 @@ impl TipManager {
         let requires_updating = match self.funnel {
             Some(funnel) => {
                 let configured_funnel_receiver = Self::get_funnel_account(bank, funnel)?.receiver;
-                tip_payment_config.tip_receiver != FUNNEL_CONFIG
+                tip_payment_config.tip_receiver != funnel
                     || configured_funnel_receiver != my_tip_receiver
                     || tip_payment_config.block_builder != block_builder_fee_info.block_builder
                     || tip_payment_config.block_builder_commission_pct

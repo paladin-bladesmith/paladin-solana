@@ -131,7 +131,7 @@ use {
     solana_wen_restart::wen_restart::{wait_for_wen_restart, WenRestartConfig},
     std::{
         collections::{HashMap, HashSet},
-        net::SocketAddr,
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
         num::NonZeroUsize,
         path::{Path, PathBuf},
         str::FromStr,
@@ -390,6 +390,7 @@ impl ValidatorConfig {
             replay_forks_threads: NonZeroUsize::new(1).expect("1 is non-zero"),
             replay_transactions_threads: NonZeroUsize::new(get_max_thread_count())
                 .expect("thread count is non-zero"),
+            p3_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
             ..Self::default()
         }
     }
