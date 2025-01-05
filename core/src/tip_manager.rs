@@ -727,88 +727,67 @@ impl TipManager {
         let identity = self.my_identity();
         let current_slot = bank.slot();
         let current_epoch = bank.epoch();
-        let previous_epoch = bank.epoch().checked_sub(1);
+        let current_epoch_start_slot = bank.epoch_schedule().get_first_slot_in_epoch(current_epoch);
+        let previous_epoch = match bank.epoch().checked_sub(1) {
+            Some(epoch) => epoch,
+            None => return 0,
+        };
+        let previous_epoch_start_slot = bank
+            .epoch_schedule()
+            .get_first_slot_in_epoch(previous_epoch);
 
-        // Lookup last payment slot, defaulting to current slot.
-        let last_paid_slot = self.highest_paid(bank, &identity).unwrap_or(current_slot);
-        let (last_paid_epoch, last_paid_offset) = bank.get_epoch_and_slot_index(last_paid_slot);
-
-        // We only process the current and previous epoch. If no payment was
-        // made in either of these we just assume 0.
-        match (last_paid_epoch, previous_epoch) {
-            (_, Some(previous_epoch)) if last_paid_epoch >= previous_epoch => {}
-            (_, None) if last_paid_epoch >= current_epoch => {}
-            _ => return 0,
-        }
-
-        // Get the leader schedule (should never fail).
-        let Some(leader_schedule) = self
+        // Get current & previous leader schedules.
+        let Some(previous_leader_slots) = self
             .leader_schedule_cache
-            .get_epoch_leader_schedule(last_paid_epoch)
-        else {
-            eprintln!("BUG: Missing leader schedule for last_paid_epoch");
-
-            return 0;
-        };
-
-        // Binary search to find the index of this slot in our leader slots.
-        let last_paid_offset = last_paid_offset as usize;
-        let indexes = leader_schedule
-            .get_index()
-            .get(&identity)
-            .cloned()
-            .unwrap_or_default();
-        let Ok(start_index) = indexes.binary_search(&(last_paid_offset as usize)) else {
-            eprintln!(
-                "BUG: highest_paid_offset not in indexes; identity={identity}; indexes={indexes:?}"
-            );
-
-            return 0;
-        };
-
-        // If our last paid epoch was not the current epoch, then search all the
-        // processed slots in this epoch.
-        let first_slot_in_current_epoch =
-            bank.epoch_schedule().get_first_slot_in_epoch(current_epoch);
-        let additional_indexes = match last_paid_epoch == current_epoch {
-            true => Arc::default(),
-            false => {
-                let leader_schedule = match self
-                    .leader_schedule_cache
-                    .get_epoch_leader_schedule(current_epoch)
-                {
-                    Some(schedule) => schedule,
-                    None => {
-                        eprintln!("BUG: Current leader schedule missing?");
-                        return 0;
-                    }
-                };
-
-                leader_schedule
+            .get_epoch_leader_schedule(previous_epoch)
+            .map(|schedule| {
+                schedule
                     .get_index()
                     .get(&identity)
                     .cloned()
                     .unwrap_or_default()
-            }
+            })
+        else {
+            eprintln!("BUG: Previous leader schedule missing?");
+            return 0;
+        };
+        let Some(current_leader_slots) = self
+            .leader_schedule_cache
+            .get_epoch_leader_schedule(current_epoch)
+            .map(|schedule| {
+                schedule
+                    .get_index()
+                    .get(&identity)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        else {
+            eprintln!("BUG: Current leader schedule missing?");
+            return 0;
         };
 
-        // Iterator that converts offsets to slots.
-        let first_slot_in_epoch = bank
-            .epoch_schedule()
-            .get_first_slot_in_epoch(last_paid_epoch);
-        let indexes_to_search = indexes[start_index..]
-            .iter()
-            .map(|offset| first_slot_in_epoch + *offset as u64)
-            .chain(
-                additional_indexes
-                    .iter()
-                    .map(|offset| first_slot_in_current_epoch + *offset as u64),
-            );
+        // Compute the min slot and previous + current leader slots.
+        let both = [
+            (previous_epoch_start_slot, previous_leader_slots),
+            (current_epoch_start_slot, current_leader_slots.clone()),
+        ];
+        let current_only = [(current_epoch_start_slot, current_leader_slots)];
+        let (min_slot, offsets) = match self.highest_paid(bank, &identity) {
+            Some(slot) => (slot, both.as_slice()),
+            // Pay all outstanding only for the current epoch.
+            None => (0, current_only.as_slice()),
+        };
 
         // Sum our outstanding rewards (i.e. rewards that have not been split
         // with the funnel).
         let mut outstanding_rewards = 0;
-        for slot in indexes_to_search {
+        for slot in offsets
+            .iter()
+            .flat_map(|(start_slot, offsets)| {
+                offsets.iter().map(|offset| (*start_slot + *offset as u64))
+            })
+            .filter(|slot| *slot >= min_slot)
+        {
             // If we've caught up to the current slot, break.
             if slot == current_slot {
                 break;
@@ -823,6 +802,8 @@ impl TipManager {
             outstanding_rewards += self.rewards.read_rewards(slot);
         }
 
+        // TODO: We need to cap the take such that we do not use the full
+        // balance of our identity account affecting rent exemption.
         calculate_funnel_take(outstanding_rewards)
     }
 
