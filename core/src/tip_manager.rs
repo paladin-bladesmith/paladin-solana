@@ -884,6 +884,7 @@ pub(crate) mod tests {
         leader_keypair: Arc<Keypair>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager: TipManager,
+        paladin: Pubkey,
     }
 
     fn create_fixture(paladin_slots: &[u64]) -> TestFixture {
@@ -978,6 +979,7 @@ pub(crate) mod tests {
                 leader_schedule_cache,
                 config,
             ),
+            paladin: paladin.pubkey(),
         }
     }
 
@@ -1101,5 +1103,77 @@ pub(crate) mod tests {
 
         // Assert.
         assert_eq!(additional, calculate_funnel_take(0 + 1200 + 2000 + 3200));
+    }
+
+    #[test]
+    fn compute_additional_lamports_no_leader_state_prev() {
+        let fixture = create_fixture(&[0, 12, 20]);
+        let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 33);
+
+        // Set the block reward to to the slot index.
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend((0..64).map(|i| i * 10));
+
+        // Remove paladin leader state account.
+        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin);
+        bank.store_account(&paladin_leader_state, &Account::default().into());
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&bank);
+
+        // Assert.
+        assert_eq!(additional, 0);
+    }
+
+    #[test]
+    fn compute_additional_lamports_no_leader_state_curr() {
+        let fixture = create_fixture(&[32, 39]);
+        let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 45);
+
+        // Set the block reward to to the slot index.
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend((0..64).map(|i| i * 10));
+
+        // Remove paladin leader state account.
+        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin);
+        bank.store_account(&paladin_leader_state, &Account::default().into());
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&bank);
+
+        // Assert.
+        assert_eq!(additional, calculate_funnel_take(320 + 390));
+    }
+
+    #[test]
+    fn compute_additional_lamports_no_leader_state_both() {
+        let fixture = create_fixture(&[9, 21, 31, 34, 39]);
+        let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 45);
+
+        // Set the block reward to to the slot index.
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend((0..64).map(|i| i * 10));
+
+        // Remove paladin leader state account.
+        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin);
+        bank.store_account(&paladin_leader_state, &Account::default().into());
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&bank);
+
+        // Assert.
+        assert_eq!(additional, calculate_funnel_take(340 + 390));
     }
 }
