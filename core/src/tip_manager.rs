@@ -722,6 +722,8 @@ impl TipManager {
     }
 
     fn compute_additional_lamports(&self, bank: &Bank) -> u64 {
+        // TODO: Do we need to think about handling identity migrations? Should
+        // not result in much missed rewards, right - just last leader sprint.
         let identity = self.my_identity();
         let current_slot = bank.slot();
         let current_epoch = bank.epoch();
