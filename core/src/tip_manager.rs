@@ -784,7 +784,7 @@ impl TipManager {
         for slot in offsets
             .iter()
             .flat_map(|(start_slot, offsets)| {
-                offsets.iter().map(|offset| (*start_slot + *offset as u64))
+                offsets.iter().map(|offset| *start_slot + *offset as u64)
             })
             .filter(|slot| *slot >= min_slot)
         {
@@ -847,6 +847,7 @@ pub(crate) mod tests {
     use {
         super::*,
         funnel::LeaderState,
+        solana_accounts_db::accounts_db::CalcAccountsHashDataSource,
         solana_gossip::contact_info::ContactInfo,
         solana_ledger::leader_schedule::LeaderSchedule,
         solana_program_test::programs::spl_programs,
@@ -878,14 +879,14 @@ pub(crate) mod tests {
     }
 
     struct TestFixture {
-        bank: Bank,
+        bank: Arc<Bank>,
         blockstore: Arc<RwLock<MockBlockstore>>,
         leader_keypair: Arc<Keypair>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager: TipManager,
     }
 
-    fn create_fixture() -> TestFixture {
+    fn create_fixture(paladin_slots: &[u64]) -> TestFixture {
         let mint_keypair = Keypair::new();
         let leader_keypair = Arc::new(Keypair::new());
         let voting_keypair = Keypair::new();
@@ -913,19 +914,30 @@ pub(crate) mod tests {
         // Setup TipManager dependencies.
         let mut rng = rand::thread_rng();
         let blockstore = Arc::new(RwLock::new(MockBlockstore::default()));
-        let cluster_info = Arc::new(ClusterInfo::new(
-            ContactInfo::new_rand(&mut rng, Some(leader_keypair.pubkey())),
-            leader_keypair.clone(),
+        let paladin = Arc::new(Keypair::new());
+        let cluster_info_paladin = Arc::new(ClusterInfo::new(
+            ContactInfo::new_rand(&mut rng, Some(paladin.pubkey())),
+            paladin.clone(),
             SocketAddrSpace::Unspecified,
         ));
-        let bank = Bank::new_for_tests(&genesis_config);
+        let bank = Arc::new(Bank::new_for_tests(&genesis_config));
+        assert_eq!(bank.epoch(), 0);
+        let bank = Arc::new(Bank::warp_from_parent(
+            bank.clone(),
+            &Pubkey::new_unique(),
+            genesis_config.epoch_schedule.get_first_slot_in_epoch(1) - 1,
+            CalcAccountsHashDataSource::IndexForTests,
+        ));
+        assert_eq!(bank.epoch(), 0);
+        let bank = Bank::new_from_parent(bank.clone(), &Pubkey::new_unique(), bank.slot() + 1);
+        assert_eq!(bank.epoch(), 1);
         let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let config = TipManagerConfig::default();
 
         // Setup the leader state.
-        let (leader_state, _) = funnel::find_leader_state(&leader_keypair.pubkey());
+        let (paladin_leader_state, _) = funnel::find_leader_state(&paladin.pubkey());
         bank.store_account(
-            &leader_state,
+            &paladin_leader_state,
             &Account {
                 lamports: rent.minimum_balance(LeaderState::LEN),
                 data: LeaderState { last_slot: 0 }.as_bytes().to_vec(),
@@ -934,19 +946,45 @@ pub(crate) mod tests {
             .into(),
         );
 
+        // Override the provided leader slots to be our paladin leader.
+        for slot in paladin_slots {
+            let (epoch, offset) = bank.get_epoch_and_slot_index(*slot);
+            let mut slot_leaders = leader_schedule_cache
+                .get_epoch_leader_schedule(epoch)
+                .unwrap()
+                .get_slot_leaders()
+                .to_vec();
+
+            slot_leaders[offset as usize] = paladin.pubkey();
+
+            let leader_schedule = LeaderSchedule::new_from_schedule(slot_leaders);
+            *leader_schedule_cache
+                .cached_schedules
+                .write()
+                .unwrap()
+                .0
+                .get_mut(&epoch)
+                .unwrap() = Arc::new(leader_schedule);
+        }
+
         TestFixture {
-            bank,
+            bank: Arc::new(bank),
             blockstore: blockstore.clone(),
             leader_keypair,
             leader_schedule_cache: leader_schedule_cache.clone(),
-            tip_manager: TipManager::new(blockstore, cluster_info, leader_schedule_cache, config),
+            tip_manager: TipManager::new(
+                blockstore,
+                cluster_info_paladin,
+                leader_schedule_cache,
+                config,
+            ),
         }
     }
 
     #[test]
     fn compute_additional_lamports_base() {
         // Arrange.
-        let fixture = create_fixture();
+        let fixture = create_fixture(&[]);
 
         // Act.
         let additional = fixture
@@ -960,9 +998,12 @@ pub(crate) mod tests {
     #[test]
     fn compute_additional_lamports_prior_slot_no_rewards() {
         // Arrange.
-        let fixture = create_fixture();
-        let child_bank =
-            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 1);
+        let fixture = create_fixture(&[]);
+        let child_bank = Bank::new_from_parent(
+            fixture.bank.clone(),
+            &fixture.leader_keypair.pubkey(),
+            fixture.bank.slot() + 1,
+        );
 
         // Act.
         let additional = fixture.tip_manager.compute_additional_lamports(&child_bank);
@@ -974,9 +1015,12 @@ pub(crate) mod tests {
     #[test]
     fn compute_additional_lamports_prior_slot_rewards() {
         // Arrange.
-        let fixture = create_fixture();
-        let child_bank =
-            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 1);
+        let fixture = create_fixture(&[0]);
+        let child_bank = Bank::new_from_parent(
+            fixture.bank.clone(),
+            &fixture.leader_keypair.pubkey(),
+            fixture.bank.slot() + 1,
+        );
         fixture.blockstore.write().unwrap().0.push(100);
 
         // Act.
@@ -989,9 +1033,8 @@ pub(crate) mod tests {
     #[test]
     fn compute_additional_lamports_prior_slot_not_our_leader() {
         // Arrange.
-        let fixture = create_fixture();
-        let child_bank =
-            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 1);
+        let fixture = create_fixture(&[]);
+        let child_bank = Bank::new_from_parent(fixture.bank, &fixture.leader_keypair.pubkey(), 33);
         fixture.blockstore.write().unwrap().0.push(100);
         let mut slot_leaders = fixture
             .leader_schedule_cache
@@ -1020,38 +1063,17 @@ pub(crate) mod tests {
     #[test]
     fn compute_additional_lamports_multiple_prior_slots_with_gaps() {
         // Arrange.
-        let fixture = create_fixture();
+        let fixture = create_fixture(&[32, 35, 37, 39]);
 
-        // Create a bank at slot 8.
+        // Create a bank at slot 40.
         let child_bank =
-            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 8);
+            Bank::new_from_parent(fixture.bank.clone(), &fixture.leader_keypair.pubkey(), 40);
         fixture
             .blockstore
             .write()
             .unwrap()
             .0
-            .extend(std::iter::repeat(100).take(8));
-
-        // Update the leader schedule
-        let mut slot_leaders = fixture
-            .leader_schedule_cache
-            .get_epoch_leader_schedule(0)
-            .unwrap()
-            .get_slot_leaders()
-            .to_vec();
-        slot_leaders[1] = Pubkey::new_unique();
-        slot_leaders[2] = Pubkey::new_unique();
-        slot_leaders[4] = Pubkey::new_unique();
-        slot_leaders[6] = Pubkey::new_unique();
-        let leader_schedule = LeaderSchedule::new_from_schedule(slot_leaders);
-        *fixture
-            .leader_schedule_cache
-            .cached_schedules
-            .write()
-            .unwrap()
-            .0
-            .get_mut(&0)
-            .unwrap() = Arc::new(leader_schedule);
+            .extend(std::iter::repeat(100).take(40));
 
         // Act.
         let additional = fixture.tip_manager.compute_additional_lamports(&child_bank);
@@ -1063,7 +1085,8 @@ pub(crate) mod tests {
     #[test]
     fn compute_additional_lamports_use_slots_from_previous_epoch() {
         // Arrange.
-        let fixture = create_fixture();
+        let fixture = create_fixture(&[0, 12, 20, 32]);
+        let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 33);
 
         // Set the block reward to to the slot index.
         fixture
@@ -1073,39 +1096,8 @@ pub(crate) mod tests {
             .0
             .extend((0..64).map(|i| i * 100));
 
-        // Set all slots to random leaders.
-        let mut epoch_0_leaders = fixture
-            .leader_schedule_cache
-            .get_epoch_leader_schedule(0)
-            .unwrap()
-            .get_slot_leaders()
-            .to_vec();
-        epoch_0_leaders
-            .iter_mut()
-            .for_each(|leader| *leader = Pubkey::new_unique());
-
-        // Set 3 slots for our leader.
-        epoch_0_leaders[0] = fixture.leader_keypair.pubkey();
-        epoch_0_leaders[12] = fixture.leader_keypair.pubkey();
-        epoch_0_leaders[20] = fixture.leader_keypair.pubkey();
-
-        // Update the leader schedule.
-        *fixture
-            .leader_schedule_cache
-            .cached_schedules
-            .write()
-            .unwrap()
-            .0
-            .get_mut(&0)
-            .unwrap() = Arc::new(LeaderSchedule::new_from_schedule(epoch_0_leaders));
-
-        // Roll to the next epoch.
-        let next_epoch =
-            Bank::new_from_parent(Arc::new(fixture.bank), &fixture.leader_keypair.pubkey(), 33);
-        assert_eq!(next_epoch.epoch(), 1);
-
         // Act.
-        let additional = fixture.tip_manager.compute_additional_lamports(&next_epoch);
+        let additional = fixture.tip_manager.compute_additional_lamports(&bank);
 
         // Assert.
         assert_eq!(additional, calculate_funnel_take(0 + 1200 + 2000 + 3200));
