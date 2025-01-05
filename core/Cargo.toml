@@ -25,6 +25,7 @@ chrono = { workspace = true, features = ["default", "serde"] }
 crossbeam-channel = { workspace = true }
 dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 etcd-client = { workspace = true, features = ["tls"] }
+funnel.workspace = true
 futures = { workspace = true }
 hashbrown.workspace = true
 histogram = { workspace = true }

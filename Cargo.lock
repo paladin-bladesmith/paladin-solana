@@ -2503,6 +2503,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a06f77d526c1a601b7c4cdd98f54b5eaabffc14d5f2f0296febdc7f357c6d3ba"
 
 [[package]]
+name = "funnel"
+version = "0.1.0"
+dependencies = [
+ "borsh 1.5.1",
+ "bytemuck",
+ "sha2-const-stable",
+ "solana-program",
+]
+
+[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5618,6 +5628,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2-const-stable"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5f179d4e11094a893b82fff208f74d448a7512f99f5a0acbd5c679b705f83ed9"
+
+[[package]]
 name = "sha3"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6529,6 +6545,7 @@ dependencies = [
  "dashmap",
  "etcd-client",
  "fs_extra",
+ "funnel",
  "futures 0.3.30",
  "hashbrown 0.14.3",
  "histogram",

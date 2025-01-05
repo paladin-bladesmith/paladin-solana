@@ -910,7 +910,9 @@ mod tests {
             },
             packet_bundle::PacketBundle,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
+            tip_manager::{
+                tests::MockBlockstore, TipDistributionAccountConfig, TipManager, TipManagerConfig,
+            },
         },
         crossbeam_channel::{unbounded, Receiver},
         jito_tip_distribution::sdk::derive_tip_distribution_account_address,
@@ -1135,20 +1137,33 @@ mod tests {
             .collect()
     }
 
-    fn get_tip_manager(vote_account: &Pubkey) -> TipManager {
-        TipManager::new(TipManagerConfig {
-            tip_payment_program_id: Pubkey::from_str("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt")
+    fn get_tip_manager(
+        cluster_info: Arc<ClusterInfo>,
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
+        vote_account: &Pubkey,
+        funnel: Option<Pubkey>,
+    ) -> TipManager {
+        TipManager::new(
+            Arc::new(RwLock::new(MockBlockstore(vec![]))),
+            cluster_info,
+            leader_schedule_cache,
+            TipManagerConfig {
+                funnel,
+                tip_payment_program_id: Pubkey::from_str(
+                    "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",
+                )
                 .unwrap(),
-            tip_distribution_program_id: Pubkey::from_str(
-                "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
-            )
-            .unwrap(),
-            tip_distribution_account_config: TipDistributionAccountConfig {
-                merkle_root_upload_authority: Pubkey::new_unique(),
-                vote_account: *vote_account,
-                commission_bps: 10,
+                tip_distribution_program_id: Pubkey::from_str(
+                    "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
+                )
+                .unwrap(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: *vote_account,
+                    commission_bps: 10,
+                },
             },
-        })
+        )
     }
 
     /// Happy-path bundle execution w/ no tip management
@@ -1180,18 +1195,24 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_pubkey = Pubkey::new_unique();
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let mut consumer = BundleConsumer::new(
             committer,
@@ -1328,18 +1349,24 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let mut consumer = BundleConsumer::new(
             committer,
@@ -1506,18 +1533,24 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 

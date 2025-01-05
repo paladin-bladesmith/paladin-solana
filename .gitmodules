@@ -10,3 +10,6 @@
 [submodule "paladin-programs/lockup"]
 	path = paladin-programs/lockup
 	url = https://github.com/paladin-bladesmith/lockup-program.git
+[submodule "paladin-programs/funnel"]
+	path = paladin-programs/funnel
+	url = https://github.com/paladin-bladesmith/funnel.git
