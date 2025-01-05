@@ -804,7 +804,17 @@ impl TipManager {
 
         // TODO: We need to cap the take such that we do not use the full
         // balance of our identity account affecting rent exemption.
-        calculate_funnel_take(outstanding_rewards)
+        let owing = calculate_funnel_take(outstanding_rewards);
+        let identity = bank.get_account(&identity).unwrap_or_default();
+        let min_rent_exemption = bank
+            .rent_collector()
+            .rent
+            .minimum_balance(identity.data().len());
+
+        std::cmp::min(
+            owing,
+            identity.lamports().saturating_sub(min_rent_exemption),
+        )
     }
 
     fn highest_paid(&self, bank: &Bank, identity: &Pubkey) -> Option<Slot> {
@@ -935,7 +945,17 @@ pub(crate) mod tests {
         let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let config = TipManagerConfig::default();
 
-        // Setup the leader state.
+        // Setup the paladin leader account.
+        bank.store_account(
+            &paladin.pubkey(),
+            &Account {
+                lamports: 10u64.pow(9),
+                ..Default::default()
+            }
+            .into(),
+        );
+
+        // Setup the paladin leader state.
         let (paladin_leader_state, _) = funnel::find_leader_state(&paladin.pubkey());
         bank.store_account(
             &paladin_leader_state,
@@ -1175,5 +1195,67 @@ pub(crate) mod tests {
 
         // Assert.
         assert_eq!(additional, calculate_funnel_take(340 + 390));
+    }
+
+    #[test]
+    fn compute_additional_lamports_rent_exemption_pays_zero() {
+        let fixture = create_fixture(&[9, 21, 31, 34, 39]);
+        let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 45);
+
+        // Set the block reward to to the slot index.
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend((0..64).map(|i| i * 10));
+
+        // Reduce the paladin leader lamport balance to just the rent exemption
+        // requirement.
+        bank.store_account(
+            &fixture.paladin,
+            &Account {
+                lamports: bank.rent_collector().rent.minimum_balance(0),
+                ..Account::default()
+            }
+            .into(),
+        );
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&bank);
+
+        // Assert.
+        assert_eq!(additional, 0);
+    }
+
+    #[test]
+    fn compute_additional_lamports_rent_exemption_pays_one() {
+        let fixture = create_fixture(&[9, 21, 31, 34, 39]);
+        let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 45);
+
+        // Set the block reward to to the slot index.
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend((0..64).map(|i| i * 10));
+
+        // Reduce the paladin leader lamport balance to just the rent exemption
+        // requirement.
+        bank.store_account(
+            &fixture.paladin,
+            &Account {
+                lamports: bank.rent_collector().rent.minimum_balance(0) + 1,
+                ..Account::default()
+            }
+            .into(),
+        );
+
+        // Act.
+        let additional = fixture.tip_manager.compute_additional_lamports(&bank);
+
+        // Assert.
+        assert_eq!(additional, 1);
     }
 }
