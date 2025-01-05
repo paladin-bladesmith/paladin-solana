@@ -915,6 +915,7 @@ mod tests {
             },
         },
         crossbeam_channel::{unbounded, Receiver},
+        jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
         solana_bundle::bundle_account_locker::BundleAccountLocker,
         solana_cost_model::{block_cost_limits::MAX_BLOCK_UNITS, cost_model::CostModel},
@@ -1322,6 +1323,324 @@ mod tests {
         exit.store(true, Ordering::Relaxed);
         poh_simulator.join().unwrap();
         // TODO (LB): cleanup blockstore
+    }
+
+    /// Happy-path bundle execution to ensure tip management works.
+    /// Tip management involves cranking setup bundles before executing the test bundle
+    #[test]
+    fn test_bundle_tip_program_setup_success() {
+        solana_logger::setup();
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+            bank,
+            exit,
+            poh_recorder,
+            poh_simulator,
+            entry_receiver,
+            bank_forks: _bank_forks,
+        } = create_test_fixture(1_000_000);
+        let recorder = poh_recorder.read().unwrap().new_recorder();
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new(leader_keypair.pubkey(), 0, 0),
+            Arc::new(leader_keypair),
+            SocketAddrSpace::new(true),
+        ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
+
+        let mut consumer = BundleConsumer::new(
+            committer,
+            recorder,
+            QosService::new(1),
+            None,
+            tip_manager.clone(),
+            BundleAccountLocker::default(),
+            block_builder_info,
+            Duration::from_secs(10),
+            cluster_info.clone(),
+            BundleReservedSpaceManager::new(
+                MAX_BLOCK_UNITS,
+                3_000_000,
+                poh_recorder
+                    .read()
+                    .unwrap()
+                    .ticks_per_slot()
+                    .saturating_mul(8)
+                    .saturating_div(10),
+            ),
+        );
+
+        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+
+        let mut bundle_storage = UnprocessedTransactionStorage::new_bundle_storage();
+        let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
+        // MAIN LOGIC
+
+        // a bundle that tips the tip program
+        let tip_accounts = tip_manager.get_tip_accounts();
+        let tip_account = tip_accounts.iter().collect::<Vec<_>>()[0];
+        let mut packet_bundle = PacketBundle {
+            batch: PacketBatch::new(vec![Packet::from_data(
+                None,
+                transfer(
+                    &genesis_config_info.mint_keypair,
+                    tip_account,
+                    1,
+                    genesis_config_info.genesis_config.hash(),
+                ),
+            )
+            .unwrap()]),
+            bundle_id: "test_transfer".to_string(),
+        };
+
+        let deserialized_bundle =
+            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, false, None).unwrap();
+        let mut error_metrics = TransactionErrorMetrics::default();
+        let sanitized_bundle = deserialized_bundle
+            .build_sanitized_bundle(
+                &bank_start.working_bank,
+                &HashSet::default(),
+                &mut error_metrics,
+            )
+            .unwrap();
+
+        let summary = bundle_storage.insert_bundles(vec![deserialized_bundle]);
+        assert_eq!(summary.num_bundles_inserted, 1);
+        assert_eq!(summary.num_packets_inserted, 1);
+        assert_eq!(summary.num_bundles_dropped, 0);
+
+        consumer.consume_buffered_bundles(
+            &bank_start,
+            &mut bundle_storage,
+            &mut bundle_stage_leader_metrics,
+        );
+
+        // its expected there are 3 transactions. One to initialize the tip program configuration, one to change the tip receiver,
+        // and another with the tip
+
+        let mut transactions = Vec::new();
+        while let Ok(WorkingBankEntry {
+            bank: wbe_bank,
+            entries_ticks,
+        }) = entry_receiver.recv()
+        {
+            assert_eq!(bank.slot(), wbe_bank.slot());
+            transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
+            if transactions.len() == 5 {
+                break;
+            }
+        }
+
+        // tip management on the first bundle involves:
+        // calling initialize on the tip payment and tip distribution programs
+        // creating the tip distribution account for this validator's epoch (the MEV piggy bank)
+        // changing the tip receiver and block builder tx
+        // the original transfer that was sent
+        let keypair = cluster_info.keypair().clone();
+
+        assert_eq!(
+            transactions[0],
+            tip_manager
+                .initialize_tip_payment_program_tx(&bank, &keypair)
+                .to_versioned_transaction()
+        );
+        assert_eq!(
+            transactions[1],
+            tip_manager
+                .initialize_tip_distribution_config_tx(&bank, &keypair)
+                .to_versioned_transaction()
+        );
+        assert_eq!(
+            transactions[2],
+            tip_manager
+                .initialize_tip_distribution_account_tx(&bank, &keypair)
+                .to_versioned_transaction()
+        );
+        // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
+        // TipPayment program during initialization
+        assert_eq!(
+            transactions[3],
+            tip_manager
+                .build_change_tip_receiver_and_block_builder_tx(
+                    &keypair.pubkey(),
+                    &derive_tip_distribution_account_address(
+                        &tip_manager.tip_distribution_program_id(),
+                        &genesis_config_info.validator_pubkey,
+                        bank_start.working_bank.epoch()
+                    )
+                    .0,
+                    &bank_start.working_bank,
+                    &keypair,
+                    &keypair.pubkey(),
+                    &block_builder_pubkey,
+                    10
+                )
+                .to_versioned_transaction()
+        );
+        assert_eq!(
+            transactions[4],
+            sanitized_bundle.transactions[0].to_versioned_transaction()
+        );
+
+        poh_recorder
+            .write()
+            .unwrap()
+            .is_exited
+            .store(true, Ordering::Relaxed);
+        exit.store(true, Ordering::Relaxed);
+        poh_simulator.join().unwrap();
+    }
+
+    #[test]
+    fn test_handle_tip_programs() {
+        solana_logger::setup();
+        let TestFixture {
+            genesis_config_info,
+            leader_keypair,
+            bank,
+            exit,
+            poh_recorder,
+            poh_simulator,
+            entry_receiver,
+            bank_forks: _bank_forks,
+        } = create_test_fixture(1_000_000);
+        let recorder = poh_recorder.read().unwrap().new_recorder();
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+
+        let cluster_info = Arc::new(ClusterInfo::new(
+            ContactInfo::new(leader_keypair.pubkey(), 0, 0),
+            Arc::new(leader_keypair),
+            SocketAddrSpace::new(true),
+        ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            cluster_info.clone(),
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
+
+        let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
+
+        let reserved_ticks = bank.max_tick_height().saturating_mul(8).saturating_div(10);
+
+        // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
+        // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
+        let reserved_space =
+            BundleReservedSpaceManager::new(MAX_BLOCK_UNITS, 3_000_000, reserved_ticks);
+        let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(1);
+        assert_matches!(
+            BundleConsumer::handle_tip_programs(
+                &BundleAccountLocker::default(),
+                &tip_manager,
+                &cluster_info,
+                &block_builder_info,
+                &committer,
+                &recorder,
+                &QosService::new(1),
+                &None,
+                Duration::from_secs(10),
+                &reserved_space,
+                &bank_start,
+                &mut bundle_stage_leader_metrics
+            ),
+            Ok(())
+        );
+
+        let mut transactions = Vec::new();
+        while let Ok(WorkingBankEntry {
+            bank: wbe_bank,
+            entries_ticks,
+        }) = entry_receiver.recv()
+        {
+            assert_eq!(bank.slot(), wbe_bank.slot());
+            transactions.extend(entries_ticks.into_iter().flat_map(|(e, _)| e.transactions));
+            if transactions.len() == 4 {
+                break;
+            }
+        }
+
+        let keypair = cluster_info.keypair().clone();
+        // expect to see initialize tip payment program, tip distribution program, initialize tip distribution account, change tip receiver + change block builder
+        assert_eq!(
+            transactions[0],
+            tip_manager
+                .initialize_tip_payment_program_tx(&bank, &keypair)
+                .to_versioned_transaction()
+        );
+        assert_eq!(
+            transactions[1],
+            tip_manager
+                .initialize_tip_distribution_config_tx(&bank, &keypair)
+                .to_versioned_transaction()
+        );
+        assert_eq!(
+            transactions[2],
+            tip_manager
+                .initialize_tip_distribution_account_tx(&bank, &keypair)
+                .to_versioned_transaction()
+        );
+        // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
+        // TipPayment program during initialization
+        assert_eq!(
+            transactions[3],
+            tip_manager
+                .build_change_tip_receiver_and_block_builder_tx(
+                    &keypair.pubkey(),
+                    &derive_tip_distribution_account_address(
+                        &tip_manager.tip_distribution_program_id(),
+                        &genesis_config_info.validator_pubkey,
+                        bank_start.working_bank.epoch()
+                    )
+                    .0,
+                    &bank_start.working_bank,
+                    &keypair,
+                    &keypair.pubkey(),
+                    &block_builder_pubkey,
+                    10
+                )
+                .to_versioned_transaction()
+        );
+
+        poh_recorder
+            .write()
+            .unwrap()
+            .is_exited
+            .store(true, Ordering::Relaxed);
+        exit.store(true, Ordering::Relaxed);
+        poh_simulator.join().unwrap();
     }
 
     #[test]
