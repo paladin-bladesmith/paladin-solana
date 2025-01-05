@@ -1140,12 +1140,14 @@ mod tests {
         cluster_info: Arc<ClusterInfo>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         vote_account: &Pubkey,
+        funnel: Option<Pubkey>,
     ) -> TipManager {
         TipManager::new(
             Arc::new(RwLock::new(MockBlockstore(vec![]))),
             cluster_info,
             leader_schedule_cache,
             TipManagerConfig {
+                funnel,
                 tip_payment_program_id: Pubkey::from_str(
                     "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",
                 )
@@ -1203,6 +1205,7 @@ mod tests {
             cluster_info.clone(),
             leader_schedule_cache,
             &genesis_config_info.voting_keypair.pubkey(),
+            None,
         );
         let block_builder_pubkey = Pubkey::new_unique();
         let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {

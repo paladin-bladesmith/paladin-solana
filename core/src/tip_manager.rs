@@ -99,6 +99,7 @@ pub struct TipManager {
     cluster_info: Arc<ClusterInfo>,
     leader_schedule_cache: Arc<LeaderScheduleCache>,
 
+    funnel: Option<Pubkey>,
     tip_payment_program_info: TipPaymentProgramInfo,
     tip_distribution_program_info: TipDistributionProgramInfo,
     tip_distribution_account_config: TipDistributionAccountConfig,
@@ -107,6 +108,7 @@ pub struct TipManager {
 
 #[derive(Clone)]
 pub struct TipManagerConfig {
+    pub funnel: Option<Pubkey>,
     pub tip_payment_program_id: Pubkey,
     pub tip_distribution_program_id: Pubkey,
     pub tip_distribution_account_config: TipDistributionAccountConfig,
@@ -115,6 +117,7 @@ pub struct TipManagerConfig {
 impl Default for TipManagerConfig {
     fn default() -> Self {
         TipManagerConfig {
+            funnel: None,
             tip_payment_program_id: Pubkey::new_unique(),
             tip_distribution_program_id: Pubkey::new_unique(),
             tip_distribution_account_config: TipDistributionAccountConfig::default(),
@@ -130,6 +133,7 @@ impl TipManager {
         config: TipManagerConfig,
     ) -> TipManager {
         let TipManagerConfig {
+            funnel,
             tip_payment_program_id,
             tip_distribution_program_id,
             tip_distribution_account_config,
@@ -162,6 +166,7 @@ impl TipManager {
             cluster_info,
             leader_schedule_cache,
 
+            funnel,
             tip_payment_program_info: TipPaymentProgramInfo {
                 program_id: tip_payment_program_id,
                 config_pda_bump,
@@ -229,10 +234,10 @@ impl TipManager {
         Ok(Config::try_deserialize(&mut config_data.data())?)
     }
 
-    pub fn get_funnel_account(&self, bank: &Bank) -> Result<Funnel> {
+    pub fn get_funnel_account(bank: &Bank, funnel: Pubkey) -> Result<Funnel> {
         let funnel_data = bank
-            .get_account(&FUNNEL_CONFIG)
-            .ok_or(TipError::AccountMissing(FUNNEL_CONFIG))?;
+            .get_account(&funnel)
+            .ok_or(TipError::AccountMissing(funnel))?;
 
         Funnel::try_from_bytes(funnel_data.data())
             .copied()
@@ -410,28 +415,41 @@ impl TipManager {
     /// before changing ownership.
     pub fn change_tip_receiver_and_block_builder_tx(
         &self,
-        new_funnel_receiver: &Pubkey,
+        new_tip_receiver: &Pubkey,
         bank: &Bank,
         keypair: &Keypair,
         block_builder: &Pubkey,
         block_builder_commission: u64,
     ) -> Result<SanitizedTransaction> {
         let jito_config = self.get_tip_payment_config_account(bank)?;
-        let funnel = self.get_funnel_account(bank)?;
 
-        Ok(self.build_change_tip_receiver_and_block_builder_tx(
-            &jito_config.tip_receiver,
-            new_funnel_receiver,
-            bank,
-            keypair,
-            &jito_config.block_builder,
-            block_builder,
-            block_builder_commission,
-            &funnel,
-        ))
+        Ok(match self.funnel {
+            Some(funnel) => {
+                let funnel = Self::get_funnel_account(bank, funnel)?;
+                self.build_become_receiver_tx(
+                    &jito_config.tip_receiver,
+                    new_tip_receiver,
+                    bank,
+                    keypair,
+                    &jito_config.block_builder,
+                    block_builder,
+                    block_builder_commission,
+                    &funnel,
+                )
+            }
+            None => self.build_change_tip_receiver_and_block_builder_tx(
+                &jito_config.tip_receiver,
+                new_tip_receiver,
+                bank,
+                keypair,
+                &jito_config.block_builder,
+                block_builder,
+                block_builder_commission,
+            ),
+        })
     }
 
-    pub fn build_change_tip_receiver_and_block_builder_tx(
+    pub fn build_become_receiver_tx(
         &self,
         old_tip_receiver: &Pubkey,
         new_funnel_receiver: &Pubkey,
@@ -483,6 +501,71 @@ impl TipManager {
         SanitizedTransaction::try_from_legacy_transaction(
             Transaction::new_signed_with_payer(
                 &[become_receiver, change_block_builder_ix],
+                Some(&keypair.pubkey()),
+                &[keypair],
+                bank.last_blockhash(),
+            ),
+            bank.get_reserved_account_keys(),
+        )
+        .unwrap()
+    }
+
+    pub fn build_change_tip_receiver_and_block_builder_tx(
+        &self,
+        old_tip_receiver: &Pubkey,
+        new_tip_receiver: &Pubkey,
+        bank: &Bank,
+        keypair: &Keypair,
+        old_block_builder: &Pubkey,
+        block_builder: &Pubkey,
+        block_builder_commission: u64,
+    ) -> SanitizedTransaction {
+        let change_tip_ix = Instruction {
+            program_id: self.tip_payment_program_info.program_id,
+            data: jito_tip_payment::instruction::ChangeTipReceiver {}.data(),
+            accounts: jito_tip_payment::accounts::ChangeTipReceiver {
+                config: self.tip_payment_program_info.config_pda_bump.0,
+                old_tip_receiver: *old_tip_receiver,
+                new_tip_receiver: *new_tip_receiver,
+                block_builder: *old_block_builder,
+                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
+                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
+                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
+                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
+                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
+                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
+                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
+                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
+                signer: keypair.pubkey(),
+            }
+            .to_account_metas(None),
+        };
+        let change_block_builder_ix = Instruction {
+            program_id: self.tip_payment_program_info.program_id,
+            data: jito_tip_payment::instruction::ChangeBlockBuilder {
+                block_builder_commission,
+            }
+            .data(),
+            accounts: jito_tip_payment::accounts::ChangeBlockBuilder {
+                config: self.tip_payment_program_info.config_pda_bump.0,
+                tip_receiver: *new_tip_receiver, // tip receiver will have just changed in previous ix
+                old_block_builder: *old_block_builder,
+                new_block_builder: *block_builder,
+                tip_payment_account_0: self.tip_payment_program_info.tip_pda_0.0,
+                tip_payment_account_1: self.tip_payment_program_info.tip_pda_1.0,
+                tip_payment_account_2: self.tip_payment_program_info.tip_pda_2.0,
+                tip_payment_account_3: self.tip_payment_program_info.tip_pda_3.0,
+                tip_payment_account_4: self.tip_payment_program_info.tip_pda_4.0,
+                tip_payment_account_5: self.tip_payment_program_info.tip_pda_5.0,
+                tip_payment_account_6: self.tip_payment_program_info.tip_pda_6.0,
+                tip_payment_account_7: self.tip_payment_program_info.tip_pda_7.0,
+                signer: keypair.pubkey(),
+            }
+            .to_account_metas(None),
+        };
+        SanitizedTransaction::try_from_legacy_transaction(
+            Transaction::new_signed_with_payer(
+                &[change_tip_ix, change_block_builder_ix],
                 Some(&keypair.pubkey()),
                 &[keypair],
                 bank.last_blockhash(),
@@ -585,18 +668,29 @@ impl TipManager {
         };
 
         let tip_payment_config = self.get_tip_payment_config_account(bank)?;
-        let configured_funnel_receiver = self.get_funnel_account(bank)?.receiver;
-        let my_funnel_receiver = self.get_my_tip_distribution_pda(bank.epoch());
+        let my_tip_receiver = self.get_my_tip_distribution_pda(bank.epoch());
 
-        let maybe_change_tip_receiver_tx = if tip_payment_config.tip_receiver != FUNNEL_CONFIG
-            || configured_funnel_receiver != my_funnel_receiver
-            || tip_payment_config.block_builder != block_builder_fee_info.block_builder
-            || tip_payment_config.block_builder_commission_pct
-                != block_builder_fee_info.block_builder_commission
-        {
+        let requires_updating = match self.funnel {
+            Some(funnel) => {
+                let configured_funnel_receiver = Self::get_funnel_account(bank, funnel)?.receiver;
+                tip_payment_config.tip_receiver != FUNNEL_CONFIG
+                    || configured_funnel_receiver != my_tip_receiver
+                    || tip_payment_config.block_builder != block_builder_fee_info.block_builder
+                    || tip_payment_config.block_builder_commission_pct
+                        != block_builder_fee_info.block_builder_commission
+            }
+            None => {
+                tip_payment_config.tip_receiver != my_tip_receiver
+                    || tip_payment_config.block_builder != block_builder_fee_info.block_builder
+                    || tip_payment_config.block_builder_commission_pct
+                        != block_builder_fee_info.block_builder_commission
+            }
+        };
+
+        let maybe_change_tip_receiver_tx = if requires_updating {
             debug!("change_tip_receiver=true");
             Some(self.change_tip_receiver_and_block_builder_tx(
-                &my_funnel_receiver,
+                &my_tip_receiver,
                 bank,
                 keypair,
                 &block_builder_fee_info.block_builder,

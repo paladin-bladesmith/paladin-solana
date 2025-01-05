@@ -87,6 +87,12 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .help(SKIP_SEED_PHRASE_VALIDATION_ARG.help),
         )
         .arg(
+        	Arg::with_name("funnel")
+         		.long("funnel")
+           		.help("funnel. Defaults to None")
+             	.takes_value(true)
+        )
+        .arg(
         	Arg::with_name("p3_socket")
          		.long("p3-socket")
            		.help("p3 socket. Defaults to 0.0.0.0:4818")
