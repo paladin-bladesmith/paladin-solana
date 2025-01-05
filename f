@@ -9,7 +9,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_VERSION="${RUST_VERSION:-1.78}"
 
 GIT_SHA="$(git rev-parse --short HEAD)"
-GIT_TAG=
 
 echo "Git hash: $GIT_SHA"
 
