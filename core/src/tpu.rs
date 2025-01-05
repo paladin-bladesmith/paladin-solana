@@ -13,6 +13,7 @@ use {
         },
         fetch_stage::FetchStage,
         p3::P3,
+        p3_quic::P3Quic,
         paladin_bundle_stage::PaladinBundleStage,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
@@ -97,6 +98,7 @@ pub struct Tpu {
     jito_bundle_stage: BundleStage,
     paladin_bundle_stage: std::thread::JoinHandle<()>,
     p3: std::thread::JoinHandle<()>,
+    p3_quic: std::thread::JoinHandle<()>,
 }
 
 impl Tpu {
@@ -143,7 +145,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
-        p3_socket: SocketAddr,
+        (p3_socket, p3_quic_socket): (SocketAddr, SocketAddr),
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -268,11 +270,13 @@ impl Tpu {
 
         // Launch paladin threads.
         let (paladin_sender, paladin_receiver) = unbounded();
-        let p3 = P3::spawn(
+        let p3 = P3::spawn(exit.clone(), paladin_sender.clone(), p3_socket);
+        let (p3_quic, p3_quic_key_updater) = P3Quic::spawn(
             exit.clone(),
             paladin_sender,
-            p3_socket,
+            p3_quic_socket,
             poh_recorder.clone(),
+            keypair,
         );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();
@@ -414,8 +418,9 @@ impl Tpu {
                 jito_bundle_stage,
                 paladin_bundle_stage,
                 p3,
+                p3_quic,
             },
-            vec![key_updater, forwards_key_updater],
+            vec![key_updater, forwards_key_updater, p3_quic_key_updater],
         )
     }
 
@@ -435,6 +440,7 @@ impl Tpu {
             self.fetch_stage_manager.join(),
             self.paladin_bundle_stage.join(),
             self.p3.join(),
+            self.p3_quic.join(),
         ];
         let broadcast_result = self.broadcast_stage.join();
         for result in results {

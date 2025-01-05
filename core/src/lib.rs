@@ -28,6 +28,7 @@ pub mod immutable_deserialized_bundle;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
 pub mod p3;
+pub mod p3_quic;
 pub mod packet_bundle;
 pub mod paladin_bundle_stage;
 pub mod poh_timing_report_service;
