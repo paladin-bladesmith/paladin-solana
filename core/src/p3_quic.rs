@@ -13,7 +13,9 @@ use {
         signature::{Keypair, Signature},
     },
     solana_streamer::{
-        nonblocking::quic::DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+        nonblocking::quic::{
+            ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+        },
         quic::{EndpointKeyUpdater, SpawnServerResult},
         streamer::StakedNodes,
     },
@@ -23,7 +25,7 @@ use {
         net::{SocketAddr, UdpSocket},
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         time::{Duration, Instant},
     },
@@ -49,10 +51,11 @@ pub(crate) struct P3Quic {
 
     staked_nodes: Arc<RwLock<StakedNodes>>,
     staked_nodes_last_update: Instant,
+    poh_recorder: Arc<RwLock<PohRecorder>>,
+    staked_connection_table: Arc<Mutex<ConnectionTable>>,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
-    poh_recorder: Arc<RwLock<PohRecorder>>,
 }
 
 impl P3Quic {
@@ -72,6 +75,10 @@ impl P3Quic {
 
         // TODO: Would be ideal to reduce the number of threads spawned by tokio
         // in streamer (i.e. make it an argument).
+
+        // Create the connection table here as we want to share
+        let staked_connection_table: Arc<Mutex<ConnectionTable>> =
+            Arc::new(Mutex::new(ConnectionTable::new()));
 
         // Spawn the P3 QUIC server.
         let (quic_tx, quic_rx) = crossbeam_channel::unbounded();
@@ -109,10 +116,11 @@ impl P3Quic {
 
             staked_nodes,
             staked_nodes_last_update: Instant::now(),
+            poh_recorder: poh_recorder.clone(),
+            staked_connection_table,
 
             metrics: P3Metrics::default(),
             metrics_creation: Instant::now(),
-            poh_recorder: poh_recorder.clone(),
         };
 
         (
@@ -227,17 +235,38 @@ impl P3Quic {
         };
 
         // Setup a new staked nodes map.
-        let stakes = pool
+        let stakes: HashMap<_, _> = pool
             .entries
             .iter()
             .take_while(|entry| entry.lockup != Pubkey::default())
             .clone()
+            .filter(|entry| entry.metadata != [0; 32])
             .map(|entry| (Pubkey::new_from_array(entry.metadata), entry.amount))
             .collect();
+        let stakes = Arc::new(stakes);
 
         // Swap the old for the new.
         let mut staked_nodes = self.staked_nodes.write().unwrap();
-        *staked_nodes = StakedNodes::new(Arc::new(stakes), HashMap::default());
+        *staked_nodes = StakedNodes::new(stakes.clone(), HashMap::default());
+
+        // Purge all connections where their stake no longer matches.
+        let connection_table_l = self.staked_connection_table.lock().unwrap();
+        for connection in connection_table_l.table().values().flatten() {
+            match connection.peer_type {
+                ConnectionPeerType::Staked(stake) => {
+                    if staked_nodes
+                        .get_node_stake(&connection.identity)
+                        .map_or(true, |connection_stake| connection_stake != stake)
+                    {
+                        connection.exit.store(true, Ordering::Relaxed);
+                    }
+                }
+                ConnectionPeerType::Unstaked => {
+                    eprintln!("BUG: Unstaked connection in staked connection table");
+                    connection.exit.store(true, Ordering::Relaxed);
+                }
+            }
+        }
     }
 
     fn try_deserialize_lockup_pool(data: &[u8]) -> Option<&LockupPool> {

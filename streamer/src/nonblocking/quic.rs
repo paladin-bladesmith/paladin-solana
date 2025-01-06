@@ -436,6 +436,7 @@ fn handle_and_cache_new_connection(
                 remote_addr.port(),
                 Some(connection.clone()),
                 params.peer_type,
+                params.remote_pubkey.unwrap_or_default(),
                 timing::timestamp(),
                 params.max_connections_per_peer,
             )
@@ -1112,9 +1113,10 @@ async fn handle_chunk(
 }
 
 #[derive(Debug)]
-struct ConnectionEntry {
-    exit: Arc<AtomicBool>,
-    peer_type: ConnectionPeerType,
+pub struct ConnectionEntry {
+    pub exit: Arc<AtomicBool>,
+    pub peer_type: ConnectionPeerType,
+    pub identity: Pubkey,
     last_update: Arc<AtomicU64>,
     port: u16,
     connection: Option<Connection>,
@@ -1125,6 +1127,7 @@ impl ConnectionEntry {
     fn new(
         exit: Arc<AtomicBool>,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: Arc<AtomicU64>,
         port: u16,
         connection: Option<Connection>,
@@ -1133,6 +1136,7 @@ impl ConnectionEntry {
         Self {
             exit,
             peer_type,
+            identity,
             last_update,
             port,
             connection,
@@ -1165,7 +1169,7 @@ impl Drop for ConnectionEntry {
 }
 
 #[derive(Copy, Clone, Eq, Hash, PartialEq)]
-enum ConnectionTableKey {
+pub enum ConnectionTableKey {
     IP(IpAddr),
     Pubkey(Pubkey),
 }
@@ -1179,7 +1183,7 @@ impl ConnectionTableKey {
 }
 
 // Map of IP to list of connection entries
-struct ConnectionTable {
+pub struct ConnectionTable {
     table: IndexMap<ConnectionTableKey, Vec<ConnectionEntry>>,
     total_size: usize,
 }
@@ -1187,11 +1191,15 @@ struct ConnectionTable {
 // Prune the connection which has the oldest update
 // Return number pruned
 impl ConnectionTable {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             table: IndexMap::default(),
             total_size: 0,
         }
+    }
+
+    pub fn table(&self) -> &IndexMap<ConnectionTableKey, Vec<ConnectionEntry>> {
+        &self.table
     }
 
     fn prune_oldest(&mut self, max_size: usize) -> usize {
@@ -1244,6 +1252,7 @@ impl ConnectionTable {
         port: u16,
         connection: Option<Connection>,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: u64,
         max_connections_per_peer: usize,
     ) -> Option<(
@@ -1267,6 +1276,7 @@ impl ConnectionTable {
             connection_entry.push(ConnectionEntry::new(
                 exit.clone(),
                 peer_type,
+                identity,
                 last_update.clone(),
                 port,
                 connection,
@@ -1929,6 +1939,7 @@ pub mod test {
                     socket.port(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -1941,6 +1952,7 @@ pub mod test {
                 sockets[0].port(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 5,
                 max_connections_per_peer,
             )
@@ -1980,6 +1992,7 @@ pub mod test {
                     0,
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2011,6 +2024,7 @@ pub mod test {
                     0,
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2025,6 +2039,7 @@ pub mod test {
                 0,
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 10,
                 max_connections_per_peer,
             )
@@ -2039,6 +2054,7 @@ pub mod test {
                 0,
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 10,
                 max_connections_per_peer,
             )
@@ -2073,6 +2089,7 @@ pub mod test {
                     socket.port(),
                     None,
                     ConnectionPeerType::Staked((i + 1) as u64),
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2110,6 +2127,7 @@ pub mod test {
                     socket.port(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     (i * 2) as u64,
                     max_connections_per_peer,
                 )
@@ -2121,6 +2139,7 @@ pub mod test {
                     socket.port(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     (i * 2 + 1) as u64,
                     max_connections_per_peer,
                 )
@@ -2135,6 +2154,7 @@ pub mod test {
                 single_connection_addr.port(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 (num_ips * 2) as u64,
                 max_connections_per_peer,
             )
