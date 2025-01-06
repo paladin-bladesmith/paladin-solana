@@ -258,6 +258,10 @@ impl P3Quic {
                         .get_node_stake(&connection.identity)
                         .map_or(true, |connection_stake| connection_stake != stake)
                     {
+                        info!(
+                            "Purging connection due to stake; identity={}",
+                            connection.identity
+                        );
                         connection.exit.store(true, Ordering::Relaxed);
                     }
                 }
