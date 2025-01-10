@@ -1,6 +1,6 @@
 use {
     crate::{packet_bundle::PacketBundle, tpu::MAX_QUIC_CONNECTIONS_PER_PEER},
-    crossbeam_channel::{RecvError, TrySendError},
+    crossbeam_channel::{RecvTimeoutError, TrySendError},
     paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
@@ -141,10 +141,11 @@ impl P3Quic {
         );
 
         while !self.exit.load(Ordering::Relaxed) {
-            // Block until we can receive packets.
-            let packets = match self.quic_rx.recv() {
-                Ok(packets) => packets,
-                Err(RecvError) => {
+            // Block up to 1s waiting for packets.
+            match self.quic_rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(packets) => self.on_packets(packets),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
                     if !self.exit.load(Ordering::Relaxed) {
                         error!("Quic channel closed unexpectedly");
                     }
@@ -160,14 +161,6 @@ impl P3Quic {
                 self.metrics.report(age.as_millis() as u64);
                 self.metrics = P3Metrics::default();
                 self.metrics_creation = now;
-            }
-
-            // Process the batch.
-            saturating_add_assign!(self.metrics.packets, packets.len() as u64);
-            for packet in &packets {
-                if self.on_packet(packet).is_err() {
-                    return;
-                }
             }
 
             // Check if we need to update staked nodes.
@@ -188,6 +181,16 @@ impl P3Quic {
         }
 
         self.quic_server.join().unwrap();
+    }
+
+    fn on_packets(&mut self, packets: PacketBatch) {
+        // Process the batch.
+        saturating_add_assign!(self.metrics.packets, packets.len() as u64);
+        for packet in &packets {
+            if self.on_packet(packet).is_err() {
+                return;
+            }
+        }
     }
 
     fn on_packet(&mut self, packet: &Packet) -> Result<(), ()> {
