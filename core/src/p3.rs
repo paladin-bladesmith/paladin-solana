@@ -60,6 +60,8 @@ impl P3 {
     }
 
     fn run(mut self) {
+        info!("Spawned P3");
+
         while !self.exit.load(Ordering::Relaxed) {
             // Try receive packets.
             let (tx, _) = match self.socket_recv() {

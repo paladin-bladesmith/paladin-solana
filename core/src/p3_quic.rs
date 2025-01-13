@@ -133,6 +133,8 @@ impl P3Quic {
     }
 
     fn run(mut self) {
+        info!("Spawned P3Quic");
+
         let start = Instant::now();
         self.update_staked_nodes();
         saturating_add_assign!(
