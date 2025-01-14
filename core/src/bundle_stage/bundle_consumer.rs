@@ -632,6 +632,7 @@ impl BundleConsumer {
         bank_start: &BankStart,
         fifo: bool,
         no_drop: bool,
+        include_reverted: bool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -685,16 +686,19 @@ impl BundleConsumer {
         );
         let (cu_used, lamports_paid) = economics.unwrap_or_default();
 
+        // TODO: If `include_failed == true` then skip this.
         if let Err(e) = bundle_execution_results.result() {
-            return ExecuteRecordCommitResult {
-                commit_transaction_details: vec![],
-                result: Err(e.clone().into()),
-                execution_metrics,
-                execute_and_commit_timings,
-                transaction_error_counter,
-                cu_used,
-                lamports_paid,
-            };
+            if !include_reverted {
+                return ExecuteRecordCommitResult {
+                    commit_transaction_details: vec![],
+                    result: Err(e.clone().into()),
+                    execution_metrics,
+                    execute_and_commit_timings,
+                    transaction_error_counter,
+                    cu_used,
+                    lamports_paid,
+                };
+            }
         }
 
         // NB: Must run before we start committing the transactions.
