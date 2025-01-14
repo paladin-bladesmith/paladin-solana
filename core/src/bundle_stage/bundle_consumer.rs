@@ -311,6 +311,7 @@ impl BundleConsumer {
             bundle_stage_leader_metrics,
             true,
             false,
+            false,
         )?;
 
         Ok(())
@@ -365,6 +366,7 @@ impl BundleConsumer {
                 bundle_stage_leader_metrics,
                 true,
                 true,
+                false,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -421,6 +423,7 @@ impl BundleConsumer {
                 bundle_stage_leader_metrics,
                 true,
                 true,
+                false,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -493,6 +496,7 @@ impl BundleConsumer {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         fifo: bool,
         no_drop: bool,
+        include_reverted: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -527,6 +531,7 @@ impl BundleConsumer {
             bank_start,
             fifo,
             no_drop,
+            include_reverted,
         ));
 
         bundle_stage_leader_metrics

@@ -422,8 +422,9 @@ impl PaladinBundleStage {
             tip_accounts,
             bank_start,
             bundle_stage_leader_metrics,
-            false,
-            false,
+            false, // fifo
+            false, // no_drop
+            true,  // include_reverted
         )?;
 
         Ok(())
