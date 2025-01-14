@@ -311,6 +311,7 @@ impl BundleConsumer {
             bundle_stage_leader_metrics,
             true,
             false,
+            false,
         )?;
 
         Ok(())
@@ -365,6 +366,7 @@ impl BundleConsumer {
                 bundle_stage_leader_metrics,
                 true,
                 true,
+                false,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -421,6 +423,7 @@ impl BundleConsumer {
                 bundle_stage_leader_metrics,
                 true,
                 true,
+                false,
             )
             .map_err(|e| {
                 bundle_stage_leader_metrics
@@ -493,6 +496,7 @@ impl BundleConsumer {
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         fifo: bool,
         no_drop: bool,
+        include_reverted: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
             "bundle: {} reserving blockspace for {} transactions",
@@ -527,6 +531,7 @@ impl BundleConsumer {
             bank_start,
             fifo,
             no_drop,
+            include_reverted,
         ));
 
         bundle_stage_leader_metrics
@@ -632,6 +637,7 @@ impl BundleConsumer {
         bank_start: &BankStart,
         fifo: bool,
         no_drop: bool,
+        include_reverted: bool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
 
@@ -686,15 +692,17 @@ impl BundleConsumer {
         let (cu_used, lamports_paid) = economics.unwrap_or_default();
 
         if let Err(e) = bundle_execution_results.result() {
-            return ExecuteRecordCommitResult {
-                commit_transaction_details: vec![],
-                result: Err(e.clone().into()),
-                execution_metrics,
-                execute_and_commit_timings,
-                transaction_error_counter,
-                cu_used,
-                lamports_paid,
-            };
+            if !include_reverted {
+                return ExecuteRecordCommitResult {
+                    commit_transaction_details: vec![],
+                    result: Err(e.clone().into()),
+                    execution_metrics,
+                    execute_and_commit_timings,
+                    transaction_error_counter,
+                    cu_used,
+                    lamports_paid,
+                };
+            }
         }
 
         // NB: Must run before we start committing the transactions.

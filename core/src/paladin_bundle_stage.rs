@@ -188,44 +188,15 @@ impl PaladinBundleStage {
         bundles: Vec<PacketBundle>,
     ) {
         // Drain the socket channel.
-        let mut arbs = None;
-        let mut new_bundles = Vec::default();
-        for bundles in
-            std::iter::once(bundles).chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
-        {
-            // TODO: Could this panic on empty bundles? If so, is that possible?
-            // TODO: This will panic on bundle_id = "", is this possible/should be handled?
-            match &bundles.first().unwrap().bundle_id.chars().next().unwrap() {
-                'R' => new_bundles.extend(bundles),
-                // TODO: Remove concept of arb bundles.
-                'A' => {
-                    assert!(bundles
-                        .iter()
-                        .all(|bundle| bundle.bundle_id.starts_with('A')));
-                    arbs = Some(bundles);
-                }
-                prefix => error!("Unexpected bundle ID prefix; prefix={prefix}"),
-            }
-        }
+        let new_bundles: Vec<_> = [bundles]
+            .into_iter()
+            .chain(std::iter::from_fn(|| self.paladin_rx.try_recv().ok()))
+            .flatten()
+            .collect();
 
-        // TODO: Remove concept of arb bundles.
-
-        // Drop any arb bundles if we have a fresher set.
-        if arbs.is_some() {
-            self.bundles.retain(|bundle| {
-                let drop = bundle.bundle_id().starts_with('A');
-                if drop {
-                    debug!("Dropping stale arb; bundle_id={}", bundle.bundle_id());
-                    assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
-                }
-
-                !drop
-            });
-        }
-
-        // Take all necessary locks, processing the arbs first.
+        // Take all necessary locks.
         let bank = self.poh_recorder.read().unwrap().latest_bank();
-        for mut bundle in arbs.into_iter().flatten().chain(new_bundles) {
+        for mut bundle in new_bundles {
             // NB: We filter duplicate bundles to ensure we always have the same
             // number of locked and sanitized bundles.
             if locked_bundles.contains_key(&bundle.bundle_id) {
@@ -451,9 +422,9 @@ impl PaladinBundleStage {
             tip_accounts,
             bank_start,
             bundle_stage_leader_metrics,
-            false,
-            // TODO: Should we try and price the bot arb correctly so we can set no_drop = false?
-            true,
+            false, // fifo
+            false, // no_drop
+            true,  // include_reverted
         )?;
 
         Ok(())
