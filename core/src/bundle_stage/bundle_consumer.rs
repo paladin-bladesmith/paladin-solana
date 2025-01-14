@@ -691,7 +691,6 @@ impl BundleConsumer {
         );
         let (cu_used, lamports_paid) = economics.unwrap_or_default();
 
-        // TODO: If `include_failed == true` then skip this.
         if let Err(e) = bundle_execution_results.result() {
             if !include_reverted {
                 return ExecuteRecordCommitResult {
