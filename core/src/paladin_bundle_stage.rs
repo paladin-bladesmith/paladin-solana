@@ -9,6 +9,7 @@ use {
             bundle_consumer::BundleConsumer,
             bundle_reserved_space_manager::BundleReservedSpaceManager,
             bundle_stage_leader_metrics::BundleStageLeaderMetrics, committer::Committer,
+            front_run_identifier::AMM_PROGRAMS,
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
@@ -38,14 +39,14 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc, RwLock,
         },
-        time::Duration,
+        time::{Duration, Instant},
     },
 };
 
 const PALADIN_BUNDLE_STAGE_ID: u32 = 2000;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
-// TODO: Make this 1?
-const MAX_PACKETS_PER_BUNDLE: usize = 5;
+const MAX_PACKETS_PER_BUNDLE: usize = 1;
+const BATCH_INTERVAL: Duration = Duration::from_millis(50);
 
 pub(crate) struct PaladinBundleStage {
     exit: Arc<AtomicBool>,
@@ -55,7 +56,17 @@ pub(crate) struct PaladinBundleStage {
     decision_maker: DecisionMaker,
     poh_recorder: Arc<RwLock<PohRecorder>>,
 
+    // TODO:
+    //
+    // - Will need to add VecDequeue<Vec<ImmutableDeserializedBundle>> for the
+    //   pending batches.
+    // - Whether a transaction gets batched or immediately processed will depend
+    //   on whether it uses any "DeFi" program.
+    // - Batching is disabled in the last 20% of the block's ticks (to avoid
+    //   missing a chance for the validator to profit off the TX).
     bundles: Vec<ImmutableDeserializedBundle>,
+    batches: [Vec<(ImmutableDeserializedBundle, SanitizedBundle)>; 2],
+    batches_last: Instant,
     bundle_stage_leader_metrics: BundleStageLeaderMetrics,
     tip_manager: TipManager,
     bundle_account_locker: BundleAccountLocker,
@@ -116,6 +127,8 @@ impl PaladinBundleStage {
                     poh_recorder,
 
                     bundles: Vec::default(),
+                    batches: [vec![], vec![]],
+                    batches_last: Instant::now(),
                     bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
                         PALADIN_BUNDLE_STAGE_ID,
                     ),
@@ -153,6 +166,33 @@ impl PaladinBundleStage {
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => break,
             };
+
+            // Check if we should drain a batch.
+            if self.batches_last.elapsed() > BATCH_INTERVAL {
+                let bank = self.poh_recorder.read().unwrap().latest_bank();
+                for (immutable, sanitized) in self.batches[0].drain(..) {
+                    // NB: We filter duplicate bundles to ensure we always have
+                    // the same number of locked and sanitized bundles.
+                    if locked_bundles.contains_key(&sanitized.bundle_id) {
+                        // TODO: Metrics.
+                        continue;
+                    }
+
+                    Self::lock_bundle(
+                        &bank,
+                        &bundle_account_locker,
+                        &mut locked_bundles,
+                        &mut self.bundles,
+                        immutable,
+                        sanitized,
+                    );
+                }
+                self.batches_last = Instant::now();
+
+                // Move the non-empty batch to the front.
+                let [first, second] = self.batches.each_mut();
+                std::mem::swap(first, second);
+            }
 
             let decision = self.decision_maker.make_consume_or_forward_decision();
             let (bundle_action, banking_action) = self
@@ -197,6 +237,10 @@ impl PaladinBundleStage {
         // Take all necessary locks.
         let bank = self.poh_recorder.read().unwrap().latest_bank();
         for mut bundle in new_bundles {
+            if bundle.batch.len() != 1 {
+                eprintln!("ERR: Invalid P3 bundle; bundle_id={}", bundle.bundle_id);
+            }
+
             // NB: We filter duplicate bundles to ensure we always have the same
             // number of locked and sanitized bundles.
             if locked_bundles.contains_key(&bundle.bundle_id) {
@@ -234,31 +278,62 @@ impl PaladinBundleStage {
                 }
             };
 
-            // Lock.
-            match (LockedSanitizedBundleTryBuilder {
-                sanitized,
-                locked_builder: |sanitized| {
-                    bundle_account_locker.prepare_locked_bundle(sanitized, &bank)
-                },
-            }
-            .try_build())
+            // If this transaction touches a DeFi program, it may carry MEV and
+            // thus we want to delay + batch it to ensure a more competitive
+            // auction process.
+            if sanitized.transactions[0]
+                .message()
+                .account_keys()
+                .iter()
+                .any(|key| AMM_PROGRAMS.contains(key))
             {
-                Ok(combined) => {
-                    debug!("Locked bundle built; bundle_id={}", immutable.bundle_id());
-
-                    // NB: Silence locked unused warning.
-                    let _ = combined.borrow_locked();
-
-                    self.bundles.push(immutable);
-                    let prev = locked_bundles
-                        .insert(combined.borrow_sanitized().bundle_id.clone(), combined);
-                    assert!(prev.is_none());
-                }
-                Err(err) => warn!(
-                    "Failed to lock; bundle_id={}; err={err}",
-                    immutable.bundle_id()
-                ),
+                self.batches[1].push((immutable, sanitized));
+                continue;
             }
+
+            // Lock.
+            Self::lock_bundle(
+                &bank,
+                &bundle_account_locker,
+                locked_bundles,
+                &mut self.bundles,
+                immutable,
+                sanitized,
+            );
+        }
+    }
+
+    fn lock_bundle<'lock>(
+        bank: &Arc<Bank>,
+        bundle_account_locker: &'lock BundleAccountLocker,
+        locked_bundles: &mut HashMap<String, LockedSanitizedBundle<'lock>>,
+        bundles: &mut Vec<ImmutableDeserializedBundle>,
+        immutable: ImmutableDeserializedBundle,
+        sanitized: SanitizedBundle,
+    ) {
+        match (LockedSanitizedBundleTryBuilder {
+            sanitized,
+            locked_builder: |sanitized| {
+                bundle_account_locker.prepare_locked_bundle(sanitized, bank)
+            },
+        }
+        .try_build())
+        {
+            Ok(combined) => {
+                debug!("Locked bundle built; bundle_id={}", immutable.bundle_id());
+
+                // NB: Silence locked unused warning.
+                let _ = combined.borrow_locked();
+
+                bundles.push(immutable);
+                let prev =
+                    locked_bundles.insert(combined.borrow_sanitized().bundle_id.clone(), combined);
+                assert!(prev.is_none());
+            }
+            Err(err) => warn!(
+                "Failed to lock; bundle_id={}; err={err}",
+                immutable.bundle_id()
+            ),
         }
     }
 
