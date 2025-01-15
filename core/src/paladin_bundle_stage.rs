@@ -3,6 +3,7 @@ use {
         banking_stage::{
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
+            transaction_scheduler::scheduler_controller::SchedulerController,
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
         },
         bundle_stage::{
@@ -22,6 +23,7 @@ use {
         bundle_account_locker::{BundleAccountLocker, LockedBundle},
         BundleExecutionError,
     },
+    solana_compute_budget::compute_budget_processor::process_compute_budget_instructions,
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::blockstore_processor::TransactionStatusSender,
@@ -34,7 +36,7 @@ use {
     solana_sdk::{bundle::SanitizedBundle, pubkey::Pubkey},
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
-        collections::HashSet,
+        collections::{BTreeMap, HashSet},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, RwLock,
@@ -64,7 +66,7 @@ pub(crate) struct PaladinBundleStage {
     //   on whether it uses any "DeFi" program.
     // - Batching is disabled in the last 20% of the block's ticks (to avoid
     //   missing a chance for the validator to profit off the TX).
-    bundles: Vec<ImmutableDeserializedBundle>,
+    bundles: BTreeMap<u64, ImmutableDeserializedBundle>,
     batches: [Vec<(ImmutableDeserializedBundle, SanitizedBundle)>; 2],
     batches_last: Instant,
     bundle_stage_leader_metrics: BundleStageLeaderMetrics,
@@ -126,7 +128,7 @@ impl PaladinBundleStage {
                     decision_maker,
                     poh_recorder,
 
-                    bundles: Vec::default(),
+                    bundles: BTreeMap::default(),
                     batches: [vec![], vec![]],
                     batches_last: Instant::now(),
                     bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
@@ -203,7 +205,7 @@ impl PaladinBundleStage {
 
             match decision {
                 BufferedPacketsDecision::Consume(bank_start) => {
-                    for bundle in self.consume_buffered_bundles(&bank_start) {
+                    for bundle in self.consume_buffered_bundles(&bank_start).into_keys() {
                         debug!("Included or dropped; bundle_id={bundle}");
 
                         assert!(locked_bundles.remove(&bundle).is_some());
@@ -212,7 +214,7 @@ impl PaladinBundleStage {
                     assert_eq!(self.bundles.len(), locked_bundles.len());
                 }
                 BufferedPacketsDecision::Forward => {
-                    for bundle in self.bundles.drain(..) {
+                    for bundle in std::mem::take(&mut self.bundles).into_values() {
                         assert!(locked_bundles.remove(bundle.bundle_id()).is_some());
                     }
                 }
@@ -263,8 +265,7 @@ impl PaladinBundleStage {
 
             let sanitized = match immutable.build_sanitized_bundle(
                 &bank,
-                // TODO: This should use the blacklist to filter?
-                &HashSet::default(),
+                &self.blacklisted_accounts,
                 &mut TransactionErrorMetrics::default(),
             ) {
                 Ok(sanitized_bundle) => sanitized_bundle,
@@ -307,10 +308,12 @@ impl PaladinBundleStage {
         bank: &Arc<Bank>,
         bundle_account_locker: &'lock BundleAccountLocker,
         locked_bundles: &mut HashMap<String, LockedSanitizedBundle<'lock>>,
-        bundles: &mut Vec<ImmutableDeserializedBundle>,
+        bundles: &mut BTreeMap<u64, ImmutableDeserializedBundle>,
         immutable: ImmutableDeserializedBundle,
         sanitized: SanitizedBundle,
     ) {
+        let priority = Self::compute_priority(bank, &sanitized);
+
         match (LockedSanitizedBundleTryBuilder {
             sanitized,
             locked_builder: |sanitized| {
@@ -325,7 +328,7 @@ impl PaladinBundleStage {
                 // NB: Silence locked unused warning.
                 let _ = combined.borrow_locked();
 
-                bundles.push(immutable);
+                bundles.insert(priority, immutable);
                 let prev =
                     locked_bundles.insert(combined.borrow_sanitized().bundle_id.clone(), combined);
                 assert!(prev.is_none());
@@ -339,13 +342,14 @@ impl PaladinBundleStage {
 
     /// Returns the bundles that were processed/dropped.
     #[must_use]
-    fn consume_buffered_bundles(&mut self, bank_start: &BankStart) -> HashSet<String> {
+    fn consume_buffered_bundles(&mut self, bank_start: &BankStart) -> HashMap<String, u64> {
         // Drain our latest bundles.
-        let bundles: Vec<_> = self.bundles.drain(..).collect();
-        let mut bundles_start: HashSet<_> = bundles
+        let mut bundles_start: HashMap<_, _> = self
+            .bundles
             .iter()
-            .map(|bundle| bundle.bundle_id().to_string())
+            .map(|(priority, bundle)| (bundle.bundle_id().to_string(), *priority))
             .collect();
+        let bundles: Vec<_> = std::mem::take(&mut self.bundles).into_values().collect();
         let mut unprocessed_transaction_storage =
             UnprocessedTransactionStorage::new_bundle_storage();
         unprocessed_transaction_storage.insert_bundles(bundles);
@@ -384,8 +388,8 @@ impl PaladinBundleStage {
             .drain(..)
             .chain(bundle_storage.cost_model_buffered_bundle_storage.drain(..))
         {
-            assert!(bundles_start.remove(unprocessed.bundle_id()));
-            self.bundles.push(unprocessed);
+            let priority = bundles_start.remove(unprocessed.bundle_id()).unwrap();
+            self.bundles.insert(priority, unprocessed);
         }
 
         // `bundles_start` now contains the bundles that **were** processed. We must return this set
@@ -503,6 +507,24 @@ impl PaladinBundleStage {
         )?;
 
         Ok(())
+    }
+
+    /// Computes the priority of a P3 transaction.
+    ///
+    /// # Panics
+    ///
+    /// If the caller provides a bundle len != 1.
+    fn compute_priority(bank: &Bank, sanitized: &SanitizedBundle) -> u64 {
+        assert_eq!(sanitized.transactions.len(), 1);
+        let tx = &sanitized.transactions[0];
+
+        let Ok(compute_budget_limits) =
+            process_compute_budget_instructions(tx.message().program_instructions_iter())
+        else {
+            return 0;
+        };
+
+        SchedulerController::calculate_priority_and_cost(tx, &compute_budget_limits.into(), bank).0
     }
 }
 
