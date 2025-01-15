@@ -49,6 +49,7 @@ const PALADIN_BUNDLE_STAGE_ID: u32 = 2000;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const MAX_PACKETS_PER_BUNDLE: usize = 1;
 const BATCH_INTERVAL: Duration = Duration::from_millis(50);
+const MIN_MICRO_LAMPORTS: u64 = 10u64.pow(6) * 10; // 10 lamports per CU
 
 pub(crate) struct PaladinBundleStage {
     exit: Arc<AtomicBool>,
@@ -502,8 +503,8 @@ impl PaladinBundleStage {
             bank_start,
             bundle_stage_leader_metrics,
             false, // fifo
-            false, // no_drop
-            true,  // include_reverted
+            Some(MIN_MICRO_LAMPORTS),
+            true, // include_reverted
         )?;
 
         Ok(())

@@ -219,6 +219,7 @@ impl BundleConsumer {
                         sanitized_bundle,
                         bank_start,
                         bundle_stage_leader_metrics,
+                        Some(10u64.pow(6) / 10), // 0.1 lamports per CU
                     ));
                     bundle_stage_leader_metrics
                         .leader_slot_metrics_tracker()
@@ -260,6 +261,7 @@ impl BundleConsumer {
         sanitized_bundle: &SanitizedBundle,
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        min_micro_lamports: Option<u64>,
     ) -> Result<(), BundleExecutionError> {
         if !Bank::should_bank_still_be_processing_txs(
             &bank_start.bank_creation_time,
@@ -310,7 +312,7 @@ impl BundleConsumer {
             bank_start,
             bundle_stage_leader_metrics,
             true,
-            false,
+            min_micro_lamports,
             false,
         )?;
 
@@ -365,7 +367,7 @@ impl BundleConsumer {
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
-                true,
+                None,
                 false,
             )
             .map_err(|e| {
@@ -422,7 +424,7 @@ impl BundleConsumer {
                 bank_start,
                 bundle_stage_leader_metrics,
                 true,
-                true,
+                None,
                 false,
             )
             .map_err(|e| {
@@ -495,7 +497,7 @@ impl BundleConsumer {
         bank_start: &BankStart,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         fifo: bool,
-        no_drop: bool,
+        min_micro_lamports: Option<u64>,
         include_reverted: bool,
     ) -> BundleExecutionResult<()> {
         debug!(
@@ -530,7 +532,7 @@ impl BundleConsumer {
             tip_accounts,
             bank_start,
             fifo,
-            no_drop,
+            min_micro_lamports,
             include_reverted,
         ));
 
@@ -636,7 +638,7 @@ impl BundleConsumer {
         tip_accounts: &HashSet<Pubkey>,
         bank_start: &BankStart,
         fifo: bool,
-        no_drop: bool,
+        min_micro_lamports: Option<u64>,
         include_reverted: bool,
     ) -> ExecuteRecordCommitResult {
         let transaction_status_sender_enabled = committer.transaction_status_sender_enabled();
@@ -731,16 +733,18 @@ impl BundleConsumer {
         // Compute the bundles total CUs & lamports paid.
         match economics {
             Some((cu_used, lamports_paid)) => {
-                if !no_drop && lamports_paid.saturating_mul(10) / cu_used < 2 {
-                    return ExecuteRecordCommitResult {
-                        commit_transaction_details: vec![],
-                        result: Err(BundleExecutionError::TipTooLow),
-                        execution_metrics,
-                        execute_and_commit_timings,
-                        transaction_error_counter,
-                        cu_used,
-                        lamports_paid,
-                    };
+                if let Some(min_micro_lamports) = min_micro_lamports {
+                    if lamports_paid * 10u64.pow(6) / cu_used < min_micro_lamports {
+                        return ExecuteRecordCommitResult {
+                            commit_transaction_details: vec![],
+                            result: Err(BundleExecutionError::TipTooLow),
+                            execution_metrics,
+                            execute_and_commit_timings,
+                            transaction_error_counter,
+                            cu_used,
+                            lamports_paid,
+                        };
+                    }
                 }
             }
             None => eprintln!("Failed to compute CU & lamports; this shouldn't be possible"),
