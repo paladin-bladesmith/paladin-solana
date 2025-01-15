@@ -12,7 +12,7 @@ use {
     std::cell::RefCell,
 };
 
-const AMM_PROGRAMS: &[Pubkey] = &[
+pub(crate) const AMM_PROGRAMS: &[Pubkey] = &[
     solana_sdk::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"), // RaydiumV4
     solana_sdk::pubkey!("9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"), // Serum DEX V3
     solana_sdk::pubkey!("Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB"), // Meteora CPMM
