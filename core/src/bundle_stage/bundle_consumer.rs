@@ -692,6 +692,10 @@ impl BundleConsumer {
             &bundle_execution_results,
         );
         let (cu_used, lamports_paid) = economics.unwrap_or_default();
+        println!(
+            "{}: {economics:?}",
+            locked_bundle.sanitized_bundle().bundle_id
+        );
 
         if let Err(e) = bundle_execution_results.result() {
             if !include_reverted {
