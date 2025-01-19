@@ -60,14 +60,6 @@ pub(crate) struct PaladinBundleStage {
     decision_maker: DecisionMaker,
     poh_recorder: Arc<RwLock<PohRecorder>>,
 
-    // TODO:
-    //
-    // - Will need to add VecDequeue<Vec<ImmutableDeserializedBundle>> for the
-    //   pending batches.
-    // - Whether a transaction gets batched or immediately processed will depend
-    //   on whether it uses any "DeFi" program.
-    // - Batching is disabled in the last 20% of the block's ticks (to avoid
-    //   missing a chance for the validator to profit off the TX).
     bundles: BTreeMap<BundlePriorityId, ImmutableDeserializedBundle>,
     bundle_id: BundleIdGenerator,
     batches: [Vec<(ImmutableDeserializedBundle, SanitizedBundle)>; 2],
@@ -363,6 +355,7 @@ impl PaladinBundleStage {
         let mut bundles_start: HashMap<_, _> = self
             .bundles
             .iter()
+            .rev()
             .map(|(priority, bundle)| (bundle.bundle_id().to_string(), *priority))
             .collect();
         let bundles: Vec<_> = std::mem::take(&mut self.bundles).into_values().collect();
@@ -589,7 +582,7 @@ impl BundleIdGenerator {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use {super::*, std::collections::BTreeSet};
 
     #[test]
     fn transaction_priority_id_ordering() {
@@ -607,6 +600,7 @@ mod tests {
         };
         let low_prio_low_id = BundlePriorityId { priority: 0, id: 0 };
 
+        // Check sort order in array.
         let mut sorted = [
             low_prio_low_id,
             low_prio_high_id,
@@ -621,6 +615,20 @@ mod tests {
                 low_prio_low_id,
                 high_prio_high_id,
                 high_prio_low_id,
+            ]
+        );
+
+        // Check BTreeMap iteration order.
+        assert_eq!(
+            BTreeSet::from_iter(sorted)
+                .into_iter()
+                .rev()
+                .collect::<Vec<_>>(),
+            vec![
+                high_prio_low_id,
+                high_prio_high_id,
+                low_prio_low_id,
+                low_prio_high_id,
             ]
         );
     }
