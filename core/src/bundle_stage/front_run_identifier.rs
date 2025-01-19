@@ -160,11 +160,7 @@ impl<'a> BundleResult<'a> for LoadAndExecuteBundleOutput<'a> {
             .filter_map(|(sanitized, loaded, exec)| {
                 match (loaded, exec.was_executed_successfully()) {
                     (Ok(loaded), true) => Some((sanitized, loaded)),
-                    (Err(_), _) => {
-                        eprintln!("BUG: Unexpected load error");
-                        None
-                    }
-                    (Ok(_), false) => None,
+                    (Err(_), _) | (Ok(_), false) => None,
                 }
             })
         })

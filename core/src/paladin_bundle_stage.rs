@@ -36,6 +36,7 @@ use {
     solana_sdk::{bundle::SanitizedBundle, pubkey::Pubkey},
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
+        cmp::Reverse,
         collections::{BTreeMap, HashSet},
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -67,10 +68,11 @@ pub(crate) struct PaladinBundleStage {
     //   on whether it uses any "DeFi" program.
     // - Batching is disabled in the last 20% of the block's ticks (to avoid
     //   missing a chance for the validator to profit off the TX).
-    bundles: BTreeMap<u64, ImmutableDeserializedBundle>,
+    bundles: BTreeMap<BundlePriorityId, ImmutableDeserializedBundle>,
+    bundle_id: BundleIdGenerator,
     batches: [Vec<(ImmutableDeserializedBundle, SanitizedBundle)>; 2],
     batches_last: Instant,
-    bundle_stage_leader_metrics: BundleStageLeaderMetrics,
+
     tip_manager: TipManager,
     bundle_account_locker: BundleAccountLocker,
     committer: Committer,
@@ -79,6 +81,8 @@ pub(crate) struct PaladinBundleStage {
     reserved_space: BundleReservedSpaceManager,
     log_messages_bytes_limit: Option<usize>,
     blacklisted_accounts: HashSet<Pubkey>,
+
+    bundle_stage_leader_metrics: BundleStageLeaderMetrics,
 }
 
 impl PaladinBundleStage {
@@ -130,11 +134,10 @@ impl PaladinBundleStage {
                     poh_recorder,
 
                     bundles: BTreeMap::default(),
+                    bundle_id: BundleIdGenerator::default(),
                     batches: [vec![], vec![]],
                     batches_last: Instant::now(),
-                    bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
-                        PALADIN_BUNDLE_STAGE_ID,
-                    ),
+
                     tip_manager,
                     bundle_account_locker,
                     committer,
@@ -144,6 +147,10 @@ impl PaladinBundleStage {
                     log_messages_bytes_limit,
                     // TODO: Add funnel here and in jito + banking threads once that is live.
                     blacklisted_accounts: HashSet::from_iter([jito_tip_payment::ID]),
+
+                    bundle_stage_leader_metrics: BundleStageLeaderMetrics::new(
+                        PALADIN_BUNDLE_STAGE_ID,
+                    ),
                 }
                 .run()
             })
@@ -188,6 +195,7 @@ impl PaladinBundleStage {
                         &mut self.bundles,
                         immutable,
                         sanitized,
+                        self.bundle_id.next(),
                     );
                 }
                 self.batches_last = Instant::now();
@@ -301,6 +309,7 @@ impl PaladinBundleStage {
                 &mut self.bundles,
                 immutable,
                 sanitized,
+                self.bundle_id.next(),
             );
         }
     }
@@ -309,9 +318,10 @@ impl PaladinBundleStage {
         bank: &Arc<Bank>,
         bundle_account_locker: &'lock BundleAccountLocker,
         locked_bundles: &mut HashMap<String, LockedSanitizedBundle<'lock>>,
-        bundles: &mut BTreeMap<u64, ImmutableDeserializedBundle>,
+        bundles: &mut BTreeMap<BundlePriorityId, ImmutableDeserializedBundle>,
         immutable: ImmutableDeserializedBundle,
         sanitized: SanitizedBundle,
+        id: u64,
     ) {
         let priority = Self::compute_priority(bank, &sanitized);
 
@@ -329,10 +339,12 @@ impl PaladinBundleStage {
                 // NB: Silence locked unused warning.
                 let _ = combined.borrow_locked();
 
-                bundles.insert(priority, immutable);
-                let prev =
-                    locked_bundles.insert(combined.borrow_sanitized().bundle_id.clone(), combined);
-                assert!(prev.is_none());
+                assert!(bundles
+                    .insert(BundlePriorityId { priority, id }, immutable,)
+                    .is_none());
+                assert!(locked_bundles
+                    .insert(combined.borrow_sanitized().bundle_id.clone(), combined)
+                    .is_none());
             }
             Err(err) => warn!(
                 "Failed to lock; bundle_id={}; err={err}",
@@ -343,7 +355,10 @@ impl PaladinBundleStage {
 
     /// Returns the bundles that were processed/dropped.
     #[must_use]
-    fn consume_buffered_bundles(&mut self, bank_start: &BankStart) -> HashMap<String, u64> {
+    fn consume_buffered_bundles(
+        &mut self,
+        bank_start: &BankStart,
+    ) -> HashMap<String, BundlePriorityId> {
         // Drain our latest bundles.
         let mut bundles_start: HashMap<_, _> = self
             .bundles
@@ -529,10 +544,84 @@ impl PaladinBundleStage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BundlePriorityId {
+    priority: u64,
+    id: u64,
+}
+
+impl Ord for BundlePriorityId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        match self.priority.cmp(&other.priority) {
+            std::cmp::Ordering::Equal => Reverse(self.id).cmp(&Reverse(other.id)),
+            ord => ord,
+        }
+    }
+}
+
+impl PartialOrd for BundlePriorityId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 #[self_referencing]
 struct LockedSanitizedBundle<'a> {
     sanitized: SanitizedBundle,
     #[covariant]
     #[borrows(sanitized)]
     locked: LockedBundle<'a, 'this>,
+}
+
+#[derive(Debug, Default)]
+struct BundleIdGenerator {
+    next: u64,
+}
+
+impl BundleIdGenerator {
+    fn next(&mut self) -> u64 {
+        let next = self.next;
+        self.next = self.next.wrapping_add(1);
+
+        next
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transaction_priority_id_ordering() {
+        let high_prio_high_id = BundlePriorityId {
+            priority: u64::MAX,
+            id: u64::MAX,
+        };
+        let high_prio_low_id = BundlePriorityId {
+            priority: u64::MAX,
+            id: 0,
+        };
+        let low_prio_high_id = BundlePriorityId {
+            priority: 0,
+            id: u64::MAX,
+        };
+        let low_prio_low_id = BundlePriorityId { priority: 0, id: 0 };
+
+        let mut sorted = [
+            low_prio_low_id,
+            low_prio_high_id,
+            high_prio_low_id,
+            high_prio_high_id,
+        ];
+        sorted.sort();
+        assert_eq!(
+            sorted,
+            [
+                low_prio_high_id,
+                low_prio_low_id,
+                high_prio_high_id,
+                high_prio_low_id,
+            ]
+        );
+    }
 }
