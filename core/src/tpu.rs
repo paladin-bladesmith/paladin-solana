@@ -14,7 +14,6 @@ use {
         fetch_stage::FetchStage,
         p3::P3,
         p3_quic::P3Quic,
-        paladin_bundle_stage::PaladinBundleStage,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -98,7 +97,6 @@ pub struct Tpu {
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
     jito_bundle_stage: BundleStage,
-    paladin_bundle_stage: std::thread::JoinHandle<()>,
     p3: std::thread::JoinHandle<()>,
     p3_quic: std::thread::JoinHandle<()>,
 }
@@ -271,11 +269,10 @@ impl Tpu {
         );
 
         // Launch paladin threads.
-        let (paladin_sender, paladin_receiver) = unbounded();
-        let p3 = P3::spawn(exit.clone(), paladin_sender.clone(), p3_socket);
+        let p3 = P3::spawn(exit.clone(), packet_sender.clone(), p3_socket);
         let (p3_quic, p3_quic_key_updater) = P3Quic::spawn(
             exit.clone(),
-            paladin_sender,
+            packet_sender.clone(),
             p3_quic_socket,
             poh_recorder.clone(),
             keypair,
@@ -358,19 +355,6 @@ impl Tpu {
             preallocated_bundle_cost,
             prioritization_fee_cache,
         );
-        let paladin_bundle_stage = PaladinBundleStage::spawn(
-            exit.clone(),
-            paladin_receiver,
-            cluster_info.clone(),
-            poh_recorder.clone(),
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            tip_manager,
-            bundle_account_locker,
-            prioritization_fee_cache.clone(),
-            preallocated_bundle_cost,
-        );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -416,7 +400,6 @@ impl Tpu {
                 relayer_stage,
                 fetch_stage_manager,
                 jito_bundle_stage,
-                paladin_bundle_stage,
                 p3,
                 p3_quic,
             },
@@ -438,7 +421,6 @@ impl Tpu {
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
-            self.paladin_bundle_stage.join(),
             self.p3.join(),
             self.p3_quic.join(),
         ];

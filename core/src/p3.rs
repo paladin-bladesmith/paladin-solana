@@ -1,5 +1,4 @@
 use {
-    crate::packet_bundle::PacketBundle,
     crossbeam_channel::TrySendError,
     solana_perf::packet::PacketBatch,
     solana_sdk::{
@@ -25,7 +24,7 @@ const READ_TIMEOUT: Duration = Duration::from_millis(100);
 pub(crate) struct P3 {
     exit: Arc<AtomicBool>,
 
-    bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+    packet_tx: crossbeam_channel::Sender<PacketBatch>,
 
     socket: UdpSocket,
     buffer: [u8; PACKET_DATA_SIZE],
@@ -37,7 +36,7 @@ pub(crate) struct P3 {
 impl P3 {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
-        bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+        packet_tx: crossbeam_channel::Sender<PacketBatch>,
         addr: SocketAddr,
     ) -> std::thread::JoinHandle<()> {
         let socket = UdpSocket::bind(addr).unwrap();
@@ -45,7 +44,7 @@ impl P3 {
 
         let p3 = Self {
             exit: exit.clone(),
-            bundle_stage_tx,
+            packet_tx,
             socket,
             buffer: [0u8; PACKET_DATA_SIZE],
 
@@ -83,12 +82,9 @@ impl P3 {
             };
             trace!("Received TX; signature={signature}");
 
-            let packet_bundle = PacketBundle {
-                batch: PacketBatch::new(vec![Packet::from_data(None, &tx).unwrap()]),
-                bundle_id: format!("R{signature}"),
-            };
-
-            match self.bundle_stage_tx.try_send(vec![packet_bundle]) {
+            match self.packet_tx.try_send(PacketBatch::new(vec![
+                Packet::from_data(None, &tx).unwrap()
+            ])) {
                 Ok(_) => {}
                 Err(TrySendError::Disconnected(_)) => break,
                 Err(TrySendError::Full(_)) => {

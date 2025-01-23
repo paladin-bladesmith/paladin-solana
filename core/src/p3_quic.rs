@@ -1,16 +1,11 @@
 use {
-    crate::{packet_bundle::PacketBundle, tpu::MAX_QUIC_CONNECTIONS_PER_PEER},
-    crossbeam_channel::{RecvTimeoutError, TrySendError},
+    crate::tpu::MAX_QUIC_CONNECTIONS_PER_PEER,
     paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
-        account::ReadableAccount,
-        net::DEFAULT_TPU_COALESCE,
-        packet::Packet,
-        pubkey::Pubkey,
-        saturating_add_assign,
-        signature::{Keypair, Signature},
+        account::ReadableAccount, net::DEFAULT_TPU_COALESCE, pubkey::Pubkey, saturating_add_assign,
+        signature::Keypair,
     },
     solana_streamer::{
         nonblocking::quic::{
@@ -46,9 +41,6 @@ pub(crate) struct P3Quic {
     exit: Arc<AtomicBool>,
     quic_server: std::thread::JoinHandle<()>,
 
-    quic_rx: crossbeam_channel::Receiver<PacketBatch>,
-    bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
-
     staked_nodes: Arc<RwLock<StakedNodes>>,
     staked_nodes_last_update: Instant,
     poh_recorder: Arc<RwLock<PohRecorder>>,
@@ -61,7 +53,7 @@ pub(crate) struct P3Quic {
 impl P3Quic {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
-        bundle_stage_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
+        packet_tx: crossbeam_channel::Sender<PacketBatch>,
         addr: SocketAddr,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         keypair: &Keypair,
@@ -81,7 +73,6 @@ impl P3Quic {
             Arc::new(Mutex::new(ConnectionTable::new()));
 
         // Spawn the P3 QUIC server.
-        let (quic_tx, quic_rx) = crossbeam_channel::unbounded();
         let SpawnServerResult {
             endpoints: _,
             thread: quic_server,
@@ -91,8 +82,8 @@ impl P3Quic {
             "p3_quic",
             sock,
             keypair,
-            // NB: Packets are verified in paladin bundle stage.
-            quic_tx,
+            // NB: Packets are verified using the usual TPU lane.
+            packet_tx,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -110,9 +101,6 @@ impl P3Quic {
         let p3 = Self {
             exit: exit.clone(),
             quic_server,
-
-            quic_rx,
-            bundle_stage_tx,
 
             staked_nodes,
             staked_nodes_last_update: Instant::now(),
@@ -143,18 +131,9 @@ impl P3Quic {
         );
 
         while !self.exit.load(Ordering::Relaxed) {
-            // Block up to 1s waiting for packets.
-            match self.quic_rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(packets) => self.on_packets(packets),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    if !self.exit.load(Ordering::Relaxed) {
-                        error!("Quic channel closed unexpectedly");
-                    }
-
-                    break;
-                }
-            };
+            std::thread::sleep(
+                Duration::from_secs(1).saturating_sub(self.metrics_creation.elapsed()),
+            );
 
             // Check if we need to report metrics for the last interval.
             let now = Instant::now();
@@ -183,43 +162,6 @@ impl P3Quic {
         }
 
         self.quic_server.join().unwrap();
-    }
-
-    fn on_packets(&mut self, packets: PacketBatch) {
-        // Process the batch.
-        saturating_add_assign!(self.metrics.packets, packets.len() as u64);
-        for packet in &packets {
-            if self.on_packet(packet).is_err() {
-                return;
-            }
-        }
-    }
-
-    fn on_packet(&mut self, packet: &Packet) -> Result<(), ()> {
-        // Length of signatures must be encoded in 1 byte as 128 signatures
-        // (which would require two bytes) results in 8192 packet size
-        // (breaching max packet size).
-        let signature = packet
-            .data(1..65)
-            .map(|sig_bytes| Signature::try_from(sig_bytes).unwrap())
-            .ok_or_else(|| saturating_add_assign!(self.metrics.err_deserialize, 1))?;
-        trace!("Received TX; signature={signature}");
-
-        let packet_bundle = PacketBundle {
-            batch: PacketBatch::new(vec![packet.clone()]),
-            bundle_id: format!("R{signature}"),
-        };
-
-        match self.bundle_stage_tx.try_send(vec![packet_bundle]) {
-            Ok(_) => Ok(()),
-            Err(TrySendError::Disconnected(_)) => Err(()),
-            Err(TrySendError::Full(_)) => {
-                warn!("Dropping TX; signature={}", signature);
-                saturating_add_assign!(self.metrics.dropped, 1);
-
-                Ok(())
-            }
-        }
     }
 
     fn update_staked_nodes(&mut self) {
