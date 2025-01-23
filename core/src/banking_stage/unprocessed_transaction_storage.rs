@@ -49,6 +49,7 @@ use {
 pub const UNPROCESSED_BUFFER_STEP_SIZE: usize = 64;
 /// Maximum number of votes a single receive call will accept
 const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
+const MAX_BUFFERED_BUNDLES: usize = 5;
 
 #[derive(Debug)]
 pub enum UnprocessedTransactionStorage {
@@ -1189,7 +1190,7 @@ impl BundleStorage {
     }
 
     pub(crate) fn max_receive_size(&self) -> usize {
-        self.unprocessed_bundle_storage.capacity() - self.unprocessed_bundle_storage.len()
+        MAX_BUFFERED_BUNDLES - self.unprocessed_bundle_storage.len()
     }
 
     fn forward_option(&self) -> ForwardOption {
