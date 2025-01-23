@@ -61,8 +61,8 @@ $ sudo dnf install openssl-devel systemd-devel pkg-config zlib-devel llvm clang 
 ## **2. Download the source code.**
 
 ```bash
-$ git clone https://github.com/jito-foundation/jito-solana.git
-$ cd jito-solana
+$ git clone https://github.com/paladin-bladesmith/paladin-solana.git
+$ cd paladin-solana
 ```
 
 ## **3. Build.**
