@@ -6,8 +6,6 @@
 
 # Paladin
 
-[![Build status](https://badge.buildkite.com/3a7c88c0f777e1a0fddacc190823565271ae4c251ef78d83a8.svg)](https://buildkite.com/jito/jito-solana)
-
 # About
 
 This repository contains Paladin's fork of the Jito validator.
@@ -61,8 +59,8 @@ $ sudo dnf install openssl-devel systemd-devel pkg-config zlib-devel llvm clang 
 ## **2. Download the source code.**
 
 ```bash
-$ git clone https://github.com/jito-foundation/jito-solana.git
-$ cd jito-solana
+$ git clone https://github.com/paladin-bladesmith/paladin-solana.git
+$ cd paladin-solana
 ```
 
 ## **3. Build.**
@@ -127,4 +125,3 @@ problem is solved by this code?" On the other hand, if a test does fail and you 
 better way to solve the same problem, a Pull Request with your solution would most certainly be
 welcome! Likewise, if rewriting a test can better communicate what code it's protecting, please
 send us that patch!
-
