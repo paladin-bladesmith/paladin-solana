@@ -13,7 +13,6 @@ pub mod admin_rpc_post_init;
 pub mod banking_simulation;
 pub mod banking_stage;
 pub mod banking_trace;
-pub mod bundle_account_locker;
 pub mod bundle_stage;
 pub mod cache_block_meta_service;
 pub mod cluster_info_vote_listener;

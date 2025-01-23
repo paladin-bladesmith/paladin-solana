@@ -1,5 +1,4 @@
 use {
-    super::MAX_PACKETS_PER_BUNDLE,
     hashbrown::HashMap,
     itertools::izip,
     solana_bundle::bundle_execution::LoadAndExecuteBundleOutput,
@@ -11,6 +10,8 @@ use {
     solana_svm::account_loader::LoadedTransaction,
     std::cell::RefCell,
 };
+
+const MAX_PACKETS_PER_BUNDLE: usize = 5;
 
 pub(crate) const AMM_PROGRAMS: &[Pubkey] = &[
     solana_sdk::pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8"), // RaydiumV4

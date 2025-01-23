@@ -1357,10 +1357,6 @@ impl BundleStorage {
                         );
                         self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
                     }
-                    // If we fail to take a lock, retry the bundle on next iteration.
-                    Err(BundleExecutionError::TransactionFailure(
-                        LoadAndExecuteBundleError::AccountInUse,
-                    )) => rebuffered_bundles.push(deserialized_bundle),
                     Err(BundleExecutionError::TransactionFailure(e)) => {
                         debug!(
                             "bundle={} execution error: {:?}",

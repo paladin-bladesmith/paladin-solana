@@ -5,11 +5,11 @@ use {
     log::*,
     rand::{thread_rng, Rng},
     rayon::prelude::*,
-    solana_bundle::bundle_account_locker::BundleAccountLocker,
     solana_client::connection_cache::ConnectionCache,
     solana_core::{
         banking_stage::BankingStage,
         banking_trace::{BankingPacketBatch, BankingTracer, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::BlockProductionMethod,
     },
     solana_gossip::cluster_info::{ClusterInfo, Node},

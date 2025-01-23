@@ -9,7 +9,6 @@ use {
     thiserror::Error,
 };
 
-pub mod bundle_account_locker;
 pub mod bundle_execution;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize, PartialEq)]

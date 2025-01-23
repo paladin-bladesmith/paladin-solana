@@ -3557,9 +3557,6 @@ pub mod utils {
                     LoadAndExecuteBundleError::InvalidPreOrPostAccounts => {
                         RpcBundleExecutionError::InvalidPreOrPostAccounts
                     }
-                    LoadAndExecuteBundleError::AccountInUse => {
-                        RpcBundleExecutionError::BundleExecutionTimeout
-                    }
                 }
             }
             BundleExecutionError::LockError => RpcBundleExecutionError::BundleLockError,
@@ -4433,7 +4430,6 @@ pub mod rpc_full {
                 account_configs_to_accounts(&config.post_execution_accounts_configs)?;
             let bundle_execution_result = load_and_execute_bundle(
                 &bank,
-                None,
                 &sanitized_bundle,
                 MAX_PROCESSING_AGE,
                 &MAX_BUNDLE_SIMULATION_TIME,
@@ -4443,7 +4439,6 @@ pub mod rpc_full {
                 None,
                 &pre_execution_accounts,
                 &post_execution_accounts,
-                true,
             );
 
             // only return error if irrecoverable (timeout or tx malformed)
@@ -4470,7 +4465,6 @@ pub mod rpc_full {
                         signature, transaction_error
                     )));
                 }
-                Err(LoadAndExecuteBundleError::AccountInUse) => unreachable!(),
             }
 
             let rpc_bundle_result =
