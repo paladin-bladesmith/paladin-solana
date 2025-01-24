@@ -900,7 +900,9 @@ mod tests {
             },
             packet_bundle::PacketBundle,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
+            tip_manager::{
+                tests::MockBlockstore, TipDistributionAccountConfig, TipManager, TipManagerConfig,
+            },
         },
         crossbeam_channel::{unbounded, Receiver},
         jito_tip_distribution::sdk::derive_tip_distribution_account_address,
