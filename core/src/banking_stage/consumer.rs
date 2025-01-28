@@ -676,10 +676,7 @@ impl Consumer {
                 .iter()
                 .zip(batch.sanitized_transactions())
                 .filter(|(processing_result, tx)| !tx.drop_on_revert()
-                    || processing_result
-                        .as_ref()
-                        .map(|processed| processed.status().is_ok())
-                        .unwrap_or(false))
+                    || processing_result.was_processed_with_successful_result())
                 .filter_map(|(processing_result, tx)| {
                     if processing_result.was_processed() {
                         Some(tx.to_versioned_transaction())
