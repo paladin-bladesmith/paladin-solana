@@ -675,6 +675,11 @@ impl Consumer {
             measure_us!(processing_results
                 .iter()
                 .zip(batch.sanitized_transactions())
+                .filter(|(processing_result, tx)| !tx.drop_on_revert()
+                    || processing_result
+                        .as_ref()
+                        .map(|processed| processed.status().is_ok())
+                        .unwrap_or(false))
                 .filter_map(|(processing_result, tx)| {
                     if processing_result.was_processed() {
                         Some(tx.to_versioned_transaction())
@@ -2134,6 +2139,7 @@ mod tests {
             tx.clone(),
             MessageHash::Compute,
             Some(false),
+            false,
             bank.as_ref(),
             &ReservedAccountKeys::empty_key_set(),
         )

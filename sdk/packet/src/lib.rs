@@ -290,6 +290,11 @@ impl Meta {
     }
 
     #[inline]
+    pub fn is_drop_on_revert_packet(&self) -> bool {
+        self.flags.contains(PacketFlags::DROP_ON_REVERT)
+    }
+
+    #[inline]
     pub fn is_perf_track_packet(&self) -> bool {
         self.flags.contains(PacketFlags::PERF_TRACK_PACKET)
     }
