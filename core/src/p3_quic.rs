@@ -1,5 +1,6 @@
 use {
     crate::tpu::MAX_QUIC_CONNECTIONS_PER_PEER,
+    crossbeam_channel::RecvTimeoutError,
     paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
@@ -47,6 +48,8 @@ pub(crate) struct P3Quic {
     staked_nodes_last_update: Instant,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     staked_connection_table: Arc<Mutex<ConnectionTable>>,
+    mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
+    packet_tx: crossbeam_channel::Sender<PacketBatch>,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
@@ -85,7 +88,7 @@ impl P3Quic {
             socket_regular,
             keypair,
             // NB: Packets are verified using the usual TPU lane.
-            packet_tx,
+            packet_tx.clone(),
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -100,6 +103,7 @@ impl P3Quic {
         .unwrap();
 
         // Spawn the P3 QUIC server (mev).
+        let (mev_packet_tx, mev_packet_rx) = crossbeam_channel::unbounded();
         let SpawnServerResult {
             endpoints: _,
             thread: quic_server_mev,
@@ -110,7 +114,7 @@ impl P3Quic {
             socket_mev,
             keypair,
             // NB: Packets are verified using the usual TPU lane.
-            todo!("Intercept packets & flag them as drop on revert"),
+            mev_packet_tx,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -134,6 +138,8 @@ impl P3Quic {
             staked_nodes_last_update: Instant::now(),
             poh_recorder,
             staked_connection_table,
+            mev_packet_rx,
+            packet_tx,
 
             metrics: P3Metrics::default(),
             metrics_creation: Instant::now(),
@@ -159,9 +165,14 @@ impl P3Quic {
         );
 
         while !self.exit.load(Ordering::Relaxed) {
-            std::thread::sleep(
+            // Try to receive mev packets.
+            match self.mev_packet_rx.recv_timeout(
                 Duration::from_secs(1).saturating_sub(self.metrics_creation.elapsed()),
-            );
+            ) {
+                Ok(packets) => self.on_mev_packets(packets),
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {}
+            };
 
             // Check if we need to report metrics for the last interval.
             let now = Instant::now();
@@ -191,6 +202,18 @@ impl P3Quic {
 
         self.quic_server_regular.join().unwrap();
         self.quic_server_mev.join().unwrap();
+    }
+
+    fn on_mev_packets(&mut self, mut packets: PacketBatch) {
+        // Set drop on revert flag.
+        for packet in packets.iter_mut() {
+            packet.meta_mut().set_drop_on_revert(true);
+        }
+
+        // TODO: Metrics.
+
+        // Forward for verification & inclusion.
+        let _ = self.packet_tx.send(packets);
     }
 
     fn update_staked_nodes(&mut self) {

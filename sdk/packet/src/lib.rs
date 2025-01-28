@@ -38,8 +38,7 @@ bitflags! {
         const REPAIR         = 0b0000_0100;
         const SIMPLE_VOTE_TX = 0b0000_1000;
         const TRACER_PACKET  = 0b0001_0000;
-        // Previously used - this can now be re-used for something else.
-        const UNUSED = 0b0010_0000;
+        const DROP_ON_REVERT = 0b0010_0000;
         /// For tracking performance
         const PERF_TRACK_PACKET  = 0b0100_0000;
         /// For marking packets from staked nodes
@@ -252,6 +251,11 @@ impl Meta {
     #[inline]
     pub fn set_tracer(&mut self, is_tracer: bool) {
         self.flags.set(PacketFlags::TRACER_PACKET, is_tracer);
+    }
+
+    #[inline]
+    pub fn set_drop_on_revert(&mut self, drop_on_revert: bool) {
+        self.flags.set(PacketFlags::DROP_ON_REVERT, drop_on_revert);
     }
 
     #[inline]

@@ -269,7 +269,7 @@ impl Tpu {
 
         // Launch paladin threads.
         let p3 = P3::spawn(exit.clone(), packet_sender.clone(), p3_socket);
-        let (p3_quic, p3_quic_key_updater) = P3Quic::spawn(
+        let (p3_quic, p3_quic_key_updaters) = P3Quic::spawn(
             exit.clone(),
             packet_sender.clone(),
             poh_recorder.clone(),
@@ -401,7 +401,11 @@ impl Tpu {
                 p3,
                 p3_quic,
             },
-            vec![key_updater, forwards_key_updater, p3_quic_key_updater],
+            [key_updater, forwards_key_updater]
+                .into_iter()
+                .chain(p3_quic_key_updaters)
+                .map(|notifier| notifier as Arc<dyn NotifyKeyUpdate + Send + Sync>)
+                .collect(),
         )
     }
 
