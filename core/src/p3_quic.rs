@@ -17,7 +17,7 @@ use {
     spl_discriminator::discriminator::SplDiscriminate,
     std::{
         collections::HashMap,
-        net::{SocketAddr, UdpSocket},
+        net::UdpSocket,
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, Mutex, RwLock,
@@ -26,7 +26,8 @@ use {
     },
 };
 
-pub const P3_QUIC_SOCKET_DEFAULT: &str = "0.0.0.0:4819";
+const P3_SOCKET: &str = "0.0.0.0:4819";
+const P3_MEV_SOCKET: &str = "0.0.0.0:4820";
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
@@ -39,7 +40,8 @@ const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG
 
 pub(crate) struct P3Quic {
     exit: Arc<AtomicBool>,
-    quic_server: std::thread::JoinHandle<()>,
+    quic_server_regular: std::thread::JoinHandle<()>,
+    quic_server_mev: std::thread::JoinHandle<()>,
 
     staked_nodes: Arc<RwLock<StakedNodes>>,
     staked_nodes_last_update: Instant,
@@ -54,12 +56,12 @@ impl P3Quic {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
         packet_tx: crossbeam_channel::Sender<PacketBatch>,
-        addr: SocketAddr,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         keypair: &Keypair,
-    ) -> (std::thread::JoinHandle<()>, Arc<EndpointKeyUpdater>) {
+    ) -> (std::thread::JoinHandle<()>, [Arc<EndpointKeyUpdater>; 2]) {
         // Bind the P3 QUIC UDP socket.
-        let sock = UdpSocket::bind(addr).unwrap();
+        let socket_regular = UdpSocket::bind(P3_SOCKET).unwrap();
+        let socket_mev = UdpSocket::bind(P3_MEV_SOCKET).unwrap();
 
         // Setup initial staked nodes (empty).
         let stakes = Arc::default();
@@ -72,15 +74,15 @@ impl P3Quic {
         let staked_connection_table: Arc<Mutex<ConnectionTable>> =
             Arc::new(Mutex::new(ConnectionTable::new()));
 
-        // Spawn the P3 QUIC server.
+        // Spawn the P3 QUIC server (regular).
         let SpawnServerResult {
             endpoints: _,
-            thread: quic_server,
-            key_updater,
+            thread: quic_server_regular,
+            key_updater: key_updater_regular,
         } = solana_streamer::quic::spawn_server(
             "p3Quic-streamer",
             "p3_quic",
-            sock,
+            socket_regular,
             keypair,
             // NB: Packets are verified using the usual TPU lane.
             packet_tx,
@@ -97,14 +99,40 @@ impl P3Quic {
         )
         .unwrap();
 
+        // Spawn the P3 QUIC server (mev).
+        let SpawnServerResult {
+            endpoints: _,
+            thread: quic_server_mev,
+            key_updater: key_updater_mev,
+        } = solana_streamer::quic::spawn_server(
+            "p3Quic-streamer",
+            "p3_quic",
+            socket_mev,
+            keypair,
+            // NB: Packets are verified using the usual TPU lane.
+            todo!("Intercept packets & flag them as drop on revert"),
+            exit.clone(),
+            MAX_QUIC_CONNECTIONS_PER_PEER,
+            staked_nodes.clone(),
+            MAX_STAKED_CONNECTIONS,
+            MAX_UNSTAKED_CONNECTIONS,
+            MAX_STREAMS_PER_MS,
+            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+            // Streams will be kept alive for 300s (5min) if no data is sent.
+            Duration::from_secs(300),
+            DEFAULT_TPU_COALESCE,
+        )
+        .unwrap();
+
         // Spawn the P3 management thread.
         let p3 = Self {
             exit: exit.clone(),
-            quic_server,
+            quic_server_regular,
+            quic_server_mev,
 
             staked_nodes,
             staked_nodes_last_update: Instant::now(),
-            poh_recorder: poh_recorder.clone(),
+            poh_recorder,
             staked_connection_table,
 
             metrics: P3Metrics::default(),
@@ -116,7 +144,7 @@ impl P3Quic {
                 .name("P3Quic".to_owned())
                 .spawn(move || p3.run())
                 .unwrap(),
-            key_updater,
+            [key_updater_regular, key_updater_mev],
         )
     }
 
@@ -161,7 +189,8 @@ impl P3Quic {
             }
         }
 
-        self.quic_server.join().unwrap();
+        self.quic_server_regular.join().unwrap();
+        self.quic_server_mev.join().unwrap();
     }
 
     fn update_staked_nodes(&mut self) {

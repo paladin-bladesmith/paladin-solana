@@ -144,7 +144,7 @@ impl Tpu {
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
-        (p3_socket, p3_quic_socket): (SocketAddr, SocketAddr),
+        p3_socket: SocketAddr,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -272,7 +272,6 @@ impl Tpu {
         let (p3_quic, p3_quic_key_updater) = P3Quic::spawn(
             exit.clone(),
             packet_sender.clone(),
-            p3_quic_socket,
             poh_recorder.clone(),
             keypair,
         );
