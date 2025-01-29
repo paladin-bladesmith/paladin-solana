@@ -27,6 +27,7 @@ Release channels have their own copy of this changelog:
   * `agave-validator`:
     * Remove the deprecated value of `fifo` for `--rocksdb-shred-compaction` (#3451)
 * Changes
+  * Add new variant to `--block-production-method` for `central-scheduler-greedy`. This is a simplified scheduler that has much better performance than the more strict `central-scheduler` variant.
   * SDK:
     * removed the `respan` macro. This was marked as "internal use only" and was no longer used internally.
     * add `entrypoint_no_alloc!`, a more performant program entrypoint that avoids allocations, saving 20-30 CUs per unique account
