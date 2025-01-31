@@ -28,7 +28,7 @@ use {
         signature::Keypair,
         signer::Signer,
         stake_history::Epoch,
-        system_program,
+        system_instruction, system_program,
         transaction::{MessageHash, SanitizedTransaction, Transaction, VersionedTransaction},
     },
     solana_transaction_status::RewardType,
@@ -93,6 +93,7 @@ impl Default for TipDistributionAccountConfig {
 #[derive(Clone)]
 pub struct TipManager {
     rewards: Arc<dyn ReadRewards + Send + Sync>,
+    rewards_split: Option<(u64, u16)>,
     cluster_info: Arc<ClusterInfo>,
     leader_schedule_cache: Arc<LeaderScheduleCache>,
 
@@ -106,6 +107,7 @@ pub struct TipManager {
 #[derive(Clone)]
 pub struct TipManagerConfig {
     pub funnel: Option<Pubkey>,
+    pub rewards_split: Option<(u64, u16)>,
     pub tip_payment_program_id: Pubkey,
     pub tip_distribution_program_id: Pubkey,
     pub tip_distribution_account_config: TipDistributionAccountConfig,
@@ -115,6 +117,7 @@ impl Default for TipManagerConfig {
     fn default() -> Self {
         TipManagerConfig {
             funnel: None,
+            rewards_split: None,
             tip_payment_program_id: Pubkey::new_unique(),
             tip_distribution_program_id: Pubkey::new_unique(),
             tip_distribution_account_config: TipDistributionAccountConfig::default(),
@@ -131,6 +134,7 @@ impl TipManager {
     ) -> TipManager {
         let TipManagerConfig {
             funnel,
+            rewards_split,
             tip_payment_program_id,
             tip_distribution_program_id,
             tip_distribution_account_config,
@@ -160,6 +164,7 @@ impl TipManager {
 
         TipManager {
             rewards,
+            rewards_split,
             cluster_info,
             leader_schedule_cache,
 
@@ -576,8 +581,35 @@ impl TipManager {
             }
             .to_account_metas(None),
         };
+        let ixs: Vec<_> = [change_tip_ix, change_block_builder_ix]
+            .into_iter()
+            .chain(
+                self.rewards_split
+                    .into_iter()
+                    .filter_map(|(minimum_sol, split_bp)| {
+                        let split_bp = std::cmp::min(split_bp, 10_000);
+                        let identity_balance = bank.get_balance(&keypair.pubkey());
+                        let available_balance = identity_balance.saturating_sub(minimum_sol);
+                        if available_balance == 0 {
+                            return None;
+                        }
+
+                        let previous_rewards = self.compute_previous_leader_slot_lamports(bank);
+                        let lamports = std::cmp::min(
+                            previous_rewards.saturating_mul(split_bp as u64) / 10_000,
+                            available_balance,
+                        );
+
+                        Some(system_instruction::transfer(
+                            &keypair.pubkey(),
+                            &self.tip_payment_program_info.tip_pda_0.0,
+                            lamports,
+                        ))
+                    }),
+            )
+            .collect();
         let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
-            &[change_tip_ix, change_block_builder_ix],
+            &ixs,
             Some(&keypair.pubkey()),
             &[keypair],
             bank.last_blockhash(),
@@ -740,6 +772,69 @@ impl TipManager {
         }
     }
 
+    fn compute_previous_leader_slot_lamports(&self, bank: &Bank) -> u64 {
+        let identity = self.my_identity();
+        let current_slot = bank.slot();
+        let (current_epoch, current_offset) = bank.get_epoch_and_slot_index(current_slot);
+        let current_offset = current_offset as usize;
+        let epoch_first_slot = bank.epoch_schedule().get_first_slot_in_epoch(current_epoch);
+
+        let Some(current_leader_slots) = self
+            .leader_schedule_cache
+            .get_epoch_leader_schedule(current_epoch)
+            .map(|schedule| {
+                schedule
+                    .get_index()
+                    .get(&identity)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+        else {
+            eprintln!("BUG: Current leader schedule missing?");
+            return 0;
+        };
+
+        // Figure out the index of the current slot.
+        let current_leader_slots: Arc<Vec<usize>> = current_leader_slots;
+        let index = match current_leader_slots.binary_search(&current_offset) {
+            Ok(index) => index,
+            Err(index) => index,
+        };
+
+        // If this is the first slot in the epoch, return 0.
+        if index == 0 {
+            return 0;
+        }
+
+        // Else, check the previous leader sprint to compute the payout owed.
+        let mut iter = current_leader_slots[..index].iter().rev();
+        let last = iter.next().unwrap();
+        let mut prev = last;
+        for offset in iter {
+            if offset != &prev.saturating_sub(1) {
+                break;
+            }
+
+            prev = offset;
+        }
+
+        // Sum the prior block rewards.
+        (*prev..=*last)
+            .map(|offset| {
+                let slot = epoch_first_slot + offset as u64;
+
+                if slot > current_slot {
+                    eprintln!("BUG: Current slot not in indexes, are we the leader?");
+
+                    return 0;
+                }
+
+                // Accumulate the rewards for the block.
+                self.rewards.read_rewards(slot)
+            })
+            .sum()
+    }
+
     fn compute_additional_lamports(&self, bank: &Bank) -> u64 {
         // TODO: Do we need to think about handling identity migrations? Should
         // not result in much missed rewards, right - just last leader sprint.
@@ -859,7 +954,7 @@ impl ReadRewards for Blockstore {
         self.read_rewards(slot)
             .ok()
             .flatten()
-            .unwrap_or(vec![])
+            .unwrap_or_default()
             .into_iter()
             .map(|reward| match reward.reward_type {
                 Some(RewardType::Fee) => reward.lamports,

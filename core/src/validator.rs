@@ -5,6 +5,7 @@ use {
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
+        banking_stage::DEFAULT_BATCH_INTERVAL,
         banking_trace::{self, BankingTracer, TraceError},
         cache_block_meta_service::{CacheBlockMetaSender, CacheBlockMetaService},
         cluster_info_vote_listener::VoteTracker,
@@ -302,6 +303,7 @@ pub struct ValidatorConfig {
     pub preallocated_bundle_cost: u64,
     // p3
     pub p3_socket: SocketAddr,
+    pub batch_interval: Duration,
 }
 
 impl Default for ValidatorConfig {
@@ -381,6 +383,7 @@ impl Default for ValidatorConfig {
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
             p3_socket: SocketAddr::from_str(P3_SOCKET_DEFAULT).expect("p3 socket"),
+            batch_interval: DEFAULT_BATCH_INTERVAL,
         }
     }
 }
@@ -1535,6 +1538,7 @@ impl Validator {
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
             config.p3_socket,
+            config.batch_interval,
         );
 
         datapoint_info!(

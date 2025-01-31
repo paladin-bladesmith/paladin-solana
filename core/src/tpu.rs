@@ -145,6 +145,7 @@ impl Tpu {
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
         p3_socket: SocketAddr,
+        batch_interval: Duration,
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -337,6 +338,7 @@ impl Tpu {
             enable_block_production_forwarding,
             blacklisted_accounts,
             bundle_account_locker.clone(),
+            batch_interval,
         );
 
         let jito_bundle_stage = BundleStage::new(

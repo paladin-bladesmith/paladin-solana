@@ -257,6 +257,7 @@ mod tests {
             VersionedTransaction::from(transaction.clone()),
             MessageHash::Compute,
             Some(true),
+            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )
@@ -267,6 +268,7 @@ mod tests {
             VersionedTransaction::from(transaction),
             MessageHash::Compute,
             Some(false),
+            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )
@@ -296,6 +298,7 @@ mod tests {
             VersionedTransaction::from(transaction),
             MessageHash::Compute,
             Some(false),
+            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )

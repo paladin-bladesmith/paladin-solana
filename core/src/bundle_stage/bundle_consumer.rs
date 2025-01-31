@@ -224,7 +224,7 @@ impl BundleConsumer {
                             &locked_bundle,
                             bank_start,
                             bundle_stage_leader_metrics,
-                            Some(10u64.pow(6) / 10), // 0.1 lamports per CU
+                            Some(10u64.pow(6) / 1000), // 0.001 lamports per CU (filling a block at this rate pays ~1c).
                         ));
                         bundle_stage_leader_metrics
                             .leader_slot_metrics_tracker()
@@ -277,7 +277,7 @@ impl BundleConsumer {
         if bank_start.working_bank.slot() != *last_tip_updated_slot
             && Self::bundle_touches_tip_pdas(
                 locked_bundle.sanitized_bundle(),
-                &tip_manager.get_tip_accounts(),
+                tip_manager.get_tip_accounts(),
             )
         {
             let start = Instant::now();
@@ -482,6 +482,7 @@ impl BundleConsumer {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_qos_and_execute_record_commit_bundle(
         committer: &Committer,
         recorder: &TransactionRecorder,
@@ -1139,6 +1140,7 @@ mod tests {
             leader_schedule_cache,
             TipManagerConfig {
                 funnel,
+                rewards_split: None,
                 tip_payment_program_id: Pubkey::from_str(
                     "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",
                 )
