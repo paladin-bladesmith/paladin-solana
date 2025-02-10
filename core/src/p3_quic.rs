@@ -234,14 +234,21 @@ impl P3Quic {
         };
 
         // Setup a new staked nodes map.
-        let stakes: HashMap<_, _> = pool
+        let stakes = pool
             .entries
             .iter()
             .take_while(|entry| entry.lockup != Pubkey::default())
             .clone()
             .filter(|entry| entry.metadata != [0; 32])
             .map(|entry| (Pubkey::new_from_array(entry.metadata), entry.amount))
-            .collect();
+            .fold(
+                HashMap::with_capacity(pool.entries_len),
+                |mut map, (key, stake)| {
+                    *map.entry(key).or_default() += stake;
+
+                    map
+                },
+            );
         let stakes = Arc::new(stakes);
 
         // Swap the old for the new.
