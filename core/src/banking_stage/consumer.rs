@@ -660,7 +660,7 @@ impl Consumer {
         execute_and_commit_timings.load_execute_us = load_execute_us;
 
         let LoadAndExecuteTransactionsOutput {
-            processing_results,
+            mut processing_results,
             processed_counts,
         } = load_and_execute_transactions_output;
 
@@ -670,6 +670,20 @@ impl Consumer {
                 .processed_with_successful_result_count,
             attempted_processing_count: processing_results.len() as u64,
         };
+
+        // Drop any transactions that are `drop_on_revert` and returned an
+        // execution error.
+        for (res, tx) in processing_results
+            .iter_mut()
+            .zip(batch.sanitized_transactions())
+        {
+            if let Ok(processed) = res {
+                if tx.drop_on_revert() && processed.status().is_err() {
+                    // TODO: Is there a more appropriate error to use.
+                    *res = Err(TransactionError::BlockhashNotFound);
+                }
+            }
+        }
 
         let (processed_transactions, processing_results_to_transactions_us) =
             measure_us!(processing_results
@@ -2134,6 +2148,7 @@ mod tests {
             tx.clone(),
             MessageHash::Compute,
             Some(false),
+            false,
             bank.as_ref(),
             &ReservedAccountKeys::empty_key_set(),
         )

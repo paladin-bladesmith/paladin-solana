@@ -83,6 +83,8 @@ mod transaction_scheduler;
 // Fixed thread size seems to be fastest on GCP setup
 pub const NUM_THREADS: u32 = 6;
 
+pub const DEFAULT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
+
 const TOTAL_BUFFERED_PACKETS: usize = 100_000;
 
 const NUM_VOTE_PROCESSING_THREADS: u32 = 2;
@@ -366,6 +368,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        batch_interval: Duration,
     ) -> Self {
         Self::new_num_threads(
             block_production_method,
@@ -384,6 +387,7 @@ impl BankingStage {
             enable_forwarding,
             blacklisted_accounts,
             bundle_account_locker,
+            batch_interval,
         )
     }
 
@@ -405,6 +409,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        batch_interval: Duration,
     ) -> Self {
         match block_production_method {
             BlockProductionMethod::ThreadLocalMultiIterator => {
@@ -440,6 +445,9 @@ impl BankingStage {
                 bank_forks,
                 prioritization_fee_cache,
                 enable_forwarding,
+                blacklisted_accounts,
+                bundle_account_locker,
+                batch_interval,
             ),
             BlockProductionMethod::CentralSchedulerGreedy => Self::new_central_scheduler(
                 true,
@@ -458,6 +466,7 @@ impl BankingStage {
                 enable_forwarding,
                 blacklisted_accounts,
                 bundle_account_locker,
+                batch_interval,
             ),
         }
     }
@@ -570,6 +579,7 @@ impl BankingStage {
         enable_forwarding: bool,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        batch_interval: Duration,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -682,6 +692,7 @@ impl BankingStage {
                     scheduler,
                     worker_metrics,
                     forwarder,
+                    batch_interval,
                 );
                 Builder::new()
                     .name("solBnkTxSched".to_string())
@@ -705,6 +716,7 @@ impl BankingStage {
                     scheduler,
                     worker_metrics,
                     forwarder,
+                    batch_interval,
                 );
                 Builder::new()
                     .name("solBnkTxSched".to_string())
@@ -986,6 +998,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                Duration::from_millis(50),
             );
             drop(non_vote_sender);
             drop(tpu_vote_sender);
@@ -1044,6 +1057,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                Duration::from_millis(50),
             );
             trace!("sending bank");
             drop(non_vote_sender);
@@ -1131,6 +1145,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                Duration::from_millis(50),
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -1511,6 +1526,7 @@ mod tests {
                 false,
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                Duration::from_millis(50),
             );
 
             let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();

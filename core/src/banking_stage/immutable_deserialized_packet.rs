@@ -140,6 +140,7 @@ impl ImmutableDeserializedPacket {
             self.transaction().clone(),
             *self.message_hash(),
             self.is_simple_vote(),
+            self.original_packet.meta().is_drop_on_revert_packet(),
             address_loader,
             reserved_account_keys,
         )

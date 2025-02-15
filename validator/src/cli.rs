@@ -82,6 +82,30 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .global_setting(AppSettings::UnifiedHelpMessage)
         .global_setting(AppSettings::VersionlessSubcommands)
         .arg(
+            Arg::with_name("funnel")
+                .long("funnel")
+                .help("funnel. Defaults to None")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("batch_interval_ms")
+                .long("batch-interval-ms")
+                .help("scheduler batch interval in milliseconds. Defaults to 50ms")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("rewards_split_minimum_lamports")
+                .long("rewards-split-minimum-lamports")
+                .help("the minimum number of lamports to reserve for the voting identity")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("rewards_split_bp")
+                .long("rewards-split-bp")
+                .help("the percentage of block rewards to send to stakers (in basis points)")
+                .takes_value(true),
+        )
+        .arg(
             Arg::with_name(SKIP_SEED_PHRASE_VALIDATION_ARG.name)
                 .long(SKIP_SEED_PHRASE_VALIDATION_ARG.long)
                 .help(SKIP_SEED_PHRASE_VALIDATION_ARG.help),
