@@ -2170,6 +2170,7 @@ mod tests {
             tx.clone(),
             MessageHash::Compute,
             Some(false),
+            false,
             bank.as_ref(),
             &ReservedAccountKeys::empty_key_set(),
         )

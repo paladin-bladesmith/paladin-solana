@@ -48,8 +48,7 @@ use {
     solana_streamer::socket::SocketAddrSpace,
     solana_turbine::broadcast_stage::{BroadcastStage, BroadcastStageType},
     std::{
-        collections,
-        collections::BTreeMap,
+        collections::{self, BTreeMap},
         fmt::Display,
         fs::File,
         io::{self, BufRead, BufReader},
@@ -843,6 +842,7 @@ impl BankingSimulator {
             collections::HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            Duration::from_millis(50),
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

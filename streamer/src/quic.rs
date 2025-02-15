@@ -590,6 +590,7 @@ pub fn spawn_server(
 
 #[derive(Clone)]
 pub struct QuicServerParams {
+    pub is_p3: bool,
     pub max_connections_per_peer: usize,
     pub max_staked_connections: usize,
     pub max_unstaked_connections: usize,
@@ -603,6 +604,7 @@ pub struct QuicServerParams {
 impl Default for QuicServerParams {
     fn default() -> Self {
         QuicServerParams {
+            is_p3: false,
             max_connections_per_peer: 1,
             max_staked_connections: DEFAULT_MAX_STAKED_CONNECTIONS,
             max_unstaked_connections: DEFAULT_MAX_UNSTAKED_CONNECTIONS,
@@ -660,7 +662,13 @@ pub fn spawn_server_multi(
 mod test {
     use {
         super::*,
-        crate::nonblocking::{quic::test::*, testing_utilities::check_multiple_streams},
+        crate::nonblocking::{
+            quic::{
+                test::*, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+                DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+            },
+            testing_utilities::check_multiple_streams,
+        },
         crossbeam_channel::unbounded,
         solana_net_utils::bind_to_localhost,
         std::net::SocketAddr,

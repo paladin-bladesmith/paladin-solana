@@ -477,6 +477,7 @@ fn compute_slot_cost(
                     transaction,
                     MessageHash::Compute,
                     None,
+                    false,
                     SimpleAddressLoader::Disabled,
                     &reserved_account_keys.active,
                 )

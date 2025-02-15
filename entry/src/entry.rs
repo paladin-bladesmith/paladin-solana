@@ -1079,6 +1079,7 @@ mod tests {
                         versioned_tx,
                         MessageHash::Precomputed(message_hash),
                         None,
+                        false,
                         SimpleAddressLoader::Disabled,
                         &ReservedAccountKeys::empty_key_set(),
                     )
