@@ -591,6 +591,7 @@ fn handle_and_cache_new_connection(
                 client_connection_tracker,
                 Some(connection.clone()),
                 params.peer_type,
+                params.remote_pubkey.unwrap_or_default(),
                 timing::timestamp(),
                 params.max_connections_per_peer,
             )
@@ -1301,9 +1302,10 @@ async fn handle_chunks(
 }
 
 #[derive(Debug)]
-struct ConnectionEntry {
-    cancel: CancellationToken,
-    peer_type: ConnectionPeerType,
+pub struct ConnectionEntry {
+    pub cancel: CancellationToken,
+    pub peer_type: ConnectionPeerType,
+    pub identity: Pubkey,
     last_update: Arc<AtomicU64>,
     port: u16,
     // We do not explicitly use it, but its drop is triggered when ConnectionEntry is dropped.
@@ -1316,6 +1318,7 @@ impl ConnectionEntry {
     fn new(
         cancel: CancellationToken,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: Arc<AtomicU64>,
         port: u16,
         client_connection_tracker: ClientConnectionTracker,
@@ -1325,6 +1328,7 @@ impl ConnectionEntry {
         Self {
             cancel,
             peer_type,
+            identity,
             last_update,
             port,
             _client_connection_tracker: client_connection_tracker,
@@ -1358,7 +1362,7 @@ impl Drop for ConnectionEntry {
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
-enum ConnectionTableKey {
+pub enum ConnectionTableKey {
     IP(IpAddr),
     Pubkey(Pubkey),
 }
@@ -1372,7 +1376,7 @@ impl ConnectionTableKey {
 }
 
 // Map of IP to list of connection entries
-struct ConnectionTable {
+pub struct ConnectionTable {
     table: IndexMap<ConnectionTableKey, Vec<ConnectionEntry>>,
     total_size: usize,
 }
@@ -1380,11 +1384,15 @@ struct ConnectionTable {
 // Prune the connection which has the oldest update
 // Return number pruned
 impl ConnectionTable {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             table: IndexMap::default(),
             total_size: 0,
         }
+    }
+
+    pub fn table(&self) -> &IndexMap<ConnectionTableKey, Vec<ConnectionEntry>> {
+        &self.table
     }
 
     fn prune_oldest(&mut self, max_size: usize) -> usize {
@@ -1438,6 +1446,7 @@ impl ConnectionTable {
         client_connection_tracker: ClientConnectionTracker,
         connection: Option<Connection>,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: u64,
         max_connections_per_peer: usize,
     ) -> Option<(
@@ -1461,6 +1470,7 @@ impl ConnectionTable {
             connection_entry.push(ConnectionEntry::new(
                 cancel.clone(),
                 peer_type,
+                identity,
                 last_update.clone(),
                 port,
                 client_connection_tracker,
@@ -2097,6 +2107,7 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2110,6 +2121,7 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 5,
                 max_connections_per_peer,
             )
@@ -2152,6 +2164,7 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2187,6 +2200,7 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2202,6 +2216,7 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 10,
                 max_connections_per_peer,
             )
@@ -2217,6 +2232,7 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 10,
                 max_connections_per_peer,
             )
@@ -2255,6 +2271,7 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Staked((i + 1) as u64),
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
                 )
@@ -2297,6 +2314,7 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     (i * 2) as u64,
                     max_connections_per_peer,
                 )
@@ -2309,6 +2327,7 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     (i * 2 + 1) as u64,
                     max_connections_per_peer,
                 )
@@ -2324,6 +2343,7 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 (num_ips * 2) as u64,
                 max_connections_per_peer,
             )
