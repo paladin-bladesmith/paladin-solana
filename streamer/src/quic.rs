@@ -1,6 +1,7 @@
 use {
     crate::{
-        nonblocking::quic::ALPN_TPU_PROTOCOL_ID, streamer::StakedNodes,
+        nonblocking::{quic::ALPN_TPU_PROTOCOL_ID, stream_throttle::StakedStreamLoadEMAArgs},
+        streamer::StakedNodes,
         tls_certificates::new_dummy_x509_certificate,
     },
     crossbeam_channel::Sender,
@@ -617,10 +618,11 @@ pub fn spawn_server(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
-    max_streams_per_ms: u64,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
+    is_p3: bool,
 ) -> Result<SpawnServerResult, QuicServerError> {
     spawn_server_multi(
         thread_name,
@@ -633,10 +635,11 @@ pub fn spawn_server(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
-        max_streams_per_ms,
+        throttle_args,
         max_connections_per_ipaddr_per_min,
         wait_for_chunk_timeout,
         coalesce,
+        is_p3,
     )
 }
 
@@ -652,10 +655,11 @@ pub fn spawn_server_multi(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
-    max_streams_per_ms: u64,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
+    is_p3: bool,
 ) -> Result<SpawnServerResult, QuicServerError> {
     let runtime = rt(format!("{thread_name}Rt"));
     let result = {
@@ -670,10 +674,11 @@ pub fn spawn_server_multi(
             staked_nodes,
             max_staked_connections,
             max_unstaked_connections,
-            max_streams_per_ms,
+            throttle_args,
             max_connections_per_ipaddr_per_min,
             wait_for_chunk_timeout,
             coalesce,
+            is_p3,
         )
     }?;
     let handle = thread::Builder::new()
@@ -699,8 +704,7 @@ mod test {
     use {
         super::*,
         crate::nonblocking::quic::{
-            test::*, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_MS,
-            DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+            test::*, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         },
         crossbeam_channel::unbounded,
         solana_sdk::net::DEFAULT_TPU_COALESCE,
@@ -734,10 +738,11 @@ mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
         (t, exit, receiver, server_address)
@@ -795,10 +800,11 @@ mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
@@ -843,10 +849,11 @@ mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             0, // Do not allow any connection from unstaked clients/nodes
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
