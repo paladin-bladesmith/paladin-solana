@@ -20,6 +20,8 @@ use {
     std::sync::atomic::{AtomicU64, Ordering},
 };
 
+const MAX_DROP_ON_REVERT_COST: u64 = 550_000;
+
 // QosService is local to each banking thread, each instance of QosService provides services to
 // one banking thread.
 // Banking thread calls `report_metrics(slot)` at end of `process_and_record_transaction()`, or any time
@@ -81,7 +83,18 @@ impl QosService {
         let mut compute_cost_time = Measure::start("compute_cost_time");
         let txs_costs: Vec<_> = transactions
             .zip(pre_results)
-            .map(|(tx, pre_result)| pre_result.map(|()| CostModel::calculate_cost(tx, feature_set)))
+            .map(|(tx, pre_result)| {
+                pre_result
+                    .map(|()| CostModel::calculate_cost(tx, feature_set))
+                    .and_then(|cost| match tx.drop_on_revert() {
+                        true => match cost.sum() <= MAX_DROP_ON_REVERT_COST {
+                            true => Ok(cost),
+                            // NB: Use AlreadyProcessed to ensure the TX gets dropped and not retried.
+                            false => Err(TransactionError::AlreadyProcessed),
+                        },
+                        false => Ok(cost),
+                    })
+            })
             .collect();
         compute_cost_time.stop();
         self.metrics
