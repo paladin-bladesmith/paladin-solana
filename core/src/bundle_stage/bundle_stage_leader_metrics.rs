@@ -268,6 +268,8 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     saturating_add_assign!(bundle_stage_metrics.bad_argument, 1);
                 }
+                // TODO: Consider adding metrics.
+                Err(BundleExecutionError::FrontRun) => {}
             }
         }
     }
@@ -519,7 +521,7 @@ impl BundleStageStats {
                 self.execution_results_max_retries,
                 i64
             ),
-            ("bad_argument", self.bad_argument, i64)
+            ("bad_argument", self.bad_argument, i64),
         );
     }
 }

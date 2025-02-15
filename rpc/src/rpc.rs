@@ -3495,7 +3495,7 @@ pub mod utils {
         solana_account_decoder::{UiAccount, UiAccountEncoding},
         solana_bundle::{
             bundle_execution::{LoadAndExecuteBundleError, LoadAndExecuteBundleOutput},
-            BundleExecutionError,
+            BundleExecutionError, TipError,
         },
         solana_rpc_client_api::{
             bundles::{
@@ -3564,6 +3564,10 @@ pub mod utils {
                 RpcBundleExecutionError::PohRecordError(e.to_string())
             }
             BundleExecutionError::TipError(e) => RpcBundleExecutionError::TipError(e.to_string()),
+            // NB: Lie about the error as to not break downstream consumers.
+            BundleExecutionError::FrontRun => {
+                RpcBundleExecutionError::TipError(TipError::CrankTipError.to_string())
+            }
         }
     }
 
@@ -4782,6 +4786,7 @@ fn sanitize_transaction(
         transaction,
         MessageHash::Compute,
         None,
+        false,
         address_loader,
         reserved_account_keys,
     )
