@@ -10,9 +10,11 @@ mod tests {
         },
         solana_sdk::{net::DEFAULT_TPU_COALESCE, packet::PACKET_DATA_SIZE, signature::Keypair},
         solana_streamer::{
-            nonblocking::quic::{
-                DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_MS,
-                DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+            nonblocking::{
+                quic::{
+                    DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+                },
+                stream_throttle::StakedStreamLoadEMAArgs,
             },
             quic::SpawnServerResult,
             streamer::StakedNodes,
@@ -87,10 +89,11 @@ mod tests {
             staked_nodes,
             10,
             10,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
@@ -173,10 +176,11 @@ mod tests {
             staked_nodes,
             10,
             10,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             Duration::from_secs(1), // wait_for_chunk_timeout
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
@@ -237,10 +241,11 @@ mod tests {
             staked_nodes.clone(),
             10,
             10,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
@@ -267,10 +272,11 @@ mod tests {
             staked_nodes,
             10,
             10,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 

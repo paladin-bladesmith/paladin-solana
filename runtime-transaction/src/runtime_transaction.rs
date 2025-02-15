@@ -120,6 +120,7 @@ impl RuntimeTransaction<SanitizedTransaction> {
         statically_loaded_runtime_tx: RuntimeTransaction<SanitizedVersionedTransaction>,
         address_loader: impl AddressLoader,
         reserved_account_keys: &HashSet<Pubkey>,
+        drop_on_revert: bool,
     ) -> Result<Self> {
         let hash = *statically_loaded_runtime_tx.message_hash();
         let is_simple_vote_tx = statically_loaded_runtime_tx.is_simple_vote_transaction();
@@ -127,6 +128,7 @@ impl RuntimeTransaction<SanitizedTransaction> {
             statically_loaded_runtime_tx.transaction,
             hash,
             is_simple_vote_tx,
+            drop_on_revert,
             address_loader,
             reserved_account_keys,
         )?;
@@ -207,6 +209,10 @@ impl<T: SVMTransaction> SVMTransaction for RuntimeTransaction<T> {
 
     fn signatures(&self) -> &[Signature] {
         self.transaction.signatures()
+    }
+
+    fn drop_on_revert(&self) -> bool {
+        self.transaction.drop_on_revert()
     }
 }
 
@@ -348,6 +354,7 @@ mod tests {
             statically_loaded_transaction,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
+            false,
         );
         let dynamically_loaded_transaction =
             dynamically_loaded_transaction.expect("created from statically loaded tx");

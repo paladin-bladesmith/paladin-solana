@@ -50,6 +50,7 @@ use {
 pub const UNPROCESSED_BUFFER_STEP_SIZE: usize = 64;
 /// Maximum number of votes a single receive call will accept
 const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
+const MAX_BUFFERED_BUNDLES: usize = 5;
 
 #[derive(Debug)]
 pub enum UnprocessedTransactionStorage {
@@ -1155,10 +1156,10 @@ pub struct InsertPacketBundlesSummary {
 #[derive(Debug)]
 pub struct BundleStorage {
     last_update_slot: Slot,
-    unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
     // Storage for bundles that exceeded the cost model for the slot they were last attempted
     // execution on
-    cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
 }
 
 impl BundleStorage {
@@ -1190,7 +1191,7 @@ impl BundleStorage {
     }
 
     pub(crate) fn max_receive_size(&self) -> usize {
-        self.unprocessed_bundle_storage.capacity() - self.unprocessed_bundle_storage.len()
+        MAX_BUFFERED_BUNDLES - self.unprocessed_bundle_storage.len()
     }
 
     fn forward_option(&self) -> ForwardOption {
@@ -1374,6 +1375,8 @@ impl BundleStorage {
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }
+                    // NB: Tip cutoff is static & front-runs will never succeed.
+                    Err(BundleExecutionError::FrontRun) => {}
                 },
             );
 

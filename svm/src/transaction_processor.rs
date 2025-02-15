@@ -356,6 +356,10 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                             config,
                         );
 
+                        if !executed_tx.was_successful() && tx.drop_on_revert() {
+                            return Err(TransactionError::AlreadyProcessed);
+                        }
+
                         // Update batch specific cache of the loaded programs with the modifications
                         // made by the transaction, if it executed successfully.
                         if executed_tx.was_successful() {
