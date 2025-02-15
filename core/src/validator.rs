@@ -2,9 +2,12 @@
 
 pub use solana_perf::report_target_features;
 use {
+        std::net::SocketAddrV4,
+        std::net::Ipv4Addr,
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
+        banking_stage::DEFAULT_BATCH_INTERVAL,
         banking_trace::{self, BankingTracer, TraceError},
         cache_block_meta_service::{CacheBlockMetaSender, CacheBlockMetaService},
         cluster_info_vote_listener::VoteTracker,
@@ -299,6 +302,9 @@ pub struct ValidatorConfig {
     pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
+    pub batch_interval: Duration,
+    pub p3_socket: SocketAddr,
+    pub p3_mev_socket: SocketAddr,
 }
 
 impl Default for ValidatorConfig {
@@ -377,6 +383,9 @@ impl Default for ValidatorConfig {
             shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
+            batch_interval: DEFAULT_BATCH_INTERVAL,
+            p3_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4819)),
+            p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4820)),
         }
     }
 }
@@ -1525,9 +1534,12 @@ impl Validator {
             config.generator_config.clone(),
             config.block_engine_config.clone(),
             config.relayer_config.clone(),
+            leader_schedule_cache.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
+            config.batch_interval,
+            (config.p3_socket, config.p3_mev_socket),
         );
 
         datapoint_info!(
