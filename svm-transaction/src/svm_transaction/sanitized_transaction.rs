@@ -11,4 +11,8 @@ impl SVMTransaction for SanitizedTransaction {
     fn signatures(&self) -> &[Signature] {
         SanitizedTransaction::signatures(self)
     }
+
+    fn drop_on_revert(&self) -> bool {
+        SanitizedTransaction::drop_on_revert(self)
+    }
 }
