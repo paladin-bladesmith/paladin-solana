@@ -660,7 +660,7 @@ impl Consumer {
         execute_and_commit_timings.load_execute_us = load_execute_us;
 
         let LoadAndExecuteTransactionsOutput {
-            mut processing_results,
+            processing_results,
             processed_counts,
         } = load_and_execute_transactions_output;
 
