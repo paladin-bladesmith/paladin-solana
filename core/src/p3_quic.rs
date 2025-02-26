@@ -1,6 +1,6 @@
 use {
     crate::tpu::MAX_QUIC_CONNECTIONS_PER_PEER,
-    crossbeam_channel::RecvTimeoutError,
+    crossbeam_channel::{RecvError, RecvTimeoutError, TrySendError},
     paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
@@ -48,6 +48,7 @@ pub(crate) struct P3Quic {
     staked_nodes_last_update: Instant,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     staked_connection_table: Arc<Mutex<ConnectionTable>>,
+    reg_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     packet_tx: crossbeam_channel::Sender<PacketBatch>,
 
@@ -78,6 +79,7 @@ impl P3Quic {
             Arc::new(Mutex::new(ConnectionTable::new()));
 
         // Spawn the P3 QUIC server (regular).
+        let (reg_packet_tx, reg_packet_rx) = crossbeam_channel::unbounded();
         let SpawnServerResult {
             endpoints: _,
             thread: quic_server_regular,
@@ -88,7 +90,7 @@ impl P3Quic {
             socket_regular,
             keypair,
             // NB: Packets are verified using the usual TPU lane.
-            packet_tx.clone(),
+            reg_packet_tx,
             exit.clone(),
             MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
@@ -138,6 +140,7 @@ impl P3Quic {
             staked_nodes_last_update: Instant::now(),
             poh_recorder,
             staked_connection_table,
+            reg_packet_rx,
             mev_packet_rx,
             packet_tx,
 
@@ -166,13 +169,16 @@ impl P3Quic {
 
         while !self.exit.load(Ordering::Relaxed) {
             // Try to receive mev packets.
-            match self.mev_packet_rx.recv_timeout(
-                Duration::from_secs(1).saturating_sub(self.metrics_creation.elapsed()),
-            ) {
-                Ok(packets) => self.on_mev_packets(packets),
-                Err(RecvTimeoutError::Disconnected) => break,
-                Err(RecvTimeoutError::Timeout) => {}
-            };
+            crossbeam_channel::select_biased! {
+                recv(self.mev_packet_rx) -> res => match res {
+                    Ok(packets) => self.on_mev_packets(packets),
+                    Err(RecvError) => break,
+                },
+                recv(self.reg_packet_rx) -> res => match res {
+                    Ok(packets) => self.on_regular_packets(packets),
+                    Err(RecvError) => break,
+                }
+            }
 
             // Check if we need to report metrics for the last interval.
             let now = Instant::now();
@@ -204,16 +210,29 @@ impl P3Quic {
         self.quic_server_mev.join().unwrap();
     }
 
+    fn on_regular_packets(&mut self, mut packets: PacketBatch) {
+        let len = packets.len() as u64;
+        saturating_add_assign!(self.metrics.reg_forwarded, len);
+
+        // Forward for verification & inclusion.
+        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
+            saturating_add_assign!(self.metrics.reg_dropped, len)
+        }
+    }
+
     fn on_mev_packets(&mut self, mut packets: PacketBatch) {
+        let len = packets.len() as u64;
+        saturating_add_assign!(self.metrics.mev_forwarded, len);
+
         // Set drop on revert flag.
         for packet in packets.iter_mut() {
             packet.meta_mut().set_drop_on_revert(true);
         }
 
-        // TODO: Metrics.
-
         // Forward for verification & inclusion.
-        let _ = self.packet_tx.send(packets);
+        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
+            saturating_add_assign!(self.metrics.mev_dropped, len)
+        }
     }
 
     fn update_staked_nodes(&mut self) {
@@ -298,12 +317,14 @@ struct RateLimit {
 
 #[derive(Default, PartialEq, Eq)]
 struct P3Metrics {
-    /// Number of packets (transactions) received.
-    packets: u64,
-    /// Number of transactions dropped due to full channel.
-    dropped: u64,
-    /// Number of packets that failed to deserialize to a valid transaction.
-    err_deserialize: u64,
+    /// Number of regular packets forwarded.
+    reg_forwarded: u64,
+    /// Number of regular packets dropped.
+    reg_dropped: u64,
+    /// Number of mev packets forwarded.
+    mev_forwarded: u64,
+    /// Number of mev packets dropped.
+    mev_dropped: u64,
     /// Time taken to update staked nodes.
     staked_nodes_us: u64,
 }
@@ -318,9 +339,10 @@ impl P3Metrics {
         datapoint_info!(
             "p3_quic",
             ("age_ms", age_ms as i64, i64),
-            ("transactions", self.packets as i64, i64),
-            ("dropped", self.dropped as i64, i64),
-            ("err_deserialize", self.err_deserialize as i64, i64),
+            ("regular_packets_forwarded", self.reg_forwarded as i64, i64),
+            ("regular_packets_dropped", self.reg_dropped as i64, i64),
+            ("mev_packets_forwarded", self.mev_forwarded as i64, i64),
+            ("mev_packets_dropped", self.mev_dropped as i64, i64),
             ("staked_nodes_us", self.staked_nodes_us as i64, i64),
         );
     }
