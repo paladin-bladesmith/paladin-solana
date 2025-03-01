@@ -214,6 +214,11 @@ impl P3Quic {
         let len = packets.len() as u64;
         saturating_add_assign!(self.metrics.reg_forwarded, len);
 
+        for packet in packets.iter_mut() {
+            // NB: Unset the staked node flag to prevent forwarding.
+            packet.meta_mut().set_from_staked_node(false);
+        }
+
         // Forward for verification & inclusion.
         if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
             saturating_add_assign!(self.metrics.reg_dropped, len)
@@ -227,6 +232,8 @@ impl P3Quic {
         // Set drop on revert flag.
         for packet in packets.iter_mut() {
             packet.meta_mut().set_drop_on_revert(true);
+            // NB: Unset the staked node flag to prevent forwarding.
+            packet.meta_mut().set_from_staked_node(false);
         }
 
         // Forward for verification & inclusion.
