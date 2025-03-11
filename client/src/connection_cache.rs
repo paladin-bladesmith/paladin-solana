@@ -204,7 +204,7 @@ mod tests {
         solana_sdk::{net::DEFAULT_TPU_COALESCE, signature::Keypair},
         solana_streamer::{
             nonblocking::quic::{
-                DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_MS,
+                DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_EMA_WINDOW,
                 DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             },
             quic::SpawnServerResult,
@@ -250,7 +250,7 @@ mod tests {
             staked_nodes,
             10,
             10,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            DEFAULT_MAX_STREAMS_PER_EMA_WINDOW,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,

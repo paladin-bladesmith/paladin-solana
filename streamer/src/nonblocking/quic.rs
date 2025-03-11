@@ -1,4 +1,5 @@
 use {
+    super::stream_throttle::EMA_WINDOW_MS,
     crate::{
         nonblocking::{
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
@@ -89,7 +90,9 @@ const CONNECTION_CLOSE_CODE_INVALID_STREAM: u32 = 5;
 const CONNECTION_CLOSE_REASON_INVALID_STREAM: &[u8] = b"invalid_stream";
 
 /// Limit to 250K PPS
-pub const DEFAULT_MAX_STREAMS_PER_MS: u64 = 250;
+const DEFAULT_MAX_STREAMS_PER_MS: u64 = 250;
+pub const DEFAULT_MAX_STREAMS_PER_EMA_WINDOW: i64 =
+    DEFAULT_MAX_STREAMS_PER_MS as i64 * EMA_WINDOW_MS as i64;
 
 /// The new connections per minute from a particular IP address.
 /// Heuristically set to the default maximum concurrent connections
@@ -158,7 +161,7 @@ pub fn spawn_server(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
-    max_streams_per_ms: u64,
+    max_streams_per_ema_window: i64,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
@@ -173,7 +176,7 @@ pub fn spawn_server(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
-        max_streams_per_ms,
+        max_streams_per_ema_window,
         max_connections_per_ipaddr_per_min,
         wait_for_chunk_timeout,
         coalesce,
@@ -191,7 +194,7 @@ pub fn spawn_server_multi(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
-    max_streams_per_ms: u64,
+    max_streams_per_ema_window: i64,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
@@ -223,7 +226,7 @@ pub fn spawn_server_multi(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
-        max_streams_per_ms,
+        max_streams_per_ema_window,
         max_connections_per_ipaddr_per_min,
         stats.clone(),
         wait_for_chunk_timeout,
@@ -294,7 +297,7 @@ async fn run_server(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
-    max_streams_per_ms: u64,
+    max_streams_per_ema_window: i64,
     max_connections_per_ipaddr_per_min: u64,
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
@@ -313,7 +316,7 @@ async fn run_server(
     let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
         stats.clone(),
         max_unstaked_connections,
-        max_streams_per_ms,
+        max_streams_per_ema_window,
     ));
     stats
         .quic_endpoints_count
@@ -431,7 +434,7 @@ async fn run_server(
                         staked_nodes.clone(),
                         max_staked_connections,
                         max_unstaked_connections,
-                        max_streams_per_ms,
+                        max_streams_per_ema_window,
                         stats.clone(),
                         wait_for_chunk_timeout,
                         stream_load_ema.clone(),
@@ -721,7 +724,7 @@ async fn setup_connection(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
-    max_streams_per_ms: u64,
+    max_streams_per_ema_window: i64,
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
     stream_load_ema: Arc<StakedStreamLoadEMA>,
@@ -746,8 +749,9 @@ async fn setup_connection(
                     |(pubkey, stake, total_stake, max_stake, min_stake)| {
                         // The heuristic is that the stake should be large engouh to have 1 stream pass throuh within one throttle
                         // interval during which we allow max (MAX_STREAMS_PER_MS * STREAM_THROTTLING_INTERVAL_MS) streams.
-                        let min_stake_ratio =
-                            1_f64 / (max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS) as f64;
+                        let min_stake_ratio = 1_f64
+                            / (max_streams_per_ema_window as u64 * STREAM_THROTTLING_INTERVAL_MS
+                                / EMA_WINDOW_MS) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
                         let peer_type = if stake_ratio < min_stake_ratio {
                             // If it is a staked connection with ultra low stake ratio, treat it as unstaked.
@@ -2034,7 +2038,7 @@ pub mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             0, // Do not allow any connection from unstaked clients/nodes
-            DEFAULT_MAX_STREAMS_PER_MS,
+            DEFAULT_MAX_STREAMS_PER_EMA_WINDOW,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
@@ -2070,7 +2074,7 @@ pub mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            DEFAULT_MAX_STREAMS_PER_EMA_WINDOW,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,

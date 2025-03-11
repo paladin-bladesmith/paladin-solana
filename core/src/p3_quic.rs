@@ -9,8 +9,11 @@ use {
         signature::Keypair,
     },
     solana_streamer::{
-        nonblocking::quic::{
-            ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+        nonblocking::{
+            quic::{
+                ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
+            },
+            stream_throttle::EMA_WINDOW_MS,
         },
         quic::{EndpointKeyUpdater, SpawnServerResult},
         streamer::StakedNodes,
@@ -32,9 +35,8 @@ const P3_MEV_SOCKET: &str = "0.0.0.0:4820";
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
-/// This results in 100 streams per 100ms, i.e. 1000 global TPS. Users with less
-/// than 1% stake will be rounded up to 1 stream per 100ms.
-const MAX_STREAMS_PER_MS: u64 = 1;
+const MAX_STREAMS_PER_SECOND: u64 = 100;
+const MAX_STREAMS_PER_EMA_WINDOW: i64 = MAX_STREAMS_PER_SECOND as i64 * EMA_WINDOW_MS as i64 / 1000;
 
 const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
@@ -96,7 +98,7 @@ impl P3Quic {
             staked_nodes.clone(),
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
-            MAX_STREAMS_PER_MS,
+            MAX_STREAMS_PER_EMA_WINDOW,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
@@ -122,7 +124,7 @@ impl P3Quic {
             staked_nodes.clone(),
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
-            MAX_STREAMS_PER_MS,
+            MAX_STREAMS_PER_EMA_WINDOW,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
