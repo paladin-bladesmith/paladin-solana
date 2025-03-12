@@ -1,9 +1,11 @@
 //! Contains utility functions to create server and client for test purposes.
 use {
-    super::quic::{
-        spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
-        DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_EMA_WINDOW,
-        DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+    super::{
+        quic::{
+            spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
+            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+        },
+        stream_throttle::StakedStreamLoadEMAArgs,
     },
     crate::{
         quic::{StreamerStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
@@ -111,7 +113,6 @@ pub struct TestServerConfig {
     pub max_connections_per_peer: usize,
     pub max_staked_connections: usize,
     pub max_unstaked_connections: usize,
-    pub max_streams_per_ema_window: i64,
     pub max_connections_per_ipaddr_per_minute: u64,
 }
 
@@ -121,7 +122,6 @@ impl Default for TestServerConfig {
             max_connections_per_peer: 1,
             max_staked_connections: MAX_STAKED_CONNECTIONS,
             max_unstaked_connections: MAX_UNSTAKED_CONNECTIONS,
-            max_streams_per_ema_window: DEFAULT_MAX_STREAMS_PER_EMA_WINDOW,
             max_connections_per_ipaddr_per_minute: DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
         }
     }
@@ -176,7 +176,6 @@ pub fn setup_quic_server_with_sockets(
         max_connections_per_peer,
         max_staked_connections,
         max_unstaked_connections,
-        max_streams_per_ema_window,
         max_connections_per_ipaddr_per_minute,
     }: TestServerConfig,
 ) -> SpawnTestServerResult {
@@ -200,10 +199,10 @@ pub fn setup_quic_server_with_sockets(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
-        max_streams_per_ema_window,
         max_connections_per_ipaddr_per_minute,
         DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         DEFAULT_TPU_COALESCE,
+        StakedStreamLoadEMAArgs::default(),
     )
     .unwrap();
     SpawnTestServerResult {
