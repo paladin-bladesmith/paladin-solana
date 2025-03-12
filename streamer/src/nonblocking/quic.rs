@@ -1,12 +1,8 @@
 use {
-    super::stream_throttle::EMA_WINDOW_MS,
     crate::{
         nonblocking::{
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
-            stream_throttle::{
-                ConnectionStreamCounter, StakedStreamLoadEMA, STREAM_THROTTLING_INTERVAL,
-                STREAM_THROTTLING_INTERVAL_MS,
-            },
+            stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA},
         },
         quic::{configure_server, QuicServerError, StreamerStats},
         streamer::StakedNodes,
