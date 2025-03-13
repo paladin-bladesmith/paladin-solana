@@ -1091,7 +1091,7 @@ async fn handle_connection(
             // The peer is sending faster than we're willing to read. Sleep for what's
             // left of this read interval so the peer backs off.
             let throttle_duration = throttle_args
-                .stream_load_ema_interval()
+                .stream_throttling_interval()
                 .saturating_sub(throttle_interval_start.elapsed());
 
             if !throttle_duration.is_zero() {
