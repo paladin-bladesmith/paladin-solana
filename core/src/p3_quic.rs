@@ -276,11 +276,19 @@ impl P3Quic {
         };
 
         // Setup a new staked nodes map.
+        let mut stake_total = 0;
         let stakes = pool
             .entries
             .iter()
-            .take_while(|entry| entry.lockup != Pubkey::default())
-            .clone()
+            .take_while(|entry| {
+                stake_total += entry.amount;
+
+                // Take while lockup is initialized and the locked amount exceeds
+                // 1% of total stake.
+                entry.lockup != Pubkey::default()
+                    && entry.amount > 0
+                    && entry.amount * 100 / stake_total > 1
+            })
             .filter(|entry| entry.metadata != [0; 32])
             .map(|entry| (Pubkey::new_from_array(entry.metadata), entry.amount))
             .fold(
@@ -292,6 +300,7 @@ impl P3Quic {
                 },
             );
         let stakes = Arc::new(stakes);
+        debug!("Updated stakes; stakes={stakes:?}");
 
         // Swap the old for the new.
         *self.staked_nodes.write().unwrap() = StakedNodes::new(stakes.clone(), HashMap::default());
