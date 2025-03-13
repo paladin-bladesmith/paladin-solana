@@ -108,7 +108,7 @@ impl P3Quic {
             StakedStreamLoadEMAArgs {
                 stream_load_ema_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
                 stream_load_ema_interval_count: STREAM_LOAD_EMA_INTERVAL_COUNT,
-                stream_throttling_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
+                stream_throttling_interval_ms: EMA_WINDOW_MS,
                 max_streams_per_ema_window: MAX_STREAMS_PER_EMA_WINDOW,
             },
         )
