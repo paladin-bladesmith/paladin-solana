@@ -288,21 +288,12 @@ pub mod test {
         },
     };
 
-    fn default_stream_throttle_args() -> StakedStreamLoadEMAArgs {
-        StakedStreamLoadEMAArgs {
-            max_streams_per_ema_window: 1250,
-            stream_load_ema_interval_ms: 5,
-            stream_load_ema_interval_count: 10,
-            stream_throttling_interval_ms: 100,
-        }
-    }
-
     #[test]
     fn test_max_streams_for_unstaked_connection() {
         let load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            default_stream_throttle_args(),
+            StakedStreamLoadEMAArgs::default(),
         ));
         // 25K packets per ms * 20% / 500 max unstaked connections
         assert_eq!(
@@ -319,7 +310,7 @@ pub mod test {
         let load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            default_stream_throttle_args(),
+            StakedStreamLoadEMAArgs::default(),
         ));
 
         // EMA load is used for staked connections to calculate max number of allowed streams.
@@ -411,7 +402,7 @@ pub mod test {
         let load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             0,
-            default_stream_throttle_args(),
+            StakedStreamLoadEMAArgs::default(),
         ));
 
         // EMA load is used for staked connections to calculate max number of allowed streams.
@@ -499,7 +490,7 @@ pub mod test {
         let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            default_stream_throttle_args(),
+            StakedStreamLoadEMAArgs::default(),
         ));
         stream_load_ema
             .load_in_recent_interval
@@ -528,7 +519,7 @@ pub mod test {
         let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            default_stream_throttle_args(),
+            StakedStreamLoadEMAArgs::default(),
         ));
         stream_load_ema
             .load_in_recent_interval
@@ -548,7 +539,7 @@ pub mod test {
         let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            default_stream_throttle_args(),
+            StakedStreamLoadEMAArgs::default(),
         ));
         stream_load_ema
             .load_in_recent_interval
@@ -563,7 +554,7 @@ pub mod test {
         assert_eq!(updated_ema, 2000);
 
         let ema_interval =
-            Duration::from_millis(default_stream_throttle_args().stream_load_ema_interval_ms);
+            Duration::from_millis(StakedStreamLoadEMAArgs::default().stream_load_ema_interval_ms);
         *stream_load_ema.last_update.write().unwrap() =
             Instant::now().checked_sub(ema_interval).unwrap();
 
