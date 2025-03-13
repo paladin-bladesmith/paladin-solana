@@ -36,11 +36,8 @@ const P3_MEV_SOCKET: &str = "0.0.0.0:4820";
 const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
 const MAX_STREAMS_PER_SECOND: u64 = 100;
-// TODO: Check maths to ensure this disables the EMA, also check if it disables
-// the boost effect (i.e. connections should still be capped at their respective
-// rate limits per second).
-const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 1000;
-const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 1;
+const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 400;
+const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 4;
 const EMA_WINDOW_MS: u64 = STREAM_LOAD_EMA_INTERVAL_MS * STREAM_LOAD_EMA_INTERVAL_COUNT;
 const MAX_STREAMS_PER_EMA_WINDOW: u64 = MAX_STREAMS_PER_SECOND * EMA_WINDOW_MS / 1000;
 
