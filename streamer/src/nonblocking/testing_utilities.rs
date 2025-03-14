@@ -1,9 +1,12 @@
 //! Contains utility functions to create server and client for test purposes.
 use {
-    super::quic::{
-        spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
-        DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_MS,
-        DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+    super::{
+        quic::{
+            spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
+            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_MS,
+            DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+        },
+        stream_throttle::StakedStreamLoadEMAArgs,
     },
     crate::{
         quic::{StreamerStats, MAX_STAKED_CONNECTIONS, MAX_UNSTAKED_CONNECTIONS},
@@ -200,7 +203,10 @@ pub fn setup_quic_server_with_sockets(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
-        max_streams_per_ms,
+        StakedStreamLoadEMAArgs {
+            max_streams_per_ms,
+            ..StakedStreamLoadEMAArgs::default()
+        },
         max_connections_per_ipaddr_per_minute,
         DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         DEFAULT_TPU_COALESCE,

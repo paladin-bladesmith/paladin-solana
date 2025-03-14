@@ -1,4 +1,5 @@
 use {
+    super::quic::DEFAULT_MAX_STREAMS_PER_MS,
     crate::{nonblocking::quic::ConnectionPeerType, quic::StreamerStats},
     percentage::Percentage,
     std::{
@@ -12,19 +13,38 @@ use {
 };
 
 const MAX_UNSTAKED_STREAMS_PERCENT: u64 = 20;
-pub const STREAM_THROTTLING_INTERVAL_MS: u64 = 100;
-pub const STREAM_THROTTLING_INTERVAL: Duration =
-    Duration::from_millis(STREAM_THROTTLING_INTERVAL_MS);
 const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 5;
 const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 10;
 const EMA_WINDOW_MS: u64 = STREAM_LOAD_EMA_INTERVAL_MS * STREAM_LOAD_EMA_INTERVAL_COUNT;
 const P3_RATE_LIMIT: u64 = 100;
+
+#[derive(Debug, Clone, Copy)]
+pub struct StakedStreamLoadEMAArgs {
+    pub max_streams_per_ms: u64,
+    pub stream_throttling_interval_ms: u64,
+}
+
+impl Default for StakedStreamLoadEMAArgs {
+    fn default() -> Self {
+        Self {
+            max_streams_per_ms: DEFAULT_MAX_STREAMS_PER_MS,
+            stream_throttling_interval_ms: 100,
+        }
+    }
+}
+
+impl StakedStreamLoadEMAArgs {
+    pub(crate) fn stream_throttling_interval(&self) -> Duration {
+        Duration::from_millis(self.stream_throttling_interval_ms)
+    }
+}
 
 pub(crate) struct StakedStreamLoadEMA {
     current_load_ema: AtomicU64,
     load_in_recent_interval: AtomicU64,
     last_update: RwLock<Instant>,
     stats: Arc<StreamerStats>,
+    stream_throttling_interval_ms: u64,
     // Maximum number of streams for a staked connection in EMA window
     // Note: EMA window can be different than stream throttling window. EMA is being calculated
     //       specifically for staked connections. Unstaked connections have fixed limit on
@@ -38,7 +58,10 @@ impl StakedStreamLoadEMA {
     pub(crate) fn new(
         stats: Arc<StreamerStats>,
         max_unstaked_connections: usize,
-        max_streams_per_ms: u64,
+        StakedStreamLoadEMAArgs {
+            max_streams_per_ms,
+            stream_throttling_interval_ms,
+        }: StakedStreamLoadEMAArgs,
     ) -> Self {
         let allow_unstaked_streams = max_unstaked_connections > 0;
         let max_staked_load_in_ema_window = if allow_unstaked_streams {
@@ -60,7 +83,7 @@ impl StakedStreamLoadEMA {
 
         let max_unstaked_load_in_throttling_window = if allow_unstaked_streams {
             Percentage::from(MAX_UNSTAKED_STREAMS_PERCENT)
-                .apply_to(max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS)
+                .apply_to(max_streams_per_ms * stream_throttling_interval_ms)
                 .saturating_div(max_num_unstaked_connections)
         } else {
             0
@@ -71,6 +94,7 @@ impl StakedStreamLoadEMA {
             load_in_recent_interval: AtomicU64::default(),
             last_update: RwLock::new(Instant::now()),
             stats,
+            stream_throttling_interval_ms,
             max_staked_load_in_ema_window,
             max_unstaked_load_in_throttling_window,
         }
@@ -170,7 +194,7 @@ impl StakedStreamLoadEMA {
                     / (current_load * u128::from(total_stake));
 
                 let calculated_capacity = capacity_in_ema_window
-                    * u128::from(STREAM_THROTTLING_INTERVAL_MS)
+                    * u128::from(self.stream_throttling_interval_ms)
                     / u128::from(EMA_WINDOW_MS);
                 let calculated_capacity = u64::try_from(calculated_capacity).unwrap_or_else(|_| {
                     error!(
@@ -207,13 +231,15 @@ impl StakedStreamLoadEMA {
 #[derive(Debug)]
 pub(crate) struct ConnectionStreamCounter {
     pub(crate) stream_count: AtomicU64,
+    stream_throttling_interval: Duration,
     last_throttling_instant: RwLock<tokio::time::Instant>,
 }
 
 impl ConnectionStreamCounter {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(stream_throttling_interval: Duration) -> Self {
         Self {
             stream_count: AtomicU64::default(),
+            stream_throttling_interval,
             last_throttling_instant: RwLock::new(tokio::time::Instant::now()),
         }
     }
@@ -223,12 +249,12 @@ impl ConnectionStreamCounter {
     pub(crate) fn reset_throttling_params_if_needed(&self) -> tokio::time::Instant {
         let last_throttling_instant = *self.last_throttling_instant.read().unwrap();
         if tokio::time::Instant::now().duration_since(last_throttling_instant)
-            > STREAM_THROTTLING_INTERVAL
+            > self.stream_throttling_interval
         {
             let mut last_throttling_instant = self.last_throttling_instant.write().unwrap();
             // Recheck as some other thread might have done throttling since this thread tried to acquire the write lock.
             if tokio::time::Instant::now().duration_since(*last_throttling_instant)
-                > STREAM_THROTTLING_INTERVAL
+                > self.stream_throttling_interval
             {
                 *last_throttling_instant = tokio::time::Instant::now();
                 self.stream_count.store(0, Ordering::Relaxed);
@@ -245,9 +271,7 @@ pub mod test {
     use {
         super::*,
         crate::{
-            nonblocking::{
-                quic::DEFAULT_MAX_STREAMS_PER_MS, stream_throttle::STREAM_LOAD_EMA_INTERVAL_MS,
-            },
+            nonblocking::stream_throttle::STREAM_LOAD_EMA_INTERVAL_MS,
             quic::{StreamerStats, MAX_UNSTAKED_CONNECTIONS},
         },
         std::{
@@ -261,7 +285,7 @@ pub mod test {
         let load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
         ));
         // 25K packets per ms * 20% / 500 max unstaked connections
         assert_eq!(
@@ -278,7 +302,7 @@ pub mod test {
         let load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
         ));
 
         // EMA load is used for staked connections to calculate max number of allowed streams.
@@ -370,7 +394,7 @@ pub mod test {
         let load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             0,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
         ));
 
         // EMA load is used for staked connections to calculate max number of allowed streams.
@@ -458,7 +482,7 @@ pub mod test {
         let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
         ));
         stream_load_ema
             .load_in_recent_interval
@@ -487,7 +511,7 @@ pub mod test {
         let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
         ));
         stream_load_ema
             .load_in_recent_interval
@@ -507,7 +531,7 @@ pub mod test {
         let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
             Arc::new(StreamerStats::default()),
             MAX_UNSTAKED_CONNECTIONS,
-            DEFAULT_MAX_STREAMS_PER_MS,
+            StakedStreamLoadEMAArgs::default(),
         ));
         stream_load_ema
             .load_in_recent_interval
