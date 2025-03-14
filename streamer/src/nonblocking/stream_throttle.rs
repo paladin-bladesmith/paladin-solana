@@ -235,6 +235,22 @@ impl StakedStreamLoadEMA {
                         .saturating_add(1),
                 )
             }
+            ConnectionPeerType::P3(stake) => {
+                if self.args.stream_load_ema_interval_count != 1 {
+                    eprintln!("BUG: Misconfigured P3 rate limit");
+                    return 0;
+                }
+
+                u64::try_from(
+                    u128::from(stake) * u128::from(self.max_unstaked_load_in_throttling_window)
+                        / u128::from(total_stake),
+                )
+                .unwrap_or_else(|_| {
+                    eprintln!("BUG: Failed to cast rate limit u128 -> u64");
+
+                    0
+                })
+            }
         }
     }
 }

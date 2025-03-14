@@ -130,11 +130,15 @@ impl PacketAccumulator {
 pub enum ConnectionPeerType {
     Unstaked,
     Staked(u64),
+    P3(u64),
 }
 
 impl ConnectionPeerType {
     pub(crate) fn is_staked(&self) -> bool {
-        matches!(self, ConnectionPeerType::Staked(_))
+        matches!(
+            self,
+            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_)
+        )
     }
 }
 
@@ -489,7 +493,7 @@ fn get_connection_stake(
 
 pub fn compute_max_allowed_uni_streams(peer_type: ConnectionPeerType, total_stake: u64) -> usize {
     match peer_type {
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake) | ConnectionPeerType::P3(peer_stake) => {
             // No checked math for f64 type. So let's explicitly check for 0 here
             if total_stake == 0 || peer_stake > total_stake {
                 warn!(
@@ -705,7 +709,7 @@ fn compute_recieve_window(
         ConnectionPeerType::Unstaked => {
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * QUIC_UNSTAKED_RECEIVE_WINDOW_RATIO)
         }
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake) | ConnectionPeerType::P3(peer_stake) => {
             let ratio =
                 compute_receive_window_ratio_for_staked_node(max_stake, min_stake, peer_stake);
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * ratio)
@@ -775,7 +779,7 @@ async fn setup_connection(
                 );
 
                 match params.peer_type {
-                    ConnectionPeerType::Staked(stake) => {
+                    ConnectionPeerType::Staked(stake) | ConnectionPeerType::P3(stake) => {
                         let mut connection_table_l = staked_connection_table.lock().await;
 
                         if connection_table_l.total_size >= max_staked_connections {
@@ -1106,7 +1110,7 @@ async fn handle_connection(
                             .throttled_unstaked_streams
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    ConnectionPeerType::Staked(_) => {
+                    ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_) => {
                         stats
                             .throttled_staked_streams
                             .fetch_add(1, Ordering::Relaxed);
@@ -1299,7 +1303,7 @@ async fn handle_chunks(
                     .total_unstaked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
             }
-            ConnectionPeerType::Staked(_) => {
+            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_) => {
                 stats
                     .total_staked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
@@ -1355,7 +1359,7 @@ impl ConnectionEntry {
     fn stake(&self) -> u64 {
         match self.peer_type {
             ConnectionPeerType::Unstaked => 0,
-            ConnectionPeerType::Staked(stake) => stake,
+            ConnectionPeerType::Staked(stake) | ConnectionPeerType::P3(stake) => stake,
         }
     }
 }

@@ -309,7 +309,7 @@ impl P3Quic {
         let connection_table_l = self.staked_connection_table.lock().unwrap();
         for connection in connection_table_l.table().values().flatten() {
             match connection.peer_type {
-                ConnectionPeerType::Staked(stake) => {
+                ConnectionPeerType::P3(stake) => {
                     if stakes
                         .get(&connection.identity)
                         .map_or(true, |connection_stake| connection_stake != &stake)
@@ -321,8 +321,8 @@ impl P3Quic {
                         connection.cancel.cancel();
                     }
                 }
-                ConnectionPeerType::Unstaked => {
-                    eprintln!("BUG: Unstaked connection in staked connection table");
+                ConnectionPeerType::Staked(_) | ConnectionPeerType::Unstaked => {
+                    eprintln!("BUG: Non-P3 connection in staked connection table");
                     connection.cancel.cancel();
                 }
             }
