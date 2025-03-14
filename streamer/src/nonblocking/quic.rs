@@ -759,6 +759,9 @@ async fn setup_connection(
                         } else {
                             ConnectionPeerType::Staked(stake)
                         };
+
+                        // TODO: Need to detect & setup P3 connections here.
+
                         NewConnectionHandlerParams {
                             packet_sender,
                             remote_pubkey: Some(pubkey),
