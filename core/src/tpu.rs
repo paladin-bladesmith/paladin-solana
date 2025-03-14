@@ -217,6 +217,7 @@ impl Tpu {
             tpu_max_connections_per_ipaddr_per_minute,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             tpu_coalesce,
+            false,
         )
         .unwrap();
 
@@ -239,6 +240,7 @@ impl Tpu {
             tpu_max_connections_per_ipaddr_per_minute,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             tpu_coalesce,
+            false,
         )
         .unwrap();
 

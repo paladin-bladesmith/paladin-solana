@@ -204,6 +204,7 @@ pub fn setup_quic_server_with_sockets(
         max_connections_per_ipaddr_per_minute,
         DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         DEFAULT_TPU_COALESCE,
+        false,
     )
     .unwrap();
     SpawnTestServerResult {

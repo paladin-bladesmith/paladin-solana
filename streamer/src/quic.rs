@@ -621,6 +621,7 @@ pub fn spawn_server(
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
+    is_p3: bool,
 ) -> Result<SpawnServerResult, QuicServerError> {
     spawn_server_multi(
         thread_name,
@@ -637,6 +638,7 @@ pub fn spawn_server(
         max_connections_per_ipaddr_per_min,
         wait_for_chunk_timeout,
         coalesce,
+        is_p3,
     )
 }
 
@@ -656,6 +658,7 @@ pub fn spawn_server_multi(
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
+    is_p3: bool,
 ) -> Result<SpawnServerResult, QuicServerError> {
     let runtime = rt(format!("{thread_name}Rt"));
     let result = {
@@ -674,6 +677,7 @@ pub fn spawn_server_multi(
             max_connections_per_ipaddr_per_min,
             wait_for_chunk_timeout,
             coalesce,
+            is_p3,
         )
     }?;
     let handle = thread::Builder::new()
@@ -738,6 +742,7 @@ mod test {
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
         (t, exit, receiver, server_address)
@@ -799,6 +804,7 @@ mod test {
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
@@ -847,6 +853,7 @@ mod test {
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 

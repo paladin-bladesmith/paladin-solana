@@ -166,6 +166,7 @@ pub fn spawn_server(
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
+    is_p3: bool,
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError> {
     spawn_server_multi(
         name,
@@ -181,6 +182,7 @@ pub fn spawn_server(
         max_connections_per_ipaddr_per_min,
         wait_for_chunk_timeout,
         coalesce,
+        is_p3,
     )
 }
 
@@ -199,6 +201,7 @@ pub fn spawn_server_multi(
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
+    is_p3: bool,
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError> {
     info!("Start {name} quic server on {sockets:?}");
     let concurrent_connections = max_staked_connections + max_unstaked_connections;
@@ -233,6 +236,7 @@ pub fn spawn_server_multi(
         wait_for_chunk_timeout,
         coalesce,
         max_concurrent_connections,
+        is_p3,
     ));
     Ok(SpawnNonBlockingServerResult {
         endpoints,
@@ -304,6 +308,7 @@ async fn run_server(
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
     max_concurrent_connections: usize,
+    is_p3: bool,
 ) {
     let rate_limiter = ConnectionRateLimiter::new(max_connections_per_ipaddr_per_min);
     let overall_connection_rate_limiter =
@@ -439,6 +444,7 @@ async fn run_server(
                         stats.clone(),
                         wait_for_chunk_timeout,
                         stream_load_ema.clone(),
+                        is_p3,
                     ));
                 }
                 Err(err) => {
@@ -729,6 +735,7 @@ async fn setup_connection(
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
     stream_load_ema: Arc<StakedStreamLoadEMA>,
+    is_p3: bool,
 ) {
     const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
     let from = connecting.remote_address();
@@ -753,14 +760,14 @@ async fn setup_connection(
                         let min_stake_ratio =
                             1_f64 / (max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
-                        let peer_type = if stake_ratio < min_stake_ratio {
+                        let peer_type = if is_p3 {
+                            ConnectionPeerType::P3(stake)
+                        } else if stake_ratio < min_stake_ratio {
                             // If it is a staked connection with ultra low stake ratio, treat it as unstaked.
                             ConnectionPeerType::Unstaked
                         } else {
                             ConnectionPeerType::Staked(stake)
                         };
-
-                        // TODO: Need to detect & setup P3 connections here.
 
                         NewConnectionHandlerParams {
                             packet_sender,
@@ -2045,6 +2052,7 @@ pub mod test {
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 
@@ -2081,6 +2089,7 @@ pub mod test {
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
+            false,
         )
         .unwrap();
 

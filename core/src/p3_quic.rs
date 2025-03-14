@@ -101,6 +101,7 @@ impl P3Quic {
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
+            true,
         )
         .unwrap();
 
@@ -127,6 +128,7 @@ impl P3Quic {
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
+            true,
         )
         .unwrap();
 

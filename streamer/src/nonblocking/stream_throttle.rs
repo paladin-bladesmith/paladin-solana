@@ -18,6 +18,7 @@ pub const STREAM_THROTTLING_INTERVAL: Duration =
 const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 5;
 const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 10;
 const EMA_WINDOW_MS: u64 = STREAM_LOAD_EMA_INTERVAL_MS * STREAM_LOAD_EMA_INTERVAL_COUNT;
+const P3_RATE_LIMIT: u64 = 100;
 
 pub(crate) struct StakedStreamLoadEMA {
     current_load_ema: AtomicU64,
@@ -192,8 +193,7 @@ impl StakedStreamLoadEMA {
                 )
             }
             ConnectionPeerType::P3(stake) => u64::try_from(
-                u128::from(stake) * u128::from(self.max_unstaked_load_in_throttling_window)
-                    / u128::from(total_stake),
+                u128::from(stake) * u128::from(P3_RATE_LIMIT) / u128::from(total_stake),
             )
             .unwrap_or_else(|_| {
                 eprintln!("BUG: Failed to cast rate limit u128 -> u64");
