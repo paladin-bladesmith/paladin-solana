@@ -3,7 +3,8 @@ use {
     super::{
         quic::{
             spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
-            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STREAMS_PER_MS,
+            DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         },
         stream_throttle::StakedStreamLoadEMAArgs,
     },
@@ -113,6 +114,7 @@ pub struct TestServerConfig {
     pub max_connections_per_peer: usize,
     pub max_staked_connections: usize,
     pub max_unstaked_connections: usize,
+    pub max_streams_per_ms: u64,
     pub max_connections_per_ipaddr_per_minute: u64,
 }
 
@@ -122,6 +124,7 @@ impl Default for TestServerConfig {
             max_connections_per_peer: 1,
             max_staked_connections: MAX_STAKED_CONNECTIONS,
             max_unstaked_connections: MAX_UNSTAKED_CONNECTIONS,
+            max_streams_per_ms: DEFAULT_MAX_STREAMS_PER_MS,
             max_connections_per_ipaddr_per_minute: DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
         }
     }
@@ -176,6 +179,7 @@ pub fn setup_quic_server_with_sockets(
         max_connections_per_peer,
         max_staked_connections,
         max_unstaked_connections,
+        max_streams_per_ms,
         max_connections_per_ipaddr_per_minute,
     }: TestServerConfig,
 ) -> SpawnTestServerResult {
@@ -199,10 +203,14 @@ pub fn setup_quic_server_with_sockets(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
+        StakedStreamLoadEMAArgs {
+            max_streams_per_ms,
+            ..StakedStreamLoadEMAArgs::default()
+        },
         max_connections_per_ipaddr_per_minute,
         DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         DEFAULT_TPU_COALESCE,
-        StakedStreamLoadEMAArgs::default(),
+        false,
     )
     .unwrap();
     SpawnTestServerResult {

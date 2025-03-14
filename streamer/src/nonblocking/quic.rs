@@ -87,7 +87,7 @@ const CONNECTION_CLOSE_CODE_INVALID_STREAM: u32 = 5;
 const CONNECTION_CLOSE_REASON_INVALID_STREAM: &[u8] = b"invalid_stream";
 
 /// Limit to 250K PPS
-pub(crate) const DEFAULT_MAX_STREAMS_PER_MS: u64 = 250;
+pub const DEFAULT_MAX_STREAMS_PER_MS: u64 = 250;
 
 /// The new connections per minute from a particular IP address.
 /// Heuristically set to the default maximum concurrent connections
@@ -130,11 +130,15 @@ impl PacketAccumulator {
 pub enum ConnectionPeerType {
     Unstaked,
     Staked(u64),
+    P3(u64),
 }
 
 impl ConnectionPeerType {
     pub(crate) fn is_staked(&self) -> bool {
-        matches!(self, ConnectionPeerType::Staked(_))
+        matches!(
+            self,
+            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_)
+        )
     }
 }
 
@@ -156,10 +160,11 @@ pub fn spawn_server(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
-    throttle_args: StakedStreamLoadEMAArgs,
+    is_p3: bool,
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError> {
     spawn_server_multi(
         name,
@@ -171,10 +176,11 @@ pub fn spawn_server(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
+        throttle_args,
         max_connections_per_ipaddr_per_min,
         wait_for_chunk_timeout,
         coalesce,
-        throttle_args,
+        is_p3,
     )
 }
 
@@ -189,10 +195,11 @@ pub fn spawn_server_multi(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
-    throttle_args: StakedStreamLoadEMAArgs,
+    is_p3: bool,
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError> {
     info!("Start {name} quic server on {sockets:?}");
     let concurrent_connections = max_staked_connections + max_unstaked_connections;
@@ -221,12 +228,13 @@ pub fn spawn_server_multi(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
+        throttle_args,
         max_connections_per_ipaddr_per_min,
         stats.clone(),
         wait_for_chunk_timeout,
         coalesce,
         max_concurrent_connections,
-        throttle_args,
+        is_p3,
     ));
     Ok(SpawnNonBlockingServerResult {
         endpoints,
@@ -292,12 +300,13 @@ async fn run_server(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
     max_concurrent_connections: usize,
-    throttle_args: StakedStreamLoadEMAArgs,
+    is_p3: bool,
 ) {
     let rate_limiter = ConnectionRateLimiter::new(max_connections_per_ipaddr_per_min);
     let overall_connection_rate_limiter =
@@ -429,10 +438,11 @@ async fn run_server(
                         staked_nodes.clone(),
                         max_staked_connections,
                         max_unstaked_connections,
+                        throttle_args,
                         stats.clone(),
                         wait_for_chunk_timeout,
                         stream_load_ema.clone(),
-                        throttle_args,
+                        is_p3,
                     ));
                 }
                 Err(err) => {
@@ -489,7 +499,7 @@ fn get_connection_stake(
 
 pub fn compute_max_allowed_uni_streams(peer_type: ConnectionPeerType, total_stake: u64) -> usize {
     match peer_type {
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake) | ConnectionPeerType::P3(peer_stake) => {
             // No checked math for f64 type. So let's explicitly check for 0 here
             if total_stake == 0 || peer_stake > total_stake {
                 warn!(
@@ -705,7 +715,7 @@ fn compute_recieve_window(
         ConnectionPeerType::Unstaked => {
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * QUIC_UNSTAKED_RECEIVE_WINDOW_RATIO)
         }
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake) | ConnectionPeerType::P3(peer_stake) => {
             let ratio =
                 compute_receive_window_ratio_for_staked_node(max_stake, min_stake, peer_stake);
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * ratio)
@@ -724,10 +734,11 @@ async fn setup_connection(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
+    throttle_args: StakedStreamLoadEMAArgs,
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
     stream_load_ema: Arc<StakedStreamLoadEMA>,
-    throttle_args: StakedStreamLoadEMAArgs,
+    is_p3: bool,
 ) {
     const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
     let from = connecting.remote_address();
@@ -747,20 +758,25 @@ async fn setup_connection(
                         stats.clone(),
                     ),
                     |(pubkey, stake, total_stake, max_stake, min_stake)| {
+                        let StakedStreamLoadEMAArgs {
+                            max_streams_per_ms,
+                            stream_throttling_interval_ms,
+                        } = throttle_args;
+
                         // The heuristic is that the stake should be large engouh to have 1 stream pass throuh within one throttle
                         // interval during which we allow max (MAX_STREAMS_PER_MS * STREAM_THROTTLING_INTERVAL_MS) streams.
-                        let min_stake_ratio = 1_f64
-                            / (throttle_args.max_streams_per_ema_window as u64
-                                * throttle_args.stream_throttling_interval_ms
-                                / throttle_args.ema_window_ms())
-                                as f64;
+                        let min_stake_ratio =
+                            1_f64 / (max_streams_per_ms * stream_throttling_interval_ms) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
-                        let peer_type = if stake_ratio < min_stake_ratio {
+                        let peer_type = if is_p3 {
+                            ConnectionPeerType::P3(stake)
+                        } else if stake_ratio < min_stake_ratio {
                             // If it is a staked connection with ultra low stake ratio, treat it as unstaked.
                             ConnectionPeerType::Unstaked
                         } else {
                             ConnectionPeerType::Staked(stake)
                         };
+
                         NewConnectionHandlerParams {
                             packet_sender,
                             remote_pubkey: Some(pubkey),
@@ -775,7 +791,7 @@ async fn setup_connection(
                 );
 
                 match params.peer_type {
-                    ConnectionPeerType::Staked(stake) => {
+                    ConnectionPeerType::Staked(stake) | ConnectionPeerType::P3(stake) => {
                         let mut connection_table_l = staked_connection_table.lock().await;
 
                         if connection_table_l.total_size >= max_staked_connections {
@@ -1106,7 +1122,7 @@ async fn handle_connection(
                             .throttled_unstaked_streams
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    ConnectionPeerType::Staked(_) => {
+                    ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_) => {
                         stats
                             .throttled_staked_streams
                             .fetch_add(1, Ordering::Relaxed);
@@ -1299,7 +1315,7 @@ async fn handle_chunks(
                     .total_unstaked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
             }
-            ConnectionPeerType::Staked(_) => {
+            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_) => {
                 stats
                     .total_staked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
@@ -1355,7 +1371,7 @@ impl ConnectionEntry {
     fn stake(&self) -> u64 {
         match self.peer_type {
             ConnectionPeerType::Unstaked => 0,
-            ConnectionPeerType::Staked(stake) => stake,
+            ConnectionPeerType::Staked(stake) | ConnectionPeerType::P3(stake) => stake,
         }
     }
 }
@@ -2048,10 +2064,11 @@ pub mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             0, // Do not allow any connection from unstaked clients/nodes
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 
@@ -2084,10 +2101,11 @@ pub mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 

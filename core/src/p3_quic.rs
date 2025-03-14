@@ -35,13 +35,8 @@ const P3_MEV_SOCKET: &str = "0.0.0.0:4820";
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
-const MAX_STREAMS_PER_SECOND: u64 = 100;
-const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 400;
-const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 4;
-const EMA_WINDOW_MS: u64 = STREAM_LOAD_EMA_INTERVAL_MS * STREAM_LOAD_EMA_INTERVAL_COUNT;
-const MAX_STREAMS_PER_EMA_WINDOW: u64 = MAX_STREAMS_PER_SECOND * EMA_WINDOW_MS / 1000;
 
-const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
+const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(900); // 15 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
 
 pub(crate) struct P3Quic {
@@ -101,16 +96,15 @@ impl P3Quic {
             staked_nodes.clone(),
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            StakedStreamLoadEMAArgs {
+                max_streams_per_ms: 1,
+                stream_throttling_interval_ms: 1000,
+            },
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs {
-                stream_load_ema_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
-                stream_load_ema_interval_count: STREAM_LOAD_EMA_INTERVAL_COUNT,
-                stream_throttling_interval_ms: EMA_WINDOW_MS,
-                max_streams_per_ema_window: MAX_STREAMS_PER_EMA_WINDOW,
-            },
+            true,
         )
         .unwrap();
 
@@ -132,16 +126,15 @@ impl P3Quic {
             staked_nodes.clone(),
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            StakedStreamLoadEMAArgs {
+                max_streams_per_ms: 1,
+                stream_throttling_interval_ms: 1000,
+            },
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs {
-                stream_load_ema_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
-                stream_load_ema_interval_count: STREAM_LOAD_EMA_INTERVAL_COUNT,
-                stream_throttling_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
-                max_streams_per_ema_window: MAX_STREAMS_PER_EMA_WINDOW,
-            },
+            true,
         )
         .unwrap();
 
@@ -309,7 +302,7 @@ impl P3Quic {
         let connection_table_l = self.staked_connection_table.lock().unwrap();
         for connection in connection_table_l.table().values().flatten() {
             match connection.peer_type {
-                ConnectionPeerType::Staked(stake) => {
+                ConnectionPeerType::P3(stake) => {
                     if stakes
                         .get(&connection.identity)
                         .map_or(true, |connection_stake| connection_stake != &stake)
@@ -321,8 +314,8 @@ impl P3Quic {
                         connection.cancel.cancel();
                     }
                 }
-                ConnectionPeerType::Unstaked => {
-                    eprintln!("BUG: Unstaked connection in staked connection table");
+                ConnectionPeerType::Staked(_) | ConnectionPeerType::Unstaked => {
+                    eprintln!("BUG: Non-P3 connection in staked connection table");
                     connection.cancel.cancel();
                 }
             }

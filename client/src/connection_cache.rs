@@ -252,10 +252,11 @@ mod tests {
             staked_nodes,
             10,
             10,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 

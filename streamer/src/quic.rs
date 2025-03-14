@@ -618,10 +618,11 @@ pub fn spawn_server(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
-    throttle_args: StakedStreamLoadEMAArgs,
+    is_p3: bool,
 ) -> Result<SpawnServerResult, QuicServerError> {
     spawn_server_multi(
         thread_name,
@@ -634,10 +635,11 @@ pub fn spawn_server(
         staked_nodes,
         max_staked_connections,
         max_unstaked_connections,
+        throttle_args,
         max_connections_per_ipaddr_per_min,
         wait_for_chunk_timeout,
         coalesce,
-        throttle_args,
+        is_p3,
     )
 }
 
@@ -653,10 +655,11 @@ pub fn spawn_server_multi(
     staked_nodes: Arc<RwLock<StakedNodes>>,
     max_staked_connections: usize,
     max_unstaked_connections: usize,
+    throttle_args: StakedStreamLoadEMAArgs,
     max_connections_per_ipaddr_per_min: u64,
     wait_for_chunk_timeout: Duration,
     coalesce: Duration,
-    throttle_args: StakedStreamLoadEMAArgs,
+    is_p3: bool,
 ) -> Result<SpawnServerResult, QuicServerError> {
     let runtime = rt(format!("{thread_name}Rt"));
     let result = {
@@ -671,10 +674,11 @@ pub fn spawn_server_multi(
             staked_nodes,
             max_staked_connections,
             max_unstaked_connections,
+            throttle_args,
             max_connections_per_ipaddr_per_min,
             wait_for_chunk_timeout,
             coalesce,
-            throttle_args,
+            is_p3,
         )
     }?;
     let handle = thread::Builder::new()
@@ -734,10 +738,11 @@ mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
         (t, exit, receiver, server_address)
@@ -795,10 +800,11 @@ mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 
@@ -843,10 +849,11 @@ mod test {
             staked_nodes,
             MAX_STAKED_CONNECTIONS,
             0, // Do not allow any connection from unstaked clients/nodes
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 

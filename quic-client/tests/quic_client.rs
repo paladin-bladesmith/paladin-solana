@@ -89,10 +89,11 @@ mod tests {
             staked_nodes,
             10,
             10,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 
@@ -175,10 +176,11 @@ mod tests {
             staked_nodes,
             10,
             10,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             Duration::from_secs(1), // wait_for_chunk_timeout
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 
@@ -239,10 +241,11 @@ mod tests {
             staked_nodes.clone(),
             10,
             10,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 
@@ -269,10 +272,11 @@ mod tests {
             staked_nodes,
             10,
             10,
+            StakedStreamLoadEMAArgs::default(),
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs::default(),
+            false,
         )
         .unwrap();
 
