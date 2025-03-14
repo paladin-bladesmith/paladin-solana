@@ -9,11 +9,8 @@ use {
         signature::Keypair,
     },
     solana_streamer::{
-        nonblocking::{
-            quic::{
-                ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            },
-            stream_throttle::StakedStreamLoadEMAArgs,
+        nonblocking::quic::{
+            ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
         },
         quic::{EndpointKeyUpdater, SpawnServerResult},
         streamer::StakedNodes,
@@ -35,11 +32,9 @@ const P3_MEV_SOCKET: &str = "0.0.0.0:4820";
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
-const MAX_STREAMS_PER_SECOND: u64 = 100;
-const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 400;
-const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 4;
-const EMA_WINDOW_MS: u64 = STREAM_LOAD_EMA_INTERVAL_MS * STREAM_LOAD_EMA_INTERVAL_COUNT;
-const MAX_STREAMS_PER_EMA_WINDOW: u64 = MAX_STREAMS_PER_SECOND * EMA_WINDOW_MS / 1000;
+/// This results in 100 streams per 100ms, i.e. 1000 global TPS. Users with less
+/// than 1% stake will be rounded up to 1 stream per 100ms.
+const MAX_STREAMS_PER_MS: u64 = 1;
 
 const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(300); // 5 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
@@ -101,16 +96,11 @@ impl P3Quic {
             staked_nodes.clone(),
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            MAX_STREAMS_PER_MS,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs {
-                stream_load_ema_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
-                stream_load_ema_interval_count: STREAM_LOAD_EMA_INTERVAL_COUNT,
-                stream_throttling_interval_ms: EMA_WINDOW_MS,
-                max_streams_per_ema_window: MAX_STREAMS_PER_EMA_WINDOW,
-            },
         )
         .unwrap();
 
@@ -132,16 +122,11 @@ impl P3Quic {
             staked_nodes.clone(),
             MAX_STAKED_CONNECTIONS,
             MAX_UNSTAKED_CONNECTIONS,
+            MAX_STREAMS_PER_MS,
             DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
             // Streams will be kept alive for 300s (5min) if no data is sent.
             Duration::from_secs(300),
             DEFAULT_TPU_COALESCE,
-            StakedStreamLoadEMAArgs {
-                stream_load_ema_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
-                stream_load_ema_interval_count: STREAM_LOAD_EMA_INTERVAL_COUNT,
-                stream_throttling_interval_ms: STREAM_LOAD_EMA_INTERVAL_MS,
-                max_streams_per_ema_window: MAX_STREAMS_PER_EMA_WINDOW,
-            },
         )
         .unwrap();
 
