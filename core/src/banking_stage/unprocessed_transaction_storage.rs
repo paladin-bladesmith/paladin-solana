@@ -50,7 +50,7 @@ use {
 pub const UNPROCESSED_BUFFER_STEP_SIZE: usize = 64;
 /// Maximum number of votes a single receive call will accept
 const MAX_NUM_VOTES_RECEIVE: usize = 10_000;
-const MAX_BUFFERED_BUNDLES: usize = 5;
+const MAX_BUFFERED_BUNDLES: usize = 256;
 
 #[derive(Debug)]
 pub enum UnprocessedTransactionStorage {
