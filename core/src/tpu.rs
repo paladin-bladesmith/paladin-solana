@@ -161,6 +161,7 @@ impl Tpu {
         shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
         preallocated_bundle_cost: u64,
         batch_interval: Duration,
+        (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
     ) -> (Self, Vec<Arc<dyn NotifyKeyUpdate + Sync + Send>>) {
         let TpuSockets {
             transactions: transactions_sockets,
@@ -297,6 +298,7 @@ impl Tpu {
             packet_sender.clone(),
             poh_recorder.clone(),
             keypair,
+            (p3_socket, p3_mev_socket),
         );
 
         let (heartbeat_tx, heartbeat_rx) = unbounded();

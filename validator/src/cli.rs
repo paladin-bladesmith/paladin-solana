@@ -72,6 +72,8 @@ const MINIMUM_TICKS_PER_SLOT: u64 = 2;
 const DEFAULT_PREALLOCATED_BUNDLE_COST: &str = "3000000";
 const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL_MS: &str = "500";
 const DEFAULT_RELAYER_MAX_FAILED_HEARTBEATS: &str = "3";
+const DEFAULT_P3_PORT: &str = "4819";
+const DEFAULT_P3_MEV_PORT: &str = "4820";
 
 pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     return App::new(crate_name!())
@@ -86,6 +88,20 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .long("funnel")
                 .help("funnel. Defaults to None")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("p3_port")
+                .long("p3-port")
+                .help("Which port to bind P3 to")
+                .default_value(DEFAULT_P3_PORT)
+                .takes_value(true)
+        )
+        .arg(
+            Arg::with_name("p3_mev_port")
+                .long("p3-mev-port")
+                .help("Which port to bind P3 MEV to")
+                .default_value(DEFAULT_P3_MEV_PORT)
+                .takes_value(true)
         )
         .arg(
             Arg::with_name("batch_interval_ms")

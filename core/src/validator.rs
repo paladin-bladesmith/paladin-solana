@@ -2,6 +2,8 @@
 
 pub use solana_perf::report_target_features;
 use {
+        std::net::SocketAddrV4,
+        std::net::Ipv4Addr,
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
@@ -301,6 +303,8 @@ pub struct ValidatorConfig {
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
     pub batch_interval: Duration,
+    pub p3_socket: SocketAddr,
+    pub p3_mev_socket: SocketAddr,
 }
 
 impl Default for ValidatorConfig {
@@ -380,6 +384,8 @@ impl Default for ValidatorConfig {
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: u64::default(),
             batch_interval: DEFAULT_BATCH_INTERVAL,
+            p3_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4819)),
+            p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4820)),
         }
     }
 }
@@ -1533,6 +1539,7 @@ impl Validator {
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
             config.batch_interval,
+            (config.p3_socket, config.p3_mev_socket),
         );
 
         datapoint_info!(

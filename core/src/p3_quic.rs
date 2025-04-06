@@ -2,6 +2,7 @@ use {
     crate::tpu::MAX_QUIC_CONNECTIONS_PER_PEER,
     crossbeam_channel::{RecvError, TrySendError},
     paladin_lockup_program::state::LockupPool,
+    std::net::SocketAddr,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
@@ -29,9 +30,6 @@ use {
         time::{Duration, Instant},
     },
 };
-
-const P3_SOCKET: &str = "0.0.0.0:4819";
-const P3_MEV_SOCKET: &str = "0.0.0.0:4820";
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
 const MAX_UNSTAKED_CONNECTIONS: usize = 0;
@@ -62,10 +60,11 @@ impl P3Quic {
         packet_tx: crossbeam_channel::Sender<PacketBatch>,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         keypair: &Keypair,
+        (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
     ) -> (std::thread::JoinHandle<()>, [Arc<EndpointKeyUpdater>; 2]) {
         // Bind the P3 QUIC UDP socket.
-        let socket_regular = UdpSocket::bind(P3_SOCKET).unwrap();
-        let socket_mev = UdpSocket::bind(P3_MEV_SOCKET).unwrap();
+        let socket_regular = UdpSocket::bind(p3_socket).unwrap();
+        let socket_mev = UdpSocket::bind(p3_mev_socket).unwrap();
 
         // Setup initial staked nodes (empty).
         let stakes = Arc::default();
