@@ -58,10 +58,8 @@ impl StakedStreamLoadEMA {
     pub(crate) fn new(
         stats: Arc<StreamerStats>,
         max_unstaked_connections: usize,
-        StakedStreamLoadEMAArgs {
-            max_streams_per_ms,
-            stream_throttling_interval_ms,
-        }: StakedStreamLoadEMAArgs,
+        max_streams_per_ms: u64,
+        stream_throttling_interval_ms: u64,
     ) -> Self {
         let allow_unstaked_streams = max_unstaked_connections > 0;
         let max_staked_load_in_ema_window = if allow_unstaked_streams {
