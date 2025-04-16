@@ -2,7 +2,6 @@ use {
     crate::tpu::MAX_QUIC_CONNECTIONS_PER_PEER,
     crossbeam_channel::{RecvError, TrySendError},
     paladin_lockup_program::state::LockupPool,
-    std::net::SocketAddr,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
@@ -10,19 +9,16 @@ use {
         signature::Keypair,
     },
     solana_streamer::{
-        nonblocking::{
-            quic::{
-                ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            },
-            stream_throttle::StakedStreamLoadEMAArgs,
+        nonblocking::quic::{
+            ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
         },
-        quic::{EndpointKeyUpdater, SpawnServerResult},
+        quic::{EndpointKeyUpdater, QuicServerParams, SpawnServerResult},
         streamer::StakedNodes,
     },
     spl_discriminator::discriminator::SplDiscriminate,
     std::{
         collections::HashMap,
-        net::UdpSocket,
+        net::{SocketAddr, UdpSocket},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc, Mutex, RwLock,
@@ -32,7 +28,6 @@ use {
 };
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
-const MAX_UNSTAKED_CONNECTIONS: usize = 0;
 
 const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(900); // 15 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
@@ -91,19 +86,15 @@ impl P3Quic {
             // NB: Packets are verified using the usual TPU lane.
             reg_packet_tx,
             exit.clone(),
-            MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
-            MAX_STAKED_CONNECTIONS,
-            MAX_UNSTAKED_CONNECTIONS,
-            StakedStreamLoadEMAArgs {
-                max_streams_per_ms: 1,
-                stream_throttling_interval_ms: 1000,
+            QuicServerParams {
+                is_p3: true,
+                // TODO: How does this interplay with max connections per peer.
+                max_staked_connections: MAX_STAKED_CONNECTIONS,
+                max_unstaked_connections: 0,
+                // TODO: Stream throttling interval.
+                ..Default::default()
             },
-            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            // Streams will be kept alive for 300s (5min) if no data is sent.
-            Duration::from_secs(300),
-            DEFAULT_TPU_COALESCE,
-            true,
         )
         .unwrap();
 
@@ -121,19 +112,15 @@ impl P3Quic {
             // NB: Packets are verified using the usual TPU lane.
             mev_packet_tx,
             exit.clone(),
-            MAX_QUIC_CONNECTIONS_PER_PEER,
             staked_nodes.clone(),
-            MAX_STAKED_CONNECTIONS,
-            MAX_UNSTAKED_CONNECTIONS,
-            StakedStreamLoadEMAArgs {
-                max_streams_per_ms: 1,
-                stream_throttling_interval_ms: 1000,
+            QuicServerParams {
+                is_p3: true,
+                // TODO: How does this interplay with max connections per peer.
+                max_staked_connections: MAX_STAKED_CONNECTIONS,
+                max_unstaked_connections: 0,
+                // TODO: Stream throttling interval.
+                ..Default::default()
             },
-            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            // Streams will be kept alive for 300s (5min) if no data is sent.
-            Duration::from_secs(300),
-            DEFAULT_TPU_COALESCE,
-            true,
         )
         .unwrap();
 

@@ -185,7 +185,6 @@ fn simulate_transaction(
         transaction,
         MessageHash::Compute,
         Some(false), // is_simple_vote_tx
-        false,
         bank,
         bank.get_reserved_account_keys(),
     ) {
@@ -323,7 +322,6 @@ impl Banks for BanksServer {
             transaction.clone(),
             MessageHash::Compute,
             Some(false), // is_simple_vote_tx
-            false,
             bank.as_ref(),
             bank.get_reserved_account_keys(),
         ) {

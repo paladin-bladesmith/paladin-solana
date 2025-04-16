@@ -3493,7 +3493,7 @@ pub mod utils {
         solana_account_decoder::{UiAccount, UiAccountEncoding},
         solana_bundle::{
             bundle_execution::{LoadAndExecuteBundleError, LoadAndExecuteBundleOutput},
-            BundleExecutionError, TipError,
+            BundleExecutionError,
         },
         solana_rpc_client_api::{
             bundles::{
@@ -4724,7 +4724,6 @@ fn sanitize_transaction(
         transaction,
         MessageHash::Compute,
         None,
-        false,
         address_loader,
         reserved_account_keys,
     )

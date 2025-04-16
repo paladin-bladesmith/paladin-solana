@@ -294,7 +294,6 @@ impl TipManager {
             tx,
             MessageHash::Compute,
             None,
-            false,
             bank,
             bank.get_reserved_account_keys(),
         )
@@ -374,7 +373,6 @@ impl TipManager {
             tx,
             MessageHash::Compute,
             None,
-            false,
             bank,
             bank.get_reserved_account_keys(),
         )
@@ -421,7 +419,6 @@ impl TipManager {
             tx,
             MessageHash::Compute,
             None,
-            false,
             bank,
             bank.get_reserved_account_keys(),
         )
@@ -477,7 +474,7 @@ impl TipManager {
         block_builder: &Pubkey,
         block_builder_commission: u64,
         (funnel, funnel_key): (&Funnel, Pubkey),
-    ) -> SanitizedTransaction {
+    ) -> RuntimeTransaction<SanitizedTransaction> {
         let additional_lamports = self.compute_additional_lamports(bank);
 
         let become_receiver = funnel::instructions::become_receiver::ix(
@@ -524,7 +521,6 @@ impl TipManager {
                 bank.last_blockhash(),
             ),
             bank.get_reserved_account_keys(),
-            false,
         )
         .unwrap()
     }
@@ -624,7 +620,6 @@ impl TipManager {
             tx,
             MessageHash::Compute,
             None,
-            false,
             bank,
             bank.get_reserved_account_keys(),
         )
