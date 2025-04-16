@@ -262,7 +262,7 @@ impl BundleConsumer {
         if bank_start.working_bank.slot() != *last_tip_updated_slot
             && Self::bundle_touches_tip_pdas(
                 locked_bundle.sanitized_bundle(),
-                tip_manager.get_tip_accounts(),
+                &tip_manager.get_tip_accounts(),
             )
         {
             let start = Instant::now();
@@ -986,14 +986,10 @@ mod tests {
             TipManagerConfig {
                 funnel,
                 rewards_split: None,
-                tip_payment_program_id: Pubkey::from_str(
-                    "T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",
-                )
-                .unwrap(),
-                tip_distribution_program_id: Pubkey::from_str(
+                tip_payment_program_id: pubkey!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",),
+                tip_distribution_program_id: pubkey!(
                     "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
-                )
-                .unwrap(),
+                ),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
                     vote_account: *vote_account,

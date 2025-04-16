@@ -340,7 +340,6 @@ impl Tpu {
 
         let tip_manager = TipManager::new(
             blockstore.clone(),
-            cluster_info.clone(),
             leader_schedule_cache.clone(),
             tip_manager_config,
         );
