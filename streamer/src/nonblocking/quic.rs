@@ -2,7 +2,10 @@ use {
     crate::{
         nonblocking::{
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
-            stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA},
+            stream_throttle::{
+                ConnectionStreamCounter, StakedStreamLoadEMA, STREAM_THROTTLING_INTERVAL,
+                STREAM_THROTTLING_INTERVAL_MS,
+            },
         },
         quic::{configure_server, QuicServerError, QuicServerParams, StreamerStats},
         streamer::StakedNodes,
@@ -312,6 +315,7 @@ async fn run_server(
     let stream_load_ema = Arc::new(StakedStreamLoadEMA::new(
         stats.clone(),
         max_unstaked_connections,
+        max_streams_per_ms,
     ));
     stats
         .quic_endpoints_count
@@ -791,7 +795,6 @@ async fn setup_connection(
                                 &params,
                                 wait_for_chunk_timeout,
                                 stream_load_ema.clone(),
-                                throttle_args,
                             ) {
                                 stats
                                     .connection_added_from_staked_peer
