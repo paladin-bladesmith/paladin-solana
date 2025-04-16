@@ -1015,7 +1015,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
-                Duration::from_millis(50),
+                Duration::ZERO,
             );
             drop(non_vote_sender);
             drop(tpu_vote_sender);
@@ -1081,7 +1081,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
-                Duration::from_millis(50),
+                Duration::ZERO,
             );
             trace!("sending bank");
             drop(non_vote_sender);
@@ -1172,7 +1172,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
-                Duration::from_millis(50),
+                Duration::ZERO,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -1557,7 +1557,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
-                Duration::from_millis(50),
+                Duration::ZERO,
             );
 
             let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
