@@ -60,6 +60,13 @@ pub(crate) trait ReceiveAndBuffer {
         count_metrics: &mut SchedulerCountMetrics,
         decision: &BufferedPacketsDecision,
     ) -> Result<usize, ()>;
+
+    fn maybe_queue_batch(
+        &mut self,
+        container: &mut Self::Container,
+        timing_metrics: &mut SchedulerTimingMetrics,
+        count_metrics: &mut SchedulerCountMetrics,
+    );
 }
 
 pub(crate) struct SanitizedTransactionReceiveAndBuffer {
@@ -112,9 +119,6 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
             saturating_add_assign!(timing_metrics.receive_time_us, receive_time_us);
         });
 
-        // Check if the batch can be progressed to buffer stage.
-        self.maybe_queue_batch(container, timing_metrics, count_metrics);
-
         let num_received = match received_packet_results {
             Ok(receive_packet_results) => {
                 let num_received_packets = receive_packet_results.deserialized_packets.len();
@@ -146,6 +150,25 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
 
         Ok(num_received)
     }
+
+    fn maybe_queue_batch(
+        &mut self,
+        container: &mut TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+        timing_metrics: &mut SchedulerTimingMetrics,
+        count_metrics: &mut SchedulerCountMetrics,
+    ) {
+        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
+            let (_, buffer_time_us) = measure_us!(Self::buffer_packets(
+                &self.bank_forks,
+                container,
+                timing_metrics,
+                count_metrics,
+                self.batch.drain(..),
+            ));
+            timing_metrics
+                .update(|metrics| saturating_add_assign!(metrics.buffer_time_us, buffer_time_us));
+        }
+    }
 }
 
 impl SanitizedTransactionReceiveAndBuffer {
@@ -174,25 +197,6 @@ impl SanitizedTransactionReceiveAndBuffer {
         }
 
         self.batch.extend(packets);
-    }
-
-    fn maybe_queue_batch(
-        &mut self,
-        container: &mut TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
-        timing_metrics: &mut SchedulerTimingMetrics,
-        count_metrics: &mut SchedulerCountMetrics,
-    ) {
-        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
-            let (_, buffer_time_us) = measure_us!(Self::buffer_packets(
-                &self.bank_forks,
-                container,
-                timing_metrics,
-                count_metrics,
-                self.batch.drain(..),
-            ));
-            timing_metrics
-                .update(|metrics| saturating_add_assign!(metrics.buffer_time_us, buffer_time_us));
-        }
     }
 
     fn buffer_packets(
@@ -419,6 +423,14 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         }
 
         Ok(num_received)
+    }
+
+    fn maybe_queue_batch(
+        &mut self,
+        _container: &mut Self::Container,
+        _timing_metrics: &mut SchedulerTimingMetrics,
+        _count_metrics: &mut SchedulerCountMetrics,
+    ) {
     }
 }
 

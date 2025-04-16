@@ -123,8 +123,12 @@ where
                 .maybe_report_and_reset_slot(new_leader_slot);
 
             self.receive_completed()?;
-            self.maybe_queue_batch();
             self.process_transactions(&decision)?;
+            self.receive_and_buffer.maybe_queue_batch(
+                &mut self.container,
+                &mut self.timing_metrics,
+                &mut self.count_metrics,
+            );
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
@@ -145,10 +149,6 @@ where
         }
 
         Ok(())
-    }
-
-    fn maybe_queue_batch(&mut self) {
-        todo!()
     }
 
     /// Process packets based on decision.
@@ -454,7 +454,6 @@ where
         &mut self,
         decision: &BufferedPacketsDecision,
     ) -> Result<usize, ()> {
-        // TODO: Need to re-implement batching/
         self.receive_and_buffer.receive_and_buffer_packets(
             &mut self.container,
             &mut self.timing_metrics,
