@@ -491,6 +491,7 @@ impl TransactionViewReceiveAndBuffer {
                             alt_resolved_slot,
                             sanitized_epoch,
                             transaction_account_lock_limit,
+                            packet.get_drop_on_revert(),
                         ) {
                             Ok(state) => {
                                 num_buffered += 1;
@@ -594,6 +595,7 @@ impl TransactionViewReceiveAndBuffer {
             view,
             loaded_addresses,
             root_bank.get_reserved_account_keys(),
+            drop_on_revert,
         ) else {
             return Err(());
         };

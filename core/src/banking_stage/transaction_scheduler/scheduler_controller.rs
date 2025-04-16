@@ -155,17 +155,7 @@ where
     }
 
     fn maybe_queue_batch(&mut self) {
-        if !self.batch.is_empty() && self.batch_start.elapsed() > self.batch_interval {
-            let (_, buffer_time_us) = measure_us!(Self::buffer_packets(
-                &self.bank_forks,
-                &mut self.container,
-                &mut self.transaction_id_generator,
-                &mut self.count_metrics,
-                self.batch.drain(..),
-            ));
-            self.timing_metrics
-                .update(|metrics| saturating_add_assign!(metrics.buffer_time_us, buffer_time_us));
-        }
+        todo!()
     }
 
     /// Process packets based on decision.

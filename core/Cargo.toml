@@ -32,6 +32,7 @@ dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 etcd-client = { workspace = true, features = ["tls"] }
 funnel = { workspace = true }
 futures = { workspace = true }
+hashbrown = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
@@ -147,6 +148,7 @@ solana-unified-scheduler-pool = { workspace = true, features = [
 ] }
 solana-vote = { workspace = true, features = ["dev-context-only-utils"] }
 spl-memo = { workspace = true, features = ["no-entrypoint"] }
+spl-discriminator = { workspace = true }
 static_assertions = { workspace = true }
 systemstat = { workspace = true }
 test-case = { workspace = true }
