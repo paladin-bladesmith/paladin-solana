@@ -564,6 +564,7 @@ impl BankingStage {
                     blacklisted_accounts.clone(),
                     bundle_account_locker.clone(),
                     block_cost_limit_reservation_cb.clone(),
+                    batch_interval,
                 );
             }
             TransactionStructure::View => {
@@ -588,6 +589,7 @@ impl BankingStage {
                     blacklisted_accounts.clone(),
                     bundle_account_locker.clone(),
                     block_cost_limit_reservation_cb.clone(),
+                    batch_interval,
                 );
             }
         }
@@ -613,6 +615,7 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        batch_interval: Duration,
     ) {
         // Create channels for communication between scheduler and workers
         let num_workers = (num_threads).saturating_sub(NUM_VOTE_PROCESSING_THREADS);
@@ -1352,6 +1355,7 @@ mod tests {
                     HashSet::default(),
                     BundleAccountLocker::default(),
                     |_| 0,
+                    Duration::ZERO,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -1701,6 +1705,7 @@ mod tests {
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
                     BundleAccountLocker::default(),
                     |_| 0,
+                    Duration::ZERO,
                 );
 
                 // bad tx

@@ -25,6 +25,7 @@ assert_matches = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
 bs58 = { workspace = true }
+bytemuck = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
 crossbeam-channel = { workspace = true }
@@ -110,6 +111,7 @@ solana-version = { workspace = true }
 solana-vote = { workspace = true }
 solana-vote-program = { workspace = true }
 solana-wen-restart = { workspace = true }
+spl-discriminator = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
 sys-info = { workspace = true }
@@ -148,7 +150,6 @@ solana-unified-scheduler-pool = { workspace = true, features = [
 ] }
 solana-vote = { workspace = true, features = ["dev-context-only-utils"] }
 spl-memo = { workspace = true, features = ["no-entrypoint"] }
-spl-discriminator = { workspace = true }
 static_assertions = { workspace = true }
 systemstat = { workspace = true }
 test-case = { workspace = true }

@@ -491,7 +491,7 @@ impl TransactionViewReceiveAndBuffer {
                             alt_resolved_slot,
                             sanitized_epoch,
                             transaction_account_lock_limit,
-                            packet.get_drop_on_revert(),
+                            packet.meta().is_mev(),
                         ) {
                             Ok(state) => {
                                 num_buffered += 1;
@@ -550,6 +550,7 @@ impl TransactionViewReceiveAndBuffer {
         alt_resolved_slot: Slot,
         sanitized_epoch: Epoch,
         transaction_account_lock_limit: usize,
+        drop_on_revert: bool,
     ) -> Result<TransactionViewState, ()> {
         // Parsing and basic sanitization checks
         let Ok(view) = SanitizedTransactionView::try_new_sanitized(bytes) else {

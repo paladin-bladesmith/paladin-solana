@@ -7719,6 +7719,7 @@ dependencies = [
  "base64 0.22.1",
  "bincode",
  "bs58 0.5.1",
+ "bytemuck",
  "bytes",
  "chrono",
  "crossbeam-channel",
@@ -8244,8 +8245,6 @@ dependencies = [
 [[package]]
 name = "solana-frozen-abi"
 version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "685197cf2304e5d26973c72286abb8eb503eede4555b05dbe853d236fd74132c"
 dependencies = [
  "bs58 0.5.1",
  "bv",
@@ -8263,8 +8262,6 @@ dependencies = [
 [[package]]
 name = "solana-frozen-abi-macro"
 version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b83f88a126213cbcb57672c5e70ddb9791eff9b480e9f39fe9285fd2abca66fa"
 dependencies = [
  "proc-macro2 1.0.93",
  "quote 1.0.38",
@@ -9019,8 +9016,6 @@ dependencies = [
 [[package]]
 name = "solana-packet"
 version = "2.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "004f2d2daf407b3ec1a1ca5ec34b3ccdfd6866dd2d3c7d0715004a96e4b6d127"
 dependencies = [
  "bincode",
  "bitflags 2.8.0",

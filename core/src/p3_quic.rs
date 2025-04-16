@@ -1,17 +1,13 @@
 use {
-    crate::tpu::MAX_QUIC_CONNECTIONS_PER_PEER,
     crossbeam_channel::{RecvError, TrySendError},
     paladin_lockup_program::state::LockupPool,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
-        account::ReadableAccount, net::DEFAULT_TPU_COALESCE, pubkey::Pubkey, saturating_add_assign,
-        signature::Keypair,
+        account::ReadableAccount, pubkey::Pubkey, saturating_add_assign, signature::Keypair,
     },
     solana_streamer::{
-        nonblocking::quic::{
-            ConnectionPeerType, ConnectionTable, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-        },
+        nonblocking::quic::{ConnectionPeerType, ConnectionTable},
         quic::{EndpointKeyUpdater, QuicServerParams, SpawnServerResult},
         streamer::StakedNodes,
     },

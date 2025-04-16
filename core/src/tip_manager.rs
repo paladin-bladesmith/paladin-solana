@@ -513,7 +513,7 @@ impl TipManager {
             }
             .to_account_metas(None),
         };
-        SanitizedTransaction::try_from_legacy_transaction(
+        let sanitized = SanitizedTransaction::try_from_legacy_transaction(
             Transaction::new_signed_with_payer(
                 &[become_receiver, change_block_builder_ix],
                 Some(&keypair.pubkey()),
@@ -522,7 +522,10 @@ impl TipManager {
             ),
             bank.get_reserved_account_keys(),
         )
-        .unwrap()
+        .unwrap();
+        let hash = MessageHash::Precomputed(*sanitized.message_hash());
+
+        RuntimeTransaction::try_from(sanitized.into(), hash, None)
     }
 
     pub fn build_change_tip_receiver_and_block_builder_tx(
