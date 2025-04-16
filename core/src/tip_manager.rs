@@ -432,7 +432,6 @@ impl TipManager {
             None => self.build_change_tip_receiver_and_block_builder_tx(
                 &config.tip_receiver,
                 new_tip_receiver,
-                bank,
                 keypair,
                 &config.block_builder,
                 block_builder,
@@ -464,7 +463,6 @@ impl TipManager {
         &self,
         old_tip_receiver: &Pubkey,
         new_tip_receiver: &Pubkey,
-        bank: &Bank,
         keypair: &Keypair,
         old_block_builder: &Pubkey,
         block_builder: &Pubkey,

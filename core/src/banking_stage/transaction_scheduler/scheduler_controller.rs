@@ -15,7 +15,6 @@ use {
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
         forwarder::Forwarder,
-        immutable_deserialized_packet::ImmutableDeserializedPacket,
         transaction_scheduler::transaction_state_container::StateContainer,
         ForwardOption, LikeClusterInfo, TOTAL_BUFFERED_PACKETS,
     },
@@ -66,9 +65,6 @@ where
     forwarder: Option<Forwarder<C>>,
     /// Blacklisted accounts
     blacklisted_accounts: HashSet<Pubkey>,
-    batch: Vec<ImmutableDeserializedPacket>,
-    batch_start: Instant,
-    batch_interval: Duration,
 }
 
 impl<C, R, S> SchedulerController<C, R, S>
@@ -85,7 +81,6 @@ where
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
         forwarder: Option<Forwarder<C>>,
         blacklisted_accounts: HashSet<Pubkey>,
-        batch_interval: Duration,
     ) -> Self {
         Self {
             decision_maker,
@@ -99,9 +94,6 @@ where
             worker_metrics,
             forwarder,
             blacklisted_accounts,
-            batch: Vec::default(),
-            batch_start: Instant::now(),
-            batch_interval,
         }
     }
 
@@ -542,6 +534,7 @@ mod tests {
             PacketDeserializer::new(receiver),
             bank_forks,
             false,
+            Duration::ZERO,
         )
     }
 
@@ -620,7 +613,6 @@ mod tests {
             vec![], // no actual workers with metrics to report, this can be empty
             None,
             HashSet::default(),
-            Duration::from_millis(0),
         );
 
         (test_frame, scheduler_controller)

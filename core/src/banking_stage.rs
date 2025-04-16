@@ -546,6 +546,7 @@ impl BankingStage {
                     PacketDeserializer::new(non_vote_receiver),
                     bank_forks.clone(),
                     enable_forwarding,
+                    batch_interval,
                 );
                 Self::spawn_scheduler_and_workers(
                     &mut bank_thread_hdls,
@@ -564,7 +565,6 @@ impl BankingStage {
                     blacklisted_accounts.clone(),
                     bundle_account_locker.clone(),
                     block_cost_limit_reservation_cb.clone(),
-                    batch_interval,
                 );
             }
             TransactionStructure::View => {
@@ -589,7 +589,6 @@ impl BankingStage {
                     blacklisted_accounts.clone(),
                     bundle_account_locker.clone(),
                     block_cost_limit_reservation_cb.clone(),
-                    batch_interval,
                 );
             }
         }
@@ -615,7 +614,6 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
-        batch_interval: Duration,
     ) {
         // Create channels for communication between scheduler and workers
         let num_workers = (num_threads).saturating_sub(NUM_VOTE_PROCESSING_THREADS);
@@ -683,7 +681,6 @@ impl BankingStage {
                             worker_metrics,
                             forwarder,
                             blacklisted_accounts.clone(),
-                            batch_interval,
                         );
 
                         match scheduler_controller.run() {
@@ -714,7 +711,6 @@ impl BankingStage {
                             worker_metrics,
                             forwarder,
                             blacklisted_accounts.clone(),
-                            batch_interval,
                         );
 
                         match scheduler_controller.run() {
