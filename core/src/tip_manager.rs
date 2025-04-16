@@ -525,7 +525,7 @@ impl TipManager {
         .unwrap();
         let hash = MessageHash::Precomputed(*sanitized.message_hash());
 
-        RuntimeTransaction::try_from(sanitized.into(), hash, None)
+        todo!("reset to jito version and re-add paladin mods?")
     }
 
     pub fn build_change_tip_receiver_and_block_builder_tx(

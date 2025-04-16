@@ -685,6 +685,13 @@ crossbeam-epoch = { git = "https://github.com/anza-xyz/crossbeam", rev = "fd279d
 solana-curve25519 = { path = "curves/curve25519" }
 solana-zk-sdk = { path = "zk-sdk" }
 
-solana-packet = { path = "../../anza-xyz/solana-sdk/packet" }
+solana-atomic-u64 = { path = "../../anza-xyz/solana-sdk/atomic-u64" }
+solana-decode-error = { path = "../../anza-xyz/solana-sdk/decode-error" }
+solana-define-syscall = { path = "../../anza-xyz/solana-sdk/define-syscall" }
 solana-frozen-abi = { path = "../../anza-xyz/solana-sdk/frozen-abi" }
 solana-frozen-abi-macro = { path = "../../anza-xyz/solana-sdk/frozen-abi-macro" }
+solana-hash = { path = "../../anza-xyz/solana-sdk/hash" }
+solana-packet = { path = "../../anza-xyz/solana-sdk/packet" }
+solana-pubkey = { path = "../../anza-xyz/solana-sdk/pubkey" }
+solana-sanitize = { path = "../../anza-xyz/solana-sdk/sanitize" }
+solana-sha256-hasher = { path = "../../anza-xyz/solana-sdk/sha256-hasher" }
