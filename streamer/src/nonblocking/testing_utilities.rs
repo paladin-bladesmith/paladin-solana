@@ -133,6 +133,7 @@ pub fn setup_quic_server_with_sockets(
     let server_address = sockets[0].local_addr().unwrap();
     let staked_nodes = Arc::new(RwLock::new(option_staked_nodes.unwrap_or_default()));
     let quic_server_params = QuicServerParams {
+        is_p3: false,
         max_connections_per_peer,
         max_staked_connections,
         max_unstaked_connections,

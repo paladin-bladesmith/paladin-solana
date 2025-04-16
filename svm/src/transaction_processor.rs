@@ -463,18 +463,18 @@ impl<FG: ForkGraph> TransactionBatchProcessor<FG> {
                     );
 
                     if !executed_tx.was_successful() && tx.drop_on_revert() {
-                        return Err(TransactionError::AlreadyProcessed);
-                    }
+                        Err(TransactionError::AlreadyProcessed)
+                    } else {
+                        // Update loaded accounts cache with account states which might have changed.
+                        // Also update local program cache with modifications made by the transaction,
+                        // if it executed successfully.
+                        account_loader.update_accounts_for_executed_tx(tx, &executed_tx);
+                        if executed_tx.was_successful() {
+                            program_cache_for_tx_batch.merge(&executed_tx.programs_modified_by_tx);
+                        }
 
-                    // Update loaded accounts cache with account states which might have changed.
-                    // Also update local program cache with modifications made by the transaction,
-                    // if it executed successfully.
-                    account_loader.update_accounts_for_executed_tx(tx, &executed_tx);
-                    if executed_tx.was_successful() {
-                        program_cache_for_tx_batch.merge(&executed_tx.programs_modified_by_tx);
+                        Ok(ProcessedTransaction::Executed(Box::new(executed_tx)))
                     }
-
-                    Ok(ProcessedTransaction::Executed(Box::new(executed_tx)))
                 }
             });
             execution_us = execution_us.saturating_add(single_execution_us);
