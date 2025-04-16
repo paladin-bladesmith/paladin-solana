@@ -750,7 +750,6 @@ mod tests {
             },
         },
         crossbeam_channel::{unbounded, Receiver},
-        jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
         solana_bundle::SanitizedBundle,
         solana_bundle_sdk::derive_bundle_id,
@@ -766,6 +765,7 @@ mod tests {
             poh_service::PohService,
         },
         solana_program_test::programs::spl_programs,
+        solana_pubkey::pubkey,
         solana_runtime::{
             bank::Bank,
             bank_forks::BankForks,
@@ -796,7 +796,6 @@ mod tests {
         },
         std::{
             collections::HashSet,
-            str::FromStr,
             sync::{
                 atomic::{AtomicBool, Ordering},
                 Arc, Mutex, RwLock,
@@ -974,21 +973,19 @@ mod tests {
     }
 
     fn get_tip_manager(
-        cluster_info: Arc<ClusterInfo>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         vote_account: &Pubkey,
         funnel: Option<Pubkey>,
     ) -> TipManager {
         TipManager::new(
             Arc::new(RwLock::new(MockBlockstore(vec![]))),
-            cluster_info,
             leader_schedule_cache,
             TipManagerConfig {
                 funnel,
                 rewards_split: None,
-                tip_payment_program_id: pubkey!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt",),
+                tip_payment_program_id: pubkey!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"),
                 tip_distribution_program_id: pubkey!(
-                    "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
+                    "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
                 ),
                 tip_distribution_account_config: TipDistributionAccountConfig {
                     merkle_root_upload_authority: Pubkey::new_unique(),
@@ -1036,7 +1033,6 @@ mod tests {
         let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
 
         let tip_manager = get_tip_manager(
-            cluster_info.clone(),
             leader_schedule_cache,
             &genesis_config_info.voting_keypair.pubkey(),
             None,
@@ -1182,7 +1178,6 @@ mod tests {
 
         let block_builder_pubkey = Pubkey::new_unique();
         let tip_manager = get_tip_manager(
-            cluster_info.clone(),
             leader_schedule_cache,
             &genesis_config_info.voting_keypair.pubkey(),
             None,
@@ -1294,25 +1289,6 @@ mod tests {
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
         assert_eq!(
-            transactions[3],
-            tip_manager
-                .build_change_tip_receiver_and_block_builder_tx(
-                    &keypair.pubkey(),
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
-                    )
-                    .0,
-                    &bank_start.working_bank,
-                    &keypair,
-                    &keypair.pubkey(),
-                    &block_builder_pubkey,
-                    10
-                )
-                .to_versioned_transaction()
-        );
-        assert_eq!(
             transactions[4],
             sanitized_bundle.transactions[0].to_versioned_transaction()
         );
@@ -1357,7 +1333,6 @@ mod tests {
 
         let block_builder_pubkey = Pubkey::new_unique();
         let tip_manager = get_tip_manager(
-            cluster_info.clone(),
             leader_schedule_cache,
             &genesis_config_info.voting_keypair.pubkey(),
             None,
@@ -1422,25 +1397,6 @@ mod tests {
         );
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
-        assert_eq!(
-            transactions[3],
-            tip_manager
-                .build_change_tip_receiver_and_block_builder_tx(
-                    &keypair.pubkey(),
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
-                    )
-                    .0,
-                    &bank_start.working_bank,
-                    &keypair,
-                    &keypair.pubkey(),
-                    &block_builder_pubkey,
-                    10
-                )
-                .to_versioned_transaction()
-        );
 
         poh_recorder
             .write()

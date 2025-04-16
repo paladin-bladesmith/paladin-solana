@@ -247,6 +247,10 @@ impl solana_svm_transaction::svm_transaction::SVMTransaction for WritableKeysTra
     fn signatures(&self) -> &[solana_signature::Signature] {
         unimplemented!("WritableKeysTransaction::signatures")
     }
+
+    fn drop_on_revert(&self) -> bool {
+        unimplemented!("WritableKeysTransaction::drop_on_revert")
+    }
 }
 
 #[cfg(feature = "dev-context-only-utils")]
@@ -321,7 +325,6 @@ mod tests {
             VersionedTransaction::from(transaction.clone()),
             MessageHash::Compute,
             Some(true),
-            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )
@@ -332,7 +335,6 @@ mod tests {
             VersionedTransaction::from(transaction),
             MessageHash::Compute,
             Some(false),
-            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )
@@ -355,14 +357,17 @@ mod tests {
     fn transfer_transaction_cost() {
         solana_logger::setup();
         let keypair = Keypair::new();
-        let transaction =
-            system_transaction::transfer(&keypair, &Pubkey::new_unique(), 1, Hash::default());
+        let transaction = solana_system_transaction::transfer(
+            &keypair,
+            &Pubkey::new_unique(),
+            1,
+            Hash::default(),
+        );
 
-        let sanitized = SanitizedTransaction::try_create(
+        let sanitized = RuntimeTransaction::try_create(
             VersionedTransaction::from(transaction),
             MessageHash::Compute,
             Some(false),
-            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )

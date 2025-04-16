@@ -221,7 +221,6 @@ impl SanitizedTransactionBuilder {
             sanitized_versioned_transaction,
             Hash::new_unique(),
             false,
-            false,
             loader,
             if ignore_reserved_accounts {
                 &all_inactive

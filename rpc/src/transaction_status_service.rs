@@ -364,7 +364,6 @@ pub(crate) mod tests {
             transaction,
             MessageHash::Compute,
             None,
-            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )
@@ -492,7 +491,6 @@ pub(crate) mod tests {
             transaction1,
             MessageHash::Compute,
             None,
-            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )
@@ -504,7 +502,6 @@ pub(crate) mod tests {
             transaction2,
             MessageHash::Compute,
             None,
-            false,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
         )

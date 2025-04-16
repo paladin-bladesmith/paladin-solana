@@ -954,7 +954,6 @@ pub(crate) mod tests {
         super::*,
         funnel::LeaderState,
         solana_accounts_db::accounts_db::CalcAccountsHashDataSource,
-        solana_gossip::contact_info::ContactInfo,
         solana_ledger::leader_schedule::LeaderSchedule,
         solana_program_test::programs::spl_programs,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
@@ -965,7 +964,6 @@ pub(crate) mod tests {
             native_token::sol_to_lamports,
             rent::Rent,
         },
-        solana_streamer::socket::SocketAddrSpace,
         solana_vote_program::vote_state::VoteState,
         std::sync::RwLock,
     };
@@ -1019,7 +1017,6 @@ pub(crate) mod tests {
         );
 
         // Setup TipManager dependencies.
-        let mut rng = rand::thread_rng();
         let blockstore = Arc::new(RwLock::new(MockBlockstore::default()));
         let paladin = Arc::new(Keypair::new());
         let bank = Arc::new(Bank::new_for_tests(&genesis_config));
