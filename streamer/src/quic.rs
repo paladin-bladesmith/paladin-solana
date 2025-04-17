@@ -1,6 +1,9 @@
 use {
     crate::{
-        nonblocking::quic::{ALPN_TPU_PROTOCOL_ID, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT},
+        nonblocking::{
+            quic::{ALPN_TPU_PROTOCOL_ID, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT},
+            stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+        },
         streamer::StakedNodes,
     },
     crossbeam_channel::Sender,
@@ -599,6 +602,7 @@ pub struct QuicServerParams {
     pub wait_for_chunk_timeout: Duration,
     pub coalesce: Duration,
     pub coalesce_channel_size: usize,
+    pub stream_throttling_interval_ms: u64,
 }
 
 impl Default for QuicServerParams {
@@ -613,6 +617,7 @@ impl Default for QuicServerParams {
             wait_for_chunk_timeout: DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             coalesce: DEFAULT_TPU_COALESCE,
             coalesce_channel_size: DEFAULT_MAX_COALESCE_CHANNEL_SIZE,
+            stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
         }
     }
 }
@@ -662,13 +667,7 @@ pub fn spawn_server_multi(
 mod test {
     use {
         super::*,
-        crate::nonblocking::{
-            quic::{
-                test::*, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-                DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
-            },
-            testing_utilities::check_multiple_streams,
-        },
+        crate::nonblocking::{quic::test::*, testing_utilities::check_multiple_streams},
         crossbeam_channel::unbounded,
         solana_net_utils::bind_to_localhost,
         std::net::SocketAddr,

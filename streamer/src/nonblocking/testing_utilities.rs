@@ -1,8 +1,11 @@
 //! Contains utility functions to create server and client for test purposes.
 use {
-    super::quic::{
-        spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
-        DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+    super::{
+        quic::{
+            spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
+            DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+        },
+        stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
     },
     crate::{
         quic::{
@@ -142,6 +145,7 @@ pub fn setup_quic_server_with_sockets(
         wait_for_chunk_timeout: DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         coalesce: DEFAULT_TPU_COALESCE,
         coalesce_channel_size,
+        stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
     };
     let SpawnNonBlockingServerResult {
         endpoints: _,

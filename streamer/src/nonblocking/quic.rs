@@ -2,10 +2,7 @@ use {
     crate::{
         nonblocking::{
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
-            stream_throttle::{
-                ConnectionStreamCounter, StakedStreamLoadEMA, STREAM_THROTTLING_INTERVAL,
-                STREAM_THROTTLING_INTERVAL_MS,
-            },
+            stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA},
         },
         quic::{configure_server, QuicServerError, QuicServerParams, StreamerStats},
         streamer::StakedNodes,
@@ -195,7 +192,9 @@ pub fn spawn_server_multi(
         wait_for_chunk_timeout,
         coalesce,
         coalesce_channel_size,
+        stream_throttling_interval_ms,
     } = quic_server_params;
+    let stream_throttling_interval = Duration::from_millis(stream_throttling_interval_ms);
     let concurrent_connections = max_staked_connections + max_unstaked_connections;
     let max_concurrent_connections = concurrent_connections + concurrent_connections / 4;
     let (config, _) = configure_server(keypair)?;
@@ -229,6 +228,7 @@ pub fn spawn_server_multi(
         coalesce,
         coalesce_channel_size,
         max_concurrent_connections,
+        (stream_throttling_interval, stream_throttling_interval_ms),
         is_p3,
     ));
     Ok(SpawnNonBlockingServerResult {
@@ -301,6 +301,7 @@ async fn run_server(
     coalesce: Duration,
     coalesce_channel_size: usize,
     max_concurrent_connections: usize,
+    (stream_throttling_interval, stream_throttling_interval_ms): (Duration, u64),
     is_p3: bool,
 ) {
     let rate_limiter = ConnectionRateLimiter::new(max_connections_per_ipaddr_per_min);
@@ -316,6 +317,7 @@ async fn run_server(
         stats.clone(),
         max_unstaked_connections,
         max_streams_per_ms,
+        stream_throttling_interval_ms,
     ));
     stats
         .quic_endpoints_count
@@ -438,6 +440,7 @@ async fn run_server(
                         stats.clone(),
                         wait_for_chunk_timeout,
                         stream_load_ema.clone(),
+                        (stream_throttling_interval, stream_throttling_interval_ms),
                         is_p3,
                     ));
                 }
@@ -540,6 +543,7 @@ struct NewConnectionHandlerParams {
     stats: Arc<StreamerStats>,
     max_stake: u64,
     min_stake: u64,
+    stream_throttling_interval: Duration,
 }
 
 impl NewConnectionHandlerParams {
@@ -547,6 +551,7 @@ impl NewConnectionHandlerParams {
         packet_sender: AsyncSender<PacketAccumulator>,
         max_connections_per_peer: usize,
         stats: Arc<StreamerStats>,
+        stream_throttling_interval: Duration,
     ) -> NewConnectionHandlerParams {
         NewConnectionHandlerParams {
             packet_sender,
@@ -557,6 +562,7 @@ impl NewConnectionHandlerParams {
             stats,
             max_stake: 0,
             min_stake: 0,
+            stream_throttling_interval,
         }
     }
 }
@@ -598,6 +604,7 @@ fn handle_and_cache_new_connection(
                 params.remote_pubkey.unwrap_or_default(),
                 timing::timestamp(),
                 params.max_connections_per_peer,
+                params.stream_throttling_interval,
             )
         {
             drop(connection_table_l);
@@ -729,6 +736,7 @@ async fn setup_connection(
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
     stream_load_ema: Arc<StakedStreamLoadEMA>,
+    (stream_throttling_interval, stream_throttling_interval_ms): (Duration, u64),
     is_p3: bool,
 ) {
     const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
@@ -747,12 +755,13 @@ async fn setup_connection(
                         packet_sender.clone(),
                         max_connections_per_peer,
                         stats.clone(),
+                        stream_throttling_interval,
                     ),
                     |(pubkey, stake, total_stake, max_stake, min_stake)| {
                         // The heuristic is that the stake should be large engouh to have 1 stream pass throuh within one throttle
-                        // interval during which we allow max (MAX_STREAMS_PER_MS * STREAM_THROTTLING_INTERVAL_MS) streams.
+                        // interval during which we allow max (MAX_STREAMS_PER_MS * stream_throttling_interval_ms) streams.
                         let min_stake_ratio =
-                            1_f64 / (max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS) as f64;
+                            1_f64 / (max_streams_per_ms * stream_throttling_interval_ms) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
                         let peer_type = if is_p3 {
                             ConnectionPeerType::P3(stake)
@@ -772,6 +781,7 @@ async fn setup_connection(
                             stats: stats.clone(),
                             max_stake,
                             min_stake,
+                            stream_throttling_interval,
                         }
                     },
                 );
@@ -1057,6 +1067,7 @@ async fn handle_connection(
         remote_pubkey,
         stats,
         total_stake,
+        stream_throttling_interval,
         ..
     } = params;
 
@@ -1091,7 +1102,7 @@ async fn handle_connection(
             // The peer is sending faster than we're willing to read. Sleep for what's
             // left of this read interval so the peer backs off.
             let throttle_duration =
-                STREAM_THROTTLING_INTERVAL.saturating_sub(throttle_interval_start.elapsed());
+                stream_throttling_interval.saturating_sub(throttle_interval_start.elapsed());
 
             if !throttle_duration.is_zero() {
                 debug!("Throttling stream from {remote_addr:?}, peer type: {:?}, total stake: {}, \
@@ -1459,6 +1470,7 @@ impl ConnectionTable {
         identity: Pubkey,
         last_update: u64,
         max_connections_per_peer: usize,
+        stream_throttling_interval: Duration,
     ) -> Option<(
         Arc<AtomicU64>,
         CancellationToken,
@@ -1476,7 +1488,9 @@ impl ConnectionTable {
             let stream_counter = connection_entry
                 .first()
                 .map(|entry| entry.stream_counter.clone())
-                .unwrap_or(Arc::new(ConnectionStreamCounter::new()));
+                .unwrap_or(Arc::new(ConnectionStreamCounter::new(
+                    stream_throttling_interval,
+                )));
             connection_entry.push(ConnectionEntry::new(
                 cancel.clone(),
                 peer_type,
@@ -1558,6 +1572,7 @@ pub mod test {
         crate::{
             nonblocking::{
                 quic::compute_max_allowed_uni_streams,
+                stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL,
                 testing_utilities::{
                     check_multiple_streams, get_client_config, make_client_endpoint,
                     setup_quic_server, SpawnTestServerResult, TestServerConfig,
@@ -2076,6 +2091,7 @@ pub mod test {
                     Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2090,6 +2106,7 @@ pub mod test {
                 Pubkey::default(),
                 5,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
             .unwrap();
 
@@ -2133,6 +2150,7 @@ pub mod test {
                     Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2169,6 +2187,7 @@ pub mod test {
                     Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         });
@@ -2185,6 +2204,7 @@ pub mod test {
                 Pubkey::default(),
                 10,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL
             )
             .is_none());
 
@@ -2201,6 +2221,7 @@ pub mod test {
                 Pubkey::default(),
                 10,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL
             )
             .is_some());
 
@@ -2240,6 +2261,7 @@ pub mod test {
                     Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2283,6 +2305,7 @@ pub mod test {
                     Pubkey::default(),
                     (i * 2) as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
 
@@ -2296,6 +2319,7 @@ pub mod test {
                     Pubkey::default(),
                     (i * 2 + 1) as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2312,6 +2336,7 @@ pub mod test {
                 Pubkey::default(),
                 (num_ips * 2) as u64,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
             .unwrap();
 
