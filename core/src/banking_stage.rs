@@ -97,6 +97,8 @@ pub mod unified_scheduler;
 // Fixed thread size seems to be fastest on GCP setup
 pub const NUM_THREADS: u32 = 6;
 
+pub const DEFAULT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
+
 const TOTAL_BUFFERED_PACKETS: usize = 100_000;
 
 const NUM_VOTE_PROCESSING_THREADS: u32 = 2;
@@ -376,6 +378,7 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         // callback function for compute space reservation for BundleStage
         block_cost_limit_block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        batch_interval: Duration,
     ) -> Self {
         Self::new_num_threads(
             block_production_method,
@@ -396,6 +399,7 @@ impl BankingStage {
             blacklisted_accounts,
             bundle_account_locker,
             block_cost_limit_block_cost_limit_reservation_cb,
+            batch_interval,
         )
     }
 
@@ -419,6 +423,7 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        batch_interval: Duration,
     ) -> Self {
         match block_production_method {
             BlockProductionMethod::CentralScheduler
@@ -446,6 +451,7 @@ impl BankingStage {
                     blacklisted_accounts,
                     bundle_account_locker,
                     block_cost_limit_reservation_cb,
+                    batch_interval,
                 )
             }
         }
@@ -471,6 +477,7 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        batch_interval: Duration,
     ) -> Self {
         assert!(num_threads >= MIN_TOTAL_THREADS);
         // Single thread to generate entries from many banks.
@@ -539,6 +546,7 @@ impl BankingStage {
                     PacketDeserializer::new(non_vote_receiver),
                     bank_forks.clone(),
                     enable_forwarding,
+                    batch_interval,
                 );
                 Self::spawn_scheduler_and_workers(
                     &mut bank_thread_hdls,
@@ -1007,6 +1015,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
+                Duration::ZERO,
             );
             drop(non_vote_sender);
             drop(tpu_vote_sender);
@@ -1072,6 +1081,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
+                Duration::ZERO,
             );
             trace!("sending bank");
             drop(non_vote_sender);
@@ -1162,6 +1172,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
+                Duration::ZERO,
             );
 
             // fund another account so we can send 2 good transactions in a single batch.
@@ -1340,6 +1351,7 @@ mod tests {
                     HashSet::default(),
                     BundleAccountLocker::default(),
                     |_| 0,
+                    Duration::ZERO,
                 );
 
                 // wait for banking_stage to eat the packets
@@ -1545,6 +1557,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
+                Duration::ZERO,
             );
 
             let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1688,6 +1701,7 @@ mod tests {
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
                     BundleAccountLocker::default(),
                     |_| 0,
+                    Duration::ZERO,
                 );
 
                 // bad tx

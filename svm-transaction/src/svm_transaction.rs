@@ -8,4 +8,7 @@ pub trait SVMTransaction: SVMMessage {
 
     /// Get all the signatures of the message.
     fn signatures(&self) -> &[Signature];
+
+    /// Whether the transaction should be dropped from the block on revert.
+    fn drop_on_revert(&self) -> bool;
 }
