@@ -85,7 +85,6 @@ impl P3Quic {
             staked_nodes.clone(),
             QuicServerParams {
                 is_p3: true,
-                // TODO: How does this interplay with max connections per peer.
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
                 stream_throttling_interval_ms: 1000,
@@ -111,7 +110,6 @@ impl P3Quic {
             staked_nodes.clone(),
             QuicServerParams {
                 is_p3: true,
-                // TODO: How does this interplay with max connections per peer.
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
                 stream_throttling_interval_ms: 1000,
