@@ -87,6 +87,7 @@ impl P3Quic {
                 is_p3: true,
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
+                // NB: This must be 1 second for the `P3_RATE_LIMIT` const to be valid.
                 stream_throttling_interval_ms: 1000,
                 ..Default::default()
             },
@@ -112,6 +113,7 @@ impl P3Quic {
                 is_p3: true,
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
+                // NB: This must be 1 second for the `P3_RATE_LIMIT` const to be valid.
                 stream_throttling_interval_ms: 1000,
                 ..Default::default()
             },
