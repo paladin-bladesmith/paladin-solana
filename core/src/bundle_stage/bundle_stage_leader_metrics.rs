@@ -521,7 +521,7 @@ impl BundleStageStats {
                 self.execution_results_max_retries,
                 i64
             ),
-            ("bad_argument", self.bad_argument, i64),
+            ("bad_argument", self.bad_argument, i64)
         );
     }
 }
