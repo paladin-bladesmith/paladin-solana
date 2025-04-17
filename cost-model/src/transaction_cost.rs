@@ -363,7 +363,6 @@ mod tests {
             1,
             Hash::default(),
         );
-
         let sanitized = RuntimeTransaction::try_create(
             VersionedTransaction::from(transaction),
             MessageHash::Compute,
@@ -373,8 +372,8 @@ mod tests {
         )
         .unwrap();
 
-        let none_vote_cost = CostModel::calculate_cost(&sanitized, &FeatureSet::all_enabled());
+        let cost = CostModel::calculate_cost(&sanitized, &FeatureSet::all_enabled());
 
-        assert_eq!(none_vote_cost.sum(), 17857);
+        assert_eq!(cost.sum(), 17857);
     }
 }
