@@ -200,7 +200,7 @@ impl P3Quic {
 
     fn on_regular_packets(&mut self, mut packets: PacketBatch) {
         let len = packets.len() as u64;
-        saturating_add_assign!(self.metrics.reg_forwarded, len);
+        saturating_add_assign!(self.metrics.p3_forwarded, len);
 
         for packet in packets.iter_mut() {
             packet.meta_mut().set_p3(true);
@@ -210,7 +210,7 @@ impl P3Quic {
 
         // Forward for verification & inclusion.
         if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
-            saturating_add_assign!(self.metrics.reg_dropped, len)
+            saturating_add_assign!(self.metrics.p3_dropped, len)
         }
     }
 
@@ -323,9 +323,9 @@ struct RateLimit {
 #[derive(Default, PartialEq, Eq)]
 struct P3Metrics {
     /// Number of regular packets forwarded.
-    reg_forwarded: u64,
+    p3_forwarded: u64,
     /// Number of regular packets dropped.
-    reg_dropped: u64,
+    p3_dropped: u64,
     /// Number of mev packets forwarded.
     mev_forwarded: u64,
     /// Number of mev packets dropped.
@@ -344,8 +344,8 @@ impl P3Metrics {
         datapoint_info!(
             "p3_quic",
             ("age_ms", age_ms as i64, i64),
-            ("regular_packets_forwarded", self.reg_forwarded as i64, i64),
-            ("regular_packets_dropped", self.reg_dropped as i64, i64),
+            ("p3_packets_forwarded", self.p3_forwarded as i64, i64),
+            ("p3_packets_dropped", self.p3_dropped as i64, i64),
             ("mev_packets_forwarded", self.mev_forwarded as i64, i64),
             ("mev_packets_dropped", self.mev_dropped as i64, i64),
             ("staked_nodes_us", self.staked_nodes_us as i64, i64),
