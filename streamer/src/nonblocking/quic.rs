@@ -2,7 +2,7 @@ use {
     crate::{
         nonblocking::{
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
-            stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA},
+            stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA, P3_PER_SECOND},
         },
         quic::{configure_server, QuicServerError, QuicServerParams, StreamerStats},
         streamer::StakedNodes,
@@ -764,7 +764,12 @@ async fn setup_connection(
                             1_f64 / (max_streams_per_ms * stream_throttling_interval_ms) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
                         let peer_type = if is_p3 {
-                            ConnectionPeerType::P3(stake)
+                            if stake_ratio >= 1.0 / P3_PER_SECOND as f64 {
+                                ConnectionPeerType::P3(stake)
+                            } else {
+                                // The peer will never be able to send so treat as unstaked (and thus close connection).
+                                ConnectionPeerType::Unstaked
+                            }
                         } else if stake_ratio < min_stake_ratio {
                             // If it is a staked connection with ultra low stake ratio, treat it as unstaked.
                             ConnectionPeerType::Unstaked

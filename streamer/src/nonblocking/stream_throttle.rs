@@ -18,7 +18,7 @@ pub const DEFAULT_STREAM_THROTTLING_INTERVAL: Duration =
 const STREAM_LOAD_EMA_INTERVAL_MS: u64 = 5;
 const STREAM_LOAD_EMA_INTERVAL_COUNT: u64 = 10;
 const EMA_WINDOW_MS: u64 = STREAM_LOAD_EMA_INTERVAL_MS * STREAM_LOAD_EMA_INTERVAL_COUNT;
-const P3_PER_SECOND: u64 = 100;
+pub const P3_PER_SECOND: u64 = 100;
 
 pub(crate) struct StakedStreamLoadEMA {
     current_load_ema: AtomicU64,
