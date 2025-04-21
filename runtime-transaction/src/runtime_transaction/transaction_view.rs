@@ -139,8 +139,7 @@ impl<D: TransactionData> TransactionWithMeta for RuntimeTransaction<ResolvedTran
                 *self.message_hash(),
                 self.is_simple_vote_transaction(),
                 signatures,
-                // TODO: Implement drop on revert support for transaction view.
-                false,
+                self.drop_on_revert(),
             )
             .expect("transaction view is sanitized"),
         )
