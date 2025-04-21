@@ -265,6 +265,8 @@ pub struct SchedulerTimingMetricsInner {
     pub decision_time_us: u64,
     /// Time spent receiving packets.
     pub receive_time_us: u64,
+    /// Time spent batching packets.
+    pub batch_time_us: u64,
     /// Time spent buffering packets.
     pub buffer_time_us: u64,
     /// Time spent filtering transactions during scheduling.
@@ -313,6 +315,7 @@ impl SchedulerTimingMetricsInner {
             @point name,
             ("decision_time_us", self.decision_time_us, i64),
             ("receive_time_us", self.receive_time_us, i64),
+            ("batch_time_us", self.batch_time_us, i64),
             ("buffer_time_us", self.buffer_time_us, i64),
             ("schedule_filter_time_us", self.schedule_filter_time_us, i64),
             ("schedule_time_us", self.schedule_time_us, i64),
@@ -334,6 +337,7 @@ impl SchedulerTimingMetricsInner {
     fn reset(&mut self) {
         self.decision_time_us = 0;
         self.receive_time_us = 0;
+        self.batch_time_us = 0;
         self.buffer_time_us = 0;
         self.schedule_filter_time_us = 0;
         self.schedule_time_us = 0;
