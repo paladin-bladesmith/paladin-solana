@@ -263,6 +263,8 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     bundle_stage_metrics.bad_argument.add_assign(Saturating(1));
                 }
+                // TODO: Consider adding metrics.
+                Err(BundleExecutionError::FrontRun) => {}
             }
         }
     }

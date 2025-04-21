@@ -448,6 +448,7 @@ mod tests {
                 view,
                 None,
                 &reserved_addresses,
+                false,
             )
             .unwrap();
 
