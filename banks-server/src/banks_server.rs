@@ -187,6 +187,7 @@ fn simulate_transaction(
         Some(false), // is_simple_vote_tx
         bank,
         bank.get_reserved_account_keys(),
+        false,
     ) {
         Err(err) => {
             return BanksTransactionResultWithSimulation {
@@ -324,6 +325,7 @@ impl Banks for BanksServer {
             Some(false), // is_simple_vote_tx
             bank.as_ref(),
             bank.get_reserved_account_keys(),
+            false,
         ) {
             Ok(tx) => tx,
             Err(err) => return Some(Err(err)),
