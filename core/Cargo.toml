@@ -48,11 +48,13 @@ ahash = { workspace = true }
 anchor-lang = { workspace = true }
 anyhow = { workspace = true }
 arrayvec = { workspace = true }
+arrayref = { workspace = true}
 assert_matches = { workspace = true }
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
 bs58 = { workspace = true }
+bytemuck = { workspace = true }
 bytes = { workspace = true }
 chrono = { workspace = true, features = ["default", "serde"] }
 conditional-mod = { workspace = true }
@@ -60,7 +62,9 @@ crossbeam-channel = { workspace = true }
 dashmap = { workspace = true, features = ["rayon", "raw-api"] }
 derive_more = { workspace = true }
 etcd-client = { workspace = true, features = ["tls"] }
+funnel = { workspace = true }
 futures = { workspace = true }
+hashbrown = { workspace = true }
 histogram = { workspace = true }
 itertools = { workspace = true }
 jito-protos = { workspace = true }
@@ -71,6 +75,8 @@ log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
 num_enum = { workspace = true }
+p3-quic = { workspace = true }
+paladin-lockup-program = { workspace = true }
 prio-graph = { workspace = true }
 prost = { workspace = true }
 prost-types = { workspace = true }
@@ -173,6 +179,7 @@ solana-vote = { workspace = true }
 solana-vote-program = { workspace = true }
 solana-wen-restart = { workspace = true }
 static_assertions = { workspace = true }
+spl-discriminator = { workspace = true }
 strum = { workspace = true, features = ["derive"] }
 strum_macros = { workspace = true }
 sys-info = { workspace = true }
@@ -216,6 +223,7 @@ solana-program-runtime = { workspace = true, features = ["metrics"] }
 solana-program-test = { workspace = true }
 solana-rpc = { workspace = true, features = ["dev-context-only-utils"] }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
+solana-seed-derivable = { workspace = true }
 solana-stake-program = { workspace = true }
 solana-system-program = { workspace = true }
 solana-system-transaction = { workspace = true }
