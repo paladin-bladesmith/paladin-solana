@@ -83,6 +83,10 @@ impl LeaderSchedule {
         &self.slot_leaders
     }
 
+    pub fn get_index(&self) -> &HashMap<Pubkey, Arc<Vec<usize>>> {
+        &self.index
+    }
+
     pub fn num_slots(&self) -> usize {
         self.slot_leaders.len()
     }
