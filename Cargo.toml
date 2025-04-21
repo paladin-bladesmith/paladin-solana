@@ -686,5 +686,6 @@ solana-curve25519 = { path = "curves/curve25519" }
 solana-zk-sdk = { path = "zk-sdk" }
 
 # Paladin patches.
-# solana-packet = { path = "../../anza-xyz/solana-sdk/packet" }
-# solana-transaction = { path = "../../anza-xyz/solana-sdk/transaction" }
+# solana-packet = { git = "https://github.com/paladin-bladesmith/solana-sdk", branch = "temp" }
+solana-packet = { path = "../../anza-xyz/solana-sdk/packet" }
+solana-transaction = { path = "../../anza-xyz/solana-sdk/transaction" }

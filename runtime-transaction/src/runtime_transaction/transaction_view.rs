@@ -139,6 +139,8 @@ impl<D: TransactionData> TransactionWithMeta for RuntimeTransaction<ResolvedTran
                 *self.message_hash(),
                 self.is_simple_vote_transaction(),
                 signatures,
+                // TODO: Implement drop on revert support for transaction view.
+                false,
             )
             .expect("transaction view is sanitized"),
         )
@@ -358,6 +360,7 @@ mod tests {
             None,
             SimpleAddressLoader::Disabled,
             &reserved_key_set,
+            false,
         )
         .unwrap();
         assert_translation(sanitized_transaction, None, &reserved_key_set);
@@ -390,6 +393,7 @@ mod tests {
             None,
             SimpleAddressLoader::Enabled(loaded_addresses.clone()),
             &reserved_key_set,
+            false,
         )
         .unwrap();
         assert_translation(
