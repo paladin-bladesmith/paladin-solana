@@ -6786,6 +6786,8 @@ dependencies = [
 [[package]]
 name = "solana-atomic-u64"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d52e52720efe60465b052b9e7445a01c17550666beec855cce66f44766697bc2"
 dependencies = [
  "parking_lot 0.12.3",
 ]
@@ -7903,6 +7905,8 @@ dependencies = [
 [[package]]
 name = "solana-decode-error"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10a6a6383af236708048f8bd8d03db8ca4ff7baf4a48e5d580f4cce545925470"
 dependencies = [
  "num-traits",
 ]
@@ -7910,6 +7914,8 @@ dependencies = [
 [[package]]
 name = "solana-define-syscall"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf784bb2cb3e02cac9801813c30187344228d2ae952534902108f6150573a33d"
 
 [[package]]
 name = "solana-derivation-path"
@@ -8239,6 +8245,8 @@ dependencies = [
 [[package]]
 name = "solana-frozen-abi"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "685197cf2304e5d26973c72286abb8eb503eede4555b05dbe853d236fd74132c"
 dependencies = [
  "bs58 0.5.1",
  "bv",
@@ -8256,6 +8264,8 @@ dependencies = [
 [[package]]
 name = "solana-frozen-abi-macro"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b83f88a126213cbcb57672c5e70ddb9791eff9b480e9f39fe9285fd2abca66fa"
 dependencies = [
  "proc-macro2 1.0.93",
  "quote 1.0.38",
@@ -8439,6 +8449,8 @@ dependencies = [
 [[package]]
 name = "solana-hash"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf7bcb14392900fe02e4e34e90234fbf0c673d4e327888410ba99fa2ba0f4e99"
 dependencies = [
  "borsh 1.5.5",
  "bs58 0.5.1",
@@ -9008,6 +9020,8 @@ dependencies = [
 [[package]]
 name = "solana-packet"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "004f2d2daf407b3ec1a1ca5ec34b3ccdfd6866dd2d3c7d0715004a96e4b6d127"
 dependencies = [
  "bincode",
  "bitflags 2.8.0",
@@ -9389,6 +9403,8 @@ dependencies = [
 [[package]]
 name = "solana-pubkey"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "40db1ff5a0f8aea2c158d78ab5f2cf897848964251d1df42fef78efd3c85b863"
 dependencies = [
  "borsh 0.10.3",
  "borsh 1.5.5",
@@ -9954,6 +9970,8 @@ dependencies = [
 [[package]]
 name = "solana-sanitize"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "61f1bc1357b8188d9c4a3af3fc55276e56987265eb7ad073ae6f8180ee54cecf"
 
 [[package]]
 name = "solana-sbpf"
@@ -10188,6 +10206,8 @@ dependencies = [
 [[package]]
 name = "solana-sha256-hasher"
 version = "2.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0037386961c0d633421f53560ad7c80675c0447cba4d1bb66d60974dd486c7ea"
 dependencies = [
  "sha2 0.10.8",
  "solana-define-syscall",

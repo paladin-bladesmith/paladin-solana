@@ -65,7 +65,8 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
 
         // Record this TX's access of the writeable account.
         for account in writeable_amm_accounts {
-            AMM_MAP.with_borrow_mut(|map| map.entry_ref(account.key).or_default()[i] = true);
+            // TODO: Use entry_ref once merged upstream.
+            AMM_MAP.with_borrow_mut(|map| map.entry(*account.key).or_default()[i] = true);
         }
     }
 
