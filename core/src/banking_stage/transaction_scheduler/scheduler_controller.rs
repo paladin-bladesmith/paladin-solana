@@ -124,6 +124,11 @@ where
 
             self.receive_completed()?;
             self.process_transactions(&decision)?;
+            self.receive_and_buffer.maybe_queue_batch(
+                &mut self.container,
+                &mut self.timing_metrics,
+                &mut self.count_metrics,
+            );
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
@@ -531,6 +536,7 @@ mod tests {
             PacketDeserializer::new(receiver),
             bank_forks,
             false,
+            Duration::ZERO,
         )
     }
 
