@@ -1,14 +1,17 @@
 //! Contains utility functions to create server and client for test purposes.
 use {
-    super::quic::{
-        spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
-        DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+    super::{
+        quic::{
+            spawn_server_multi, SpawnNonBlockingServerResult, ALPN_TPU_PROTOCOL_ID,
+            DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
+        },
+        stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
     },
     crate::{
         quic::{
-            QuicServerParams, StreamerStats, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            DEFAULT_MAX_STAKED_CONNECTIONS, DEFAULT_MAX_STREAMS_PER_MS,
-            DEFAULT_MAX_UNSTAKED_CONNECTIONS, DEFAULT_TPU_COALESCE,
+            QuicServerParams, QuicVariant, StreamerStats,
+            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STAKED_CONNECTIONS,
+            DEFAULT_MAX_STREAMS_PER_MS, DEFAULT_MAX_UNSTAKED_CONNECTIONS, DEFAULT_TPU_COALESCE,
         },
         streamer::StakedNodes,
     },
@@ -133,6 +136,7 @@ pub fn setup_quic_server_with_sockets(
     let server_address = sockets[0].local_addr().unwrap();
     let staked_nodes = Arc::new(RwLock::new(option_staked_nodes.unwrap_or_default()));
     let quic_server_params = QuicServerParams {
+        variant: QuicVariant::Regular,
         max_connections_per_peer,
         max_staked_connections,
         max_unstaked_connections,
@@ -141,6 +145,7 @@ pub fn setup_quic_server_with_sockets(
         wait_for_chunk_timeout: DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
         coalesce: DEFAULT_TPU_COALESCE,
         coalesce_channel_size,
+        stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
     };
     let SpawnNonBlockingServerResult {
         endpoints: _,
