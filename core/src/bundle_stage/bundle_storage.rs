@@ -248,6 +248,8 @@ impl BundleStorage {
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }
+                    // NB: Tip cutoff is static & front-runs will never succeed.
+                    Err(BundleExecutionError::FrontRun) => {}
                 },
             );
 

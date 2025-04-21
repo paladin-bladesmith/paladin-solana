@@ -917,6 +917,7 @@ fn sanitize_transaction(
         transaction,
         MessageHash::Compute,
         None,
+        false,
         address_loader,
         reserved_account_keys,
     )
