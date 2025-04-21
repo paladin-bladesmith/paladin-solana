@@ -148,6 +148,7 @@ impl ImmutableDeserializedPacket {
                 tx,
                 address_loader,
                 reserved_account_keys,
+                self.original_packet.meta().is_mev(),
             )
         })
         .ok()?;

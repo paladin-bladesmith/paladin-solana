@@ -1,6 +1,9 @@
 use {
     crate::{
-        nonblocking::quic::{ALPN_TPU_PROTOCOL_ID, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT},
+        nonblocking::{
+            quic::{ALPN_TPU_PROTOCOL_ID, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT},
+            stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+        },
         streamer::StakedNodes,
     },
     crossbeam_channel::Sender,
@@ -590,6 +593,7 @@ pub fn spawn_server(
 
 #[derive(Clone)]
 pub struct QuicServerParams {
+    pub variant: QuicVariant,
     pub max_connections_per_peer: usize,
     pub max_staked_connections: usize,
     pub max_unstaked_connections: usize,
@@ -598,11 +602,13 @@ pub struct QuicServerParams {
     pub wait_for_chunk_timeout: Duration,
     pub coalesce: Duration,
     pub coalesce_channel_size: usize,
+    pub stream_throttling_interval_ms: u64,
 }
 
 impl Default for QuicServerParams {
     fn default() -> Self {
         QuicServerParams {
+            variant: QuicVariant::Regular,
             max_connections_per_peer: 1,
             max_staked_connections: DEFAULT_MAX_STAKED_CONNECTIONS,
             max_unstaked_connections: DEFAULT_MAX_UNSTAKED_CONNECTIONS,
@@ -611,8 +617,16 @@ impl Default for QuicServerParams {
             wait_for_chunk_timeout: DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             coalesce: DEFAULT_TPU_COALESCE,
             coalesce_channel_size: DEFAULT_MAX_COALESCE_CHANNEL_SIZE,
+            stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicVariant {
+    Regular,
+    P3,
+    Mev,
 }
 
 pub fn spawn_server_multi(
