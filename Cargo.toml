@@ -687,5 +687,5 @@ solana-zk-sdk = { path = "zk-sdk" }
 
 # Paladin patches.
 # solana-packet = { git = "https://github.com/paladin-bladesmith/solana-sdk", branch = "temp" }
-solana-packet = { path = "../../anza-xyz/solana-sdk/packet" }
-solana-transaction = { path = "../../anza-xyz/solana-sdk/transaction" }
+solana-packet = { git = "https://github.com/paladin-bladesmith/solana-sdk", tag = "v2.2.7-paladin" }
+solana-transaction = { git = "https://github.com/paladin-bladesmith/solana-sdk", tag = "v2.2.7-paladin" }
