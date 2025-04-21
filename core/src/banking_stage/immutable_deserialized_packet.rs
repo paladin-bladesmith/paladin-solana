@@ -55,6 +55,7 @@ pub struct ImmutableDeserializedPacket {
     forwarded: bool,
     message_hash: Hash,
     is_simple_vote: bool,
+    is_mev: bool,
     compute_unit_price: u64,
     compute_unit_limit: u32,
 }
@@ -66,6 +67,7 @@ impl ImmutableDeserializedPacket {
         let message_bytes = packet_message(packet)?;
         let message_hash = Message::hash_raw_message(message_bytes);
         let is_simple_vote = packet.meta().is_simple_vote_tx();
+        let is_mev = packet.meta().is_mev();
         let forwarded = packet.meta().forwarded();
 
         // drop transaction if prioritization fails.
@@ -92,6 +94,7 @@ impl ImmutableDeserializedPacket {
             forwarded,
             message_hash,
             is_simple_vote,
+            is_mev,
             compute_unit_price,
             compute_unit_limit,
         })
@@ -148,6 +151,7 @@ impl ImmutableDeserializedPacket {
                 tx,
                 address_loader,
                 reserved_account_keys,
+                self.is_mev,
             )
         })
         .ok()?;

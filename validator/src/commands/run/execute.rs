@@ -26,6 +26,7 @@ use {
     },
     solana_clock::{Slot, DEFAULT_SLOTS_PER_EPOCH},
     solana_core::{
+        banking_stage::DEFAULT_BATCH_INTERVAL,
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
@@ -77,7 +78,7 @@ use {
     std::{
         collections::HashSet,
         fs::{self, File},
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         num::NonZeroUsize,
         path::{Path, PathBuf},
         process::exit,
@@ -838,6 +839,23 @@ pub fn execute(
         tip_manager_config,
         preallocated_bundle_cost: value_of(matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
+        // paladin config
+        batch_interval: if matches.is_present("batch_interval_ms") {
+            Duration::from_millis(
+                value_of(&matches, "batch_interval_ms")
+                    .expect("Couldn't parse --batch-interval-ms"),
+            )
+        } else {
+            DEFAULT_BATCH_INTERVAL
+        },
+        p3_socket: SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            value_of(matches, "p3_port").unwrap(),
+        )),
+        p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            value_of(matches, "p3_mev_port").unwrap(),
+        )),
         ..ValidatorConfig::default()
     };
 
@@ -1556,6 +1574,9 @@ fn tip_manager_config_from_matches(
     voting_disabled: bool,
 ) -> TipManagerConfig {
     TipManagerConfig {
+        // TODO: Re-enable.
+        funnel: None,
+        rewards_split: None,
         tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
             || {
                 if !voting_disabled {

@@ -30,6 +30,7 @@ use {
     solana_cost_model::cost_model::CostModel,
     solana_fee_structure::FeeBudgetLimits,
     solana_measure::measure_us,
+    solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
@@ -39,13 +40,12 @@ use {
     solana_svm_transaction::svm_message::SVMMessage,
     solana_transaction::sanitized::{MessageHash, SanitizedTransaction},
     std::{
+        collections::HashSet,
         num::Saturating,
         sync::{Arc, RwLock},
         time::Instant,
     },
 };
-use solana_pubkey::Pubkey;
-use std::collections::HashSet;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -65,6 +65,13 @@ pub(crate) trait ReceiveAndBuffer {
         count_metrics: &mut SchedulerCountMetrics,
         decision: &BufferedPacketsDecision,
     ) -> Result<usize, DisconnectedError>;
+
+    fn maybe_queue_batch(
+        &mut self,
+        container: &mut Self::Container,
+        timing_metrics: &mut SchedulerTimingMetrics,
+        count_metrics: &mut SchedulerCountMetrics,
+    );
 }
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -73,6 +80,10 @@ pub(crate) struct SanitizedTransactionReceiveAndBuffer {
     packet_receiver: PacketDeserializer,
     bank_forks: Arc<RwLock<BankForks>>,
     blacklisted_accounts: HashSet<Pubkey>,
+
+    batch: Vec<ImmutableDeserializedPacket>,
+    batch_start: Instant,
+    batch_interval: Duration,
 }
 
 impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
@@ -89,7 +100,7 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
     ) -> Result<usize, DisconnectedError> {
         const MAX_RECEIVE_PACKETS: usize = 5_000;
         const MAX_PACKET_RECEIVE_TIME: Duration = Duration::from_millis(10);
-        let (recv_timeout, should_buffer) = match decision {
+        let (recv_timeout, should_batch) = match decision {
             BufferedPacketsDecision::Consume(_) | BufferedPacketsDecision::Hold => (
                 if container.is_empty() {
                     MAX_PACKET_RECEIVE_TIME
@@ -121,15 +132,12 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
                     count_metrics.num_received += num_received_packets;
                 });
 
-                if should_buffer {
-                    let (_, buffer_time_us) = measure_us!(self.buffer_packets(
-                        container,
-                        timing_metrics,
-                        count_metrics,
-                        receive_packet_results.deserialized_packets
-                    ));
+                if should_batch {
+                    let ((), batch_time_us) = measure_us!(
+                        self.batch_packets(receive_packet_results.deserialized_packets)
+                    );
                     timing_metrics.update(|timing_metrics| {
-                        timing_metrics.buffer_time_us += buffer_time_us;
+                        timing_metrics.batch_time_us += batch_time_us;
                     });
                 } else {
                     count_metrics.update(|count_metrics| {
@@ -144,6 +152,19 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
 
         Ok(num_received)
     }
+
+    fn maybe_queue_batch(
+        &mut self,
+        container: &mut TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+        timing_metrics: &mut SchedulerTimingMetrics,
+        count_metrics: &mut SchedulerCountMetrics,
+    ) {
+        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
+            let (_, buffer_time_us) =
+                measure_us!(self.buffer_packets(container, timing_metrics, count_metrics,));
+            timing_metrics.update(|metrics| metrics.buffer_time_us += buffer_time_us);
+        }
+    }
 }
 
 impl SanitizedTransactionReceiveAndBuffer {
@@ -151,12 +172,27 @@ impl SanitizedTransactionReceiveAndBuffer {
         packet_receiver: PacketDeserializer,
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
+        batch_interval: Duration,
     ) -> Self {
         Self {
             packet_receiver,
             bank_forks,
             blacklisted_accounts,
+
+            batch: Vec::default(),
+            batch_start: Instant::now(),
+            batch_interval,
         }
+    }
+
+    fn batch_packets(&mut self, packets: Vec<ImmutableDeserializedPacket>) {
+        // If this is the first packet in the batch, set the start timestamp for
+        // the batch.
+        if self.batch.is_empty() {
+            self.batch_start = Instant::now();
+        }
+
+        self.batch.extend(packets);
     }
 
     fn buffer_packets(
@@ -164,10 +200,9 @@ impl SanitizedTransactionReceiveAndBuffer {
         container: &mut TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
         _timing_metrics: &mut SchedulerTimingMetrics,
         count_metrics: &mut SchedulerCountMetrics,
-        packets: Vec<ImmutableDeserializedPacket>,
     ) {
         // Convert to Arcs
-        let packets: Vec<_> = packets.into_iter().map(Arc::new).collect();
+        let packets: Vec<_> = self.batch.drain(..).map(Arc::new).collect();
         // Sanitize packets, generate IDs, and insert into the container.
         let (root_bank, working_bank) = {
             let bank_forks = self.bank_forks.read().unwrap();
@@ -285,6 +320,7 @@ impl SanitizedTransactionReceiveAndBuffer {
     }
 }
 
+// TODO: Implement batching.
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 pub(crate) struct TransactionViewReceiveAndBuffer {
     pub receiver: BankingPacketReceiver,
@@ -375,6 +411,14 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         }
 
         Ok(num_received)
+    }
+
+    fn maybe_queue_batch(
+        &mut self,
+        _container: &mut Self::Container,
+        _timing_metrics: &mut SchedulerTimingMetrics,
+        _count_metrics: &mut SchedulerCountMetrics,
+    ) {
     }
 }
 
@@ -485,6 +529,7 @@ impl TransactionViewReceiveAndBuffer {
                             sanitized_epoch,
                             transaction_account_lock_limit,
                             &self.blacklisted_accounts,
+                            packet.meta().is_mev(),
                         ) {
                             Ok(state) => {
                                 num_buffered += 1;
@@ -538,6 +583,7 @@ impl TransactionViewReceiveAndBuffer {
         sanitized_epoch: Epoch,
         transaction_account_lock_limit: usize,
         blacklisted_accounts: &HashSet<Pubkey>,
+        drop_on_revert: bool,
     ) -> Result<TransactionViewState, ()> {
         // Parsing and basic sanitization checks
         let Ok(view) = SanitizedTransactionView::try_new_sanitized(bytes) else {
@@ -583,6 +629,7 @@ impl TransactionViewReceiveAndBuffer {
             view,
             loaded_addresses,
             root_bank.get_reserved_account_keys(),
+            drop_on_revert,
         ) else {
             return Err(());
         };
@@ -726,6 +773,10 @@ mod tests {
             packet_receiver: PacketDeserializer::new(receiver),
             bank_forks,
             blacklisted_accounts,
+
+            batch: Vec::default(),
+            batch_start: Instant::now(),
+            batch_interval: Duration::ZERO,
         };
         let container = TransactionStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)

@@ -16,7 +16,7 @@ use {
         VersionedMessage,
     },
     solana_pubkey::Pubkey,
-    solana_svm_transaction::svm_message::SVMMessage,
+    solana_svm_transaction::{svm_message::SVMMessage, svm_transaction::SVMTransaction},
     solana_transaction::{
         sanitized::{MessageHash, SanitizedTransaction},
         simple_vote_transaction_checker::is_simple_vote_transaction_impl,
@@ -86,15 +86,20 @@ impl<D: TransactionData> RuntimeTransaction<ResolvedTransactionView<D>> {
         statically_loaded_runtime_tx: RuntimeTransaction<SanitizedTransactionView<D>>,
         loaded_addresses: Option<LoadedAddresses>,
         reserved_account_keys: &HashSet<Pubkey>,
+        drop_on_revert: bool,
     ) -> Result<Self> {
         let RuntimeTransaction { transaction, meta } = statically_loaded_runtime_tx;
         // transaction-view does not distinguish between different types of errors here.
         // return generic sanitize failure error here.
         // these transactions should be immediately dropped, and we generally
         // will not care about the specific error at this point.
-        let transaction =
-            ResolvedTransactionView::try_new(transaction, loaded_addresses, reserved_account_keys)
-                .map_err(|_| TransactionError::SanitizeFailure)?;
+        let transaction = ResolvedTransactionView::try_new(
+            transaction,
+            loaded_addresses,
+            reserved_account_keys,
+            drop_on_revert,
+        )
+        .map_err(|_| TransactionError::SanitizeFailure)?;
         let mut tx = Self { transaction, meta };
         tx.load_dynamic_metadata()?;
 
@@ -138,6 +143,7 @@ impl<D: TransactionData> TransactionWithMeta for RuntimeTransaction<ResolvedTran
                 *self.message_hash(),
                 self.is_simple_vote_transaction(),
                 signatures,
+                self.drop_on_revert(),
             )
             .expect("transaction view is sanitized"),
         )
@@ -237,6 +243,7 @@ mod tests {
                 static_runtime_transaction,
                 None,
                 &ReservedAccountKeys::empty_key_set(),
+                false,
             )
             .unwrap();
 
@@ -263,6 +270,7 @@ mod tests {
                 runtime_transaction,
                 loaded_addresses,
                 reserved_account_keys,
+                false,
             )
             .unwrap();
 
@@ -329,6 +337,7 @@ mod tests {
                 runtime_transaction,
                 loaded_addresses,
                 reserved_account_keys,
+                false,
             )
             .unwrap();
 
@@ -354,6 +363,7 @@ mod tests {
             None,
             SimpleAddressLoader::Disabled,
             &reserved_key_set,
+            false,
         )
         .unwrap();
         assert_translation(sanitized_transaction, None, &reserved_key_set);
@@ -386,6 +396,7 @@ mod tests {
             None,
             SimpleAddressLoader::Enabled(loaded_addresses.clone()),
             &reserved_key_set,
+            false,
         )
         .unwrap();
         assert_translation(
