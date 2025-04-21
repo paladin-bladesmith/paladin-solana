@@ -13,6 +13,6 @@ impl SVMTransaction for SanitizedTransaction {
     }
 
     fn drop_on_revert(&self) -> bool {
-        todo!("patch sdk")
+        SanitizedTransaction::drop_on_revert(&self)
     }
 }
