@@ -8,7 +8,7 @@ use {
     },
     solana_streamer::{
         nonblocking::quic::{ConnectionPeerType, ConnectionTable},
-        quic::{EndpointKeyUpdater, QuicServerParams, SpawnServerResult},
+        quic::{EndpointKeyUpdater, QuicServerParams, QuicVariant, SpawnServerResult},
         streamer::StakedNodes,
     },
     spl_discriminator::discriminator::SplDiscriminate,
@@ -84,7 +84,7 @@ impl P3Quic {
             exit.clone(),
             staked_nodes.clone(),
             QuicServerParams {
-                is_p3: true,
+                variant: QuicVariant::P3,
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
                 // NB: This must be 1 second for the `P3_RATE_LIMIT` const to be valid.
@@ -110,7 +110,7 @@ impl P3Quic {
             exit.clone(),
             staked_nodes.clone(),
             QuicServerParams {
-                is_p3: true,
+                variant: QuicVariant::Mev,
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
                 // NB: This must be 1 second for the `P3_RATE_LIMIT` const to be valid.
@@ -285,7 +285,7 @@ impl P3Quic {
         let connection_table_l = self.staked_connection_table.lock().unwrap();
         for connection in connection_table_l.table().values().flatten() {
             match connection.peer_type {
-                ConnectionPeerType::P3(stake) => {
+                ConnectionPeerType::P3(stake) | ConnectionPeerType::Mev(stake) => {
                     if stakes
                         .get(&connection.identity)
                         .map_or(true, |connection_stake| connection_stake != &stake)

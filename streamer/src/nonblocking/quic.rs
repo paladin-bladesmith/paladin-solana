@@ -4,7 +4,7 @@ use {
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
             stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA, P3_PER_SECOND},
         },
-        quic::{configure_server, QuicServerError, QuicServerParams, StreamerStats},
+        quic::{configure_server, QuicServerError, QuicServerParams, QuicVariant, StreamerStats},
         streamer::StakedNodes,
     },
     async_channel::{bounded as async_bounded, Receiver as AsyncReceiver, Sender as AsyncSender},
@@ -134,6 +134,7 @@ pub enum ConnectionPeerType {
     Unstaked,
     Staked(u64),
     P3(u64),
+    Mev(u64),
 }
 
 impl ConnectionPeerType {
@@ -183,7 +184,7 @@ pub fn spawn_server_multi(
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError> {
     info!("Start {name} quic server on {sockets:?}");
     let QuicServerParams {
-        is_p3,
+        variant,
         max_unstaked_connections,
         max_staked_connections,
         max_connections_per_peer,
@@ -229,7 +230,7 @@ pub fn spawn_server_multi(
         coalesce_channel_size,
         max_concurrent_connections,
         (stream_throttling_interval, stream_throttling_interval_ms),
-        is_p3,
+        variant,
     ));
     Ok(SpawnNonBlockingServerResult {
         endpoints,
@@ -302,7 +303,7 @@ async fn run_server(
     coalesce_channel_size: usize,
     max_concurrent_connections: usize,
     (stream_throttling_interval, stream_throttling_interval_ms): (Duration, u64),
-    is_p3: bool,
+    variant: QuicVariant,
 ) {
     let rate_limiter = ConnectionRateLimiter::new(max_connections_per_ipaddr_per_min);
     let overall_connection_rate_limiter =
@@ -441,7 +442,7 @@ async fn run_server(
                         wait_for_chunk_timeout,
                         stream_load_ema.clone(),
                         (stream_throttling_interval, stream_throttling_interval_ms),
-                        is_p3,
+                        variant,
                     ));
                 }
                 Err(err) => {
@@ -498,7 +499,9 @@ fn get_connection_stake(
 
 pub fn compute_max_allowed_uni_streams(peer_type: ConnectionPeerType, total_stake: u64) -> usize {
     match peer_type {
-        ConnectionPeerType::Staked(peer_stake) | ConnectionPeerType::P3(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake)
+        | ConnectionPeerType::P3(peer_stake)
+        | ConnectionPeerType::Mev(peer_stake) => {
             // No checked math for f64 type. So let's explicitly check for 0 here
             if total_stake == 0 || peer_stake > total_stake {
                 warn!(
@@ -713,7 +716,9 @@ fn compute_recieve_window(
         ConnectionPeerType::Unstaked => {
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * QUIC_UNSTAKED_RECEIVE_WINDOW_RATIO)
         }
-        ConnectionPeerType::Staked(peer_stake) | ConnectionPeerType::P3(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake)
+        | ConnectionPeerType::P3(peer_stake)
+        | ConnectionPeerType::Mev(peer_stake) => {
             let ratio =
                 compute_receive_window_ratio_for_staked_node(max_stake, min_stake, peer_stake);
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * ratio)
@@ -737,7 +742,7 @@ async fn setup_connection(
     wait_for_chunk_timeout: Duration,
     stream_load_ema: Arc<StakedStreamLoadEMA>,
     (stream_throttling_interval, stream_throttling_interval_ms): (Duration, u64),
-    is_p3: bool,
+    variant: QuicVariant,
 ) {
     const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
     let from = connecting.remote_address();
@@ -763,9 +768,14 @@ async fn setup_connection(
                         let min_stake_ratio =
                             1_f64 / (max_streams_per_ms * stream_throttling_interval_ms) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
-                        let peer_type = if is_p3 {
+                        let peer_type = if variant != QuicVariant::Regular {
                             if stake_ratio >= 1.0 / P3_PER_SECOND as f64 {
-                                ConnectionPeerType::P3(stake)
+                                match variant {
+                                    QuicVariant::P3 => ConnectionPeerType::P3(stake),
+                                    QuicVariant::Mev => ConnectionPeerType::Mev(stake),
+                                    // NB: Unreachable.
+                                    QuicVariant::Regular => ConnectionPeerType::Unstaked,
+                                }
                             } else {
                                 // The peer will never be able to send so treat as unstaked (and thus close connection).
                                 ConnectionPeerType::Unstaked
@@ -792,7 +802,9 @@ async fn setup_connection(
                 );
 
                 match params.peer_type {
-                    ConnectionPeerType::Staked(stake) | ConnectionPeerType::P3(stake) => {
+                    ConnectionPeerType::Staked(stake)
+                    | ConnectionPeerType::P3(stake)
+                    | ConnectionPeerType::Mev(stake) => {
                         let mut connection_table_l = staked_connection_table.lock().await;
 
                         if connection_table_l.total_size >= max_staked_connections {
@@ -1121,7 +1133,9 @@ async fn handle_connection(
                             .throttled_unstaked_streams
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_) => {
+                    ConnectionPeerType::Staked(_)
+                    | ConnectionPeerType::P3(_)
+                    | ConnectionPeerType::Mev(_) => {
                         stats
                             .throttled_staked_streams
                             .fetch_add(1, Ordering::Relaxed);
@@ -1314,7 +1328,9 @@ async fn handle_chunks(
                     .total_unstaked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
             }
-            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_) => {
+            ConnectionPeerType::Staked(_)
+            | ConnectionPeerType::P3(_)
+            | ConnectionPeerType::Mev(_) => {
                 stats
                     .total_staked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
@@ -1370,7 +1386,9 @@ impl ConnectionEntry {
     fn stake(&self) -> u64 {
         match self.peer_type {
             ConnectionPeerType::Unstaked => 0,
-            ConnectionPeerType::Staked(stake) | ConnectionPeerType::P3(stake) => stake,
+            ConnectionPeerType::Staked(stake)
+            | ConnectionPeerType::P3(stake)
+            | ConnectionPeerType::Mev(stake) => stake,
         }
     }
 }

@@ -9,9 +9,9 @@ use {
     },
     crate::{
         quic::{
-            QuicServerParams, StreamerStats, DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE,
-            DEFAULT_MAX_STAKED_CONNECTIONS, DEFAULT_MAX_STREAMS_PER_MS,
-            DEFAULT_MAX_UNSTAKED_CONNECTIONS, DEFAULT_TPU_COALESCE,
+            QuicServerParams, QuicVariant, StreamerStats,
+            DEFAULT_MAX_CONNECTIONS_PER_IPADDR_PER_MINUTE, DEFAULT_MAX_STAKED_CONNECTIONS,
+            DEFAULT_MAX_STREAMS_PER_MS, DEFAULT_MAX_UNSTAKED_CONNECTIONS, DEFAULT_TPU_COALESCE,
         },
         streamer::StakedNodes,
     },
@@ -136,7 +136,7 @@ pub fn setup_quic_server_with_sockets(
     let server_address = sockets[0].local_addr().unwrap();
     let staked_nodes = Arc::new(RwLock::new(option_staked_nodes.unwrap_or_default()));
     let quic_server_params = QuicServerParams {
-        is_p3: false,
+        variant: QuicVariant::Regular,
         max_connections_per_peer,
         max_staked_connections,
         max_unstaked_connections,
