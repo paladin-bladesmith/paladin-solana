@@ -64,9 +64,8 @@ impl Default for Version {
             patch: env!("CARGO_PKG_VERSION_PATCH").parse().unwrap(),
             commit: compute_commit(option_env!("CI_COMMIT")).unwrap_or_default(),
             feature_set,
-            // TODO: Set this to Paladin once desired.
             // Other client implementations need to modify this line.
-            client: u16::try_from(ClientId::JitoLabs).unwrap(),
+            client: u16::try_from(ClientId::Paladin).unwrap(),
         }
     }
 }
@@ -117,7 +116,7 @@ impl TryFrom<ClientId> for u16 {
             ClientId::Firedancer => Ok(2u16),
             ClientId::Agave => Ok(3u16),
             ClientId::Paladin => Ok(4u16),
-            ClientId::Unknown(client @ 0u16..=3u16) => Err(format!("Invalid client: {client}")),
+            ClientId::Unknown(client @ 0u16..=4u16) => Err(format!("Invalid client: {client}")),
             ClientId::Unknown(client) => Ok(client),
         }
     }
