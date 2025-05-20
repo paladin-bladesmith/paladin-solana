@@ -1,6 +1,6 @@
 use {
     solana_sdk::clock::Slot,
-    solana_vote_program::vote_state::{Lockout, VoteState, VoteState1_14_11, MAX_LOCKOUT_HISTORY},
+    solana_vote_program::{vote_error::VoteError, vote_state::{Lockout, VoteState, VoteState1_14_11, MAX_LOCKOUT_HISTORY}},
     std::collections::VecDeque,
 };
 
@@ -30,17 +30,19 @@ impl TowerVoteState {
             .and_then(|pos| self.votes.get(pos))
     }
 
-    pub fn process_next_vote_slot(&mut self, next_vote_slot: Slot) {
+    pub fn process_next_vote_slot(&mut self, next_vote_slot: Slot, pop_expired: bool) -> Result<(), VoteError> {
         // Ignore votes for slots earlier than we already have votes for
         if self
             .last_voted_slot()
             .is_some_and(|last_voted_slot| next_vote_slot <= last_voted_slot)
         {
-            return;
+            return Err(VoteError::VoteTooOld);
         }
-
-        self.pop_expired_votes(next_vote_slot);
-
+    
+        if pop_expired {
+            self.pop_expired_votes(next_vote_slot);
+        }
+    
         // Once the stack is full, pop the oldest lockout and distribute rewards
         if self.votes.len() == MAX_LOCKOUT_HISTORY {
             let rooted_vote = self.votes.pop_front().unwrap();
@@ -48,6 +50,8 @@ impl TowerVoteState {
         }
         self.votes.push_back(Lockout::new(next_vote_slot));
         self.double_lockouts();
+        
+        Ok(())
     }
 
     // Pop all recent votes that are not locked out at the next vote slot.  This
