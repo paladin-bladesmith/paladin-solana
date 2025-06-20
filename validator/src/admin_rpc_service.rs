@@ -13,6 +13,7 @@ use {
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::{tower_storage::TowerStorage, Tower},
         proxy::{
+            block_engine_stage::{BlockEngineConfig, BlockEngineStage},
             relayer_stage::{RelayerConfig, RelayerStage},
         },
         repair::repair_service,
@@ -484,12 +485,22 @@ impl AdminRpc for AdminRpcImpl {
         block_engine_url: String,
         trust_packets: bool,
     ) -> Result<()> {
-        meta.with_post_init(|post_init|{
-            let mut config = post_init.block_engine_config.lock().unwrap();
-            config.block_engine_url = block_engine_url;
-            config.trust_packets = trust_packets;
-            Ok(())
-        })
+        debug!("set_block_engine_config request received");
+        let config = BlockEngineConfig {
+            block_engine_url,
+            trust_packets,
+        };
+        // Detailed log messages are printed inside validate function
+        if BlockEngineStage::is_valid_block_engine_config(&config) {
+            meta.with_post_init(|post_init| {
+                *post_init.block_engine_config.lock().unwrap() = config;
+                Ok(())
+            })
+        } else {
+            Err(jsonrpc_core::error::Error::invalid_params(
+                "failed to set block engine config. see logs for details.",
+            ))
+        }
     }
 
     fn set_identity(

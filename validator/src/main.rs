@@ -820,10 +820,16 @@ pub fn main() {
         } else {
             "".to_string()
         },
-        secondary_block_engine_urls: matches.values_of("secondary_block_engine_urls").
-            map(|urls| urls.map(String::from).collect()).
-            unwrap_or_default(),
         trust_packets: matches.is_present("trust_block_engine_packets"),
+    };
+
+    let secondary_block_engine_urls = if matches.is_present("secondary_block_engines") {
+        values_t_or_exit!(matches, "secondary_block_engines", String)
+            .into_iter()
+            .map(|url| url.to_string())
+            .collect()
+    } else {
+        Vec::new()
     };
 
     // Defaults are set in cli definition, safe to use unwrap() here
@@ -1019,6 +1025,7 @@ pub fn main() {
         wen_restart_coordinator: value_t!(matches, "wen_restart_coordinator", Pubkey).ok(),
         relayer_config: Arc::new(Mutex::new(relayer_config)),
         block_engine_config: Arc::new(Mutex::new(block_engine_config)),
+        secondary_block_engine_urls,
         tip_manager_config,
         shred_receiver_address: Arc::new(RwLock::new(
             matches
