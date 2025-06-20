@@ -109,13 +109,8 @@ impl BlockEngineStage {
             .chain(secondary_urls.into_iter().map(Either::Right))
             .enumerate()
             .map(|(index, config)| {
-                let thread_name = match &config {
-                    Either::Left(_) => "block-engine-primary".to_string(),
-                    Either::Right(_) => format!("block-engine-secondary-{}", index),
-                };
-
                 Self::spawn_block_engine_thread(
-                    thread_name,
+                    format!("block-engine-{}", index),
                     config,
                     cluster_info.clone(),
                     bundle_tx.clone(),
@@ -142,19 +137,8 @@ impl BlockEngineStage {
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> JoinHandle<()>{
         Builder::new().name(thread_name).spawn(move ||{
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            rt.block_on(Self::start(
-                config,
-                cluster_info,
-                bundle_tx,
-                packet_tx,
-                banking_packet_sender,
-                exit,
-                block_builder_fee_info,
-            ));
+            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+            rt.block_on(Self::start(config, cluster_info, bundle_tx, packet_tx, banking_packet_sender, exit, block_builder_fee_info));
         }).unwrap()
     }
 
