@@ -105,36 +105,25 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
-
-        // Primary engine thread
         let mut handles = Vec::new();
-        let primary_handle = Self::spawn_block_engine_thread(
-            "block-engine-primary".to_string(),
-            Either::Left(block_engine_config),
-            cluster_info.clone(),
-            bundle_tx.clone(),
-            packet_tx.clone(),
-            banking_packet_sender.clone(),
-            exit.clone(),
-            block_builder_fee_info.clone()
-        );
-        handles.push(primary_handle);
 
-        // Secondary engine threads
-        for (index, url) in secondary_urls.into_iter().enumerate() {
-            if !url.is_empty() {
-                let secondary_handle = Self::spawn_block_engine_thread(
-                    format!("block-engine-secondary-{}", index),
-                    Either::Right(url),
-                    cluster_info.clone(),
-                    bundle_tx.clone(),
-                    packet_tx.clone(),
-                    banking_packet_sender.clone(),
-                    exit.clone(),
-                    block_builder_fee_info.clone()
-                );
-                handles.push(secondary_handle);
-            }
+        for (index, config) in std::iter
+            ::once(Either::Left(block_engine_config))
+            .chain(secondary_urls.into_iter().map(Either::Right))
+            .enumerate() {
+            let thread_name = config.is_left().then(|| "block-engine-primary".to_string())
+                .unwrap_or_else(|| format!("block-engine-secondary-{}", index));
+            let handle = Self::spawn_block_engine_thread(
+                thread_name,
+                config,
+                cluster_info.clone(),
+                bundle_tx.clone(),
+                packet_tx.clone(),
+                banking_packet_sender.clone(),
+                exit.clone(),
+                block_builder_fee_info.clone()
+            );
+            handles.push(handle);
         }
 
         Self {
@@ -178,7 +167,7 @@ impl BlockEngineStage {
 
     #[allow(clippy::too_many_arguments)]
     async fn start(
-        block_engine_config: Either<Arc<Mutex<BlockEngineConfig>>,String>,
+        block_engine_config: Either<Arc<Mutex<BlockEngineConfig>>, String>,
         cluster_info: Arc<ClusterInfo>,
         bundle_tx: Sender<Vec<PacketBundle>>,
         packet_tx: Sender<PacketBatch>,
@@ -244,7 +233,7 @@ impl BlockEngineStage {
 
     async fn connect_auth_and_stream(
         local_block_engine_config: &BlockEngineConfig,
-        global_block_engine_config: &Either<Arc<Mutex<BlockEngineConfig>>,String>,
+        global_block_engine_config: &Either<Arc<Mutex<BlockEngineConfig>>, String>,
         cluster_info: &Arc<ClusterInfo>,
         bundle_tx: &Sender<Vec<PacketBundle>>,
         packet_tx: &Sender<PacketBatch>,
