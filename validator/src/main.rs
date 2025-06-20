@@ -820,6 +820,9 @@ pub fn main() {
         } else {
             "".to_string()
         },
+        secondary_block_engine_urls: matches.values_of("secondary_block_engine_urls").
+            map(|urls| urls.map(String::from).collect()).
+            unwrap_or_default(),
         trust_packets: matches.is_present("trust_block_engine_packets"),
     };
 

@@ -58,9 +58,11 @@ struct BlockEngineStageStats {
 }
 
 impl BlockEngineStageStats {
-    pub(crate) fn report(&self) {
+    pub(crate) fn report_with_url(&self, url: &str, is_primary: bool) {
         datapoint_info!(
             "block_engine_stage-stats",
+            ("url", url, String),
+            ("is_primary", is_primary, bool),
             ("num_bundles", self.num_bundles, i64),
             ("num_bundle_packets", self.num_bundle_packets, i64),
             ("num_packets", self.num_packets, i64),
@@ -69,6 +71,7 @@ impl BlockEngineStageStats {
     }
 }
 
+
 pub struct BlockBuilderFeeInfo {
     pub block_builder: Pubkey,
     pub block_builder_commission: u64,
@@ -76,8 +79,11 @@ pub struct BlockBuilderFeeInfo {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BlockEngineConfig {
-    /// Block Engine URL
+    /// Primary Block Engine URL
     pub block_engine_url: String,
+
+    /// Secondary block engine URLs
+    pub secondary_block_engine_urls: Vec<String>,
 
     /// If set then it will be assumed the backend verified packets so signature verification will be bypassed in the validator.
     pub trust_packets: bool,
@@ -102,28 +108,92 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         let block_builder_fee_info = block_builder_fee_info.clone();
+        
+        // Extract secondary URLs at startup (immutable)
+        let secondary_urls = {
+            let config = block_engine_config.lock().unwrap();
+            config.secondary_block_engine_urls.clone()
+        };
+        
+        let mut handles = Vec::new();
 
-        let thread = Builder::new()
-            .name("block-engine-stage".to_string())
-            .spawn(move || {
-                let rt = tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
-                rt.block_on(Self::start(
-                    block_engine_config,
-                    cluster_info,
-                    bundle_tx,
-                    packet_tx,
-                    banking_packet_sender,
-                    exit,
-                    block_builder_fee_info,
-                ));
+        // Primary engine thread
+        let primary_handle = Builder::new()
+            .name("block-engine-primary".to_string())
+            .spawn({
+                let block_engine_config = block_engine_config.clone();
+                let cluster_info = cluster_info.clone();
+                let bundle_tx = bundle_tx.clone();
+                let packet_tx = packet_tx.clone();
+                let banking_packet_sender = banking_packet_sender.clone();
+                let exit = exit.clone();
+                let block_builder_fee_info = block_builder_fee_info.clone();
+
+                move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(Self::start(
+                        block_engine_config,
+                        cluster_info,
+                        bundle_tx,
+                        packet_tx,
+                        banking_packet_sender,
+                        exit,
+                        block_builder_fee_info,
+                        true, // is_primary
+                    ));
+                }
             })
             .unwrap();
+        handles.push(primary_handle);
+
+        // Secondary engine threads
+        for (index, url) in secondary_urls.into_iter().enumerate() {
+            if !url.is_empty() {
+                let secondary_handle = Builder::new()
+                    .name(format!("block-engine-secondary-{}", index))
+                    .spawn({
+                        let cluster_info = cluster_info.clone();
+                        let bundle_tx = bundle_tx.clone();
+                        let packet_tx = packet_tx.clone();
+                        let banking_packet_sender = banking_packet_sender.clone();
+                        let exit = exit.clone();
+                        let block_builder_fee_info = block_builder_fee_info.clone();
+                        
+                        move || {
+                            let rt = tokio::runtime::Builder::new_multi_thread()
+                                .enable_all()
+                                .build()
+                                .unwrap();
+                            
+                            // Create immutable config for secondary engine
+                            let secondary_config = Arc::new(Mutex::new(BlockEngineConfig {
+                                block_engine_url: url,
+                                secondary_block_engine_urls: Vec::new(),
+                                trust_packets: false, // Always false for secondary
+                            }));
+                            
+                            rt.block_on(Self::start(
+                                secondary_config,
+                                cluster_info,
+                                bundle_tx,
+                                packet_tx,
+                                banking_packet_sender,
+                                exit,
+                                block_builder_fee_info, // Share fee info instance but won't update it
+                                false, // is_primary
+                            ));
+                        }
+                    })
+                    .unwrap();
+                handles.push(secondary_handle);
+            }
+        }
 
         Self {
-            t_hdls: vec![thread],
+            t_hdls: handles,
         }
     }
 
@@ -143,6 +213,7 @@ impl BlockEngineStage {
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
         block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        is_primary: bool,
     ) {
         const CONNECTION_TIMEOUT: Duration = Duration::from_secs(CONNECTION_TIMEOUT_S);
         const CONNECTION_BACKOFF: Duration = Duration::from_secs(CONNECTION_BACKOFF_S);
@@ -169,6 +240,7 @@ impl BlockEngineStage {
                 &exit,
                 &block_builder_fee_info,
                 &CONNECTION_TIMEOUT,
+                is_primary,
             )
             .await
             {
@@ -184,6 +256,8 @@ impl BlockEngineStage {
                             "block_engine_stage-proxy_error",
                             ("count", error_count, i64),
                             ("error", e.to_string(), String),
+                            ("url", local_block_engine_config.block_engine_url.clone(), String),
+                            ("is_primary", is_primary, bool),
                         );
                     }
                 }
@@ -202,6 +276,7 @@ impl BlockEngineStage {
         exit: &Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         connection_timeout: &Duration,
+        is_primary: bool,
     ) -> crate::proxy::Result<()> {
         // Get a copy of configs here in case they have changed at runtime
         let keypair = cluster_info.keypair().clone();
@@ -250,6 +325,7 @@ impl BlockEngineStage {
         datapoint_info!(
             "block_engine_stage-tokens_generated",
             ("url", local_block_engine_config.block_engine_url, String),
+            ("is_primary", is_primary, bool),
             ("count", 1, i64),
         );
 
@@ -283,6 +359,7 @@ impl BlockEngineStage {
             connection_timeout,
             keypair,
             cluster_info,
+            is_primary,
         )
         .await
     }
@@ -303,6 +380,7 @@ impl BlockEngineStage {
         connection_timeout: &Duration,
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
+        is_primary: bool,
     ) -> crate::proxy::Result<()> {
         let subscribe_packets_stream = timeout(
             *connection_timeout,
@@ -322,26 +400,29 @@ impl BlockEngineStage {
         .map_err(|e| ProxyError::MethodError(e.to_string()))?
         .into_inner();
 
-        let block_builder_info = timeout(
-            *connection_timeout,
-            client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest {}),
-        )
-        .await
-        .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
-        .map_err(|e| ProxyError::MethodError(e.to_string()))?
-        .into_inner();
-
-        {
-            let block_builder_fee_info = block_builder_fee_info.clone();
-            task::spawn_blocking(move || {
-                let mut bb_fee = block_builder_fee_info.lock().unwrap();
-                bb_fee.block_builder_commission = block_builder_info.commission;
-                if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
-                    bb_fee.block_builder = pk
-                }
-            })
+        // Only update block builder fee info for primary connections
+        if is_primary {
+            let block_builder_info = timeout(
+                *connection_timeout,
+                client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest {}),
+            )
             .await
-            .unwrap();
+            .map_err(|_| ProxyError::MethodTimeout("get_block_builder_fee_info".to_string()))?
+            .map_err(|e| ProxyError::MethodError(e.to_string()))?
+            .into_inner();
+
+            {
+                let block_builder_fee_info = block_builder_fee_info.clone();
+                task::spawn_blocking(move || {
+                    let mut bb_fee = block_builder_fee_info.lock().unwrap();
+                    bb_fee.block_builder_commission = block_builder_info.commission;
+                    if let Ok(pk) = Pubkey::from_str(&block_builder_info.pubkey) {
+                        bb_fee.block_builder = pk
+                    }
+                })
+                .await
+                .unwrap();
+            }
         }
 
         Self::consume_bundle_and_packet_stream(
@@ -360,6 +441,7 @@ impl BlockEngineStage {
             keypair,
             cluster_info,
             connection_timeout,
+            is_primary,
         )
         .await
     }
@@ -384,6 +466,7 @@ impl BlockEngineStage {
         keypair: Arc<Keypair>,
         cluster_info: &Arc<ClusterInfo>,
         connection_timeout: &Duration,
+        is_primary: bool,
     ) -> crate::proxy::Result<()> {
         const METRICS_TICK: Duration = Duration::from_secs(1);
         const MAINTENANCE_TICK: Duration = Duration::from_secs(10 * 60);
@@ -395,7 +478,7 @@ impl BlockEngineStage {
         let mut metrics_and_auth_tick = interval(METRICS_TICK);
         let mut maintenance_tick = interval(MAINTENANCE_TICK);
 
-        info!("connected to packet and bundle stream");
+        info!("connected to packet and bundle stream: {} (primary: {})", local_config.block_engine_url, is_primary);
 
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
@@ -407,18 +490,21 @@ impl BlockEngineStage {
                     Self::handle_block_engine_maybe_bundles(maybe_bundles, bundle_tx, &mut block_engine_stats)?;
                 }
                 _ = metrics_and_auth_tick.tick() => {
-                    block_engine_stats.report();
+                    block_engine_stats.report_with_url(&local_config.block_engine_url, is_primary);
                     block_engine_stats = BlockEngineStageStats::default();
 
                     if cluster_info.id() != keypair.pubkey() {
                         return Err(ProxyError::AuthenticationConnectionError("validator identity changed".to_string()));
                     }
 
-                    let global_config = global_config.clone();
-                    if *local_config != task::spawn_blocking(move || global_config.lock().unwrap().clone())
-                        .await
-                        .unwrap() {
-                        return Err(ProxyError::AuthenticationConnectionError("block engine config changed".to_string()));
+                    // Only check config changes for primary connection
+                    if is_primary {
+                        let global_config = global_config.clone();
+                        if *local_config != task::spawn_blocking(move || global_config.lock().unwrap().clone())
+                            .await
+                            .unwrap() {
+                            return Err(ProxyError::AuthenticationConnectionError("block engine config changed".to_string()));
+                        }
                     }
 
                     let (maybe_new_access, maybe_new_refresh) = maybe_refresh_auth_tokens(&mut auth_client,
@@ -434,6 +520,7 @@ impl BlockEngineStage {
                         datapoint_info!(
                             "block_engine_stage-refresh_access_token",
                             ("url", &local_config.block_engine_url, String),
+                            ("is_primary", is_primary, bool),
                             ("count", num_refresh_access_token, i64),
                         );
 
@@ -447,12 +534,14 @@ impl BlockEngineStage {
                         datapoint_info!(
                             "block_engine_stage-tokens_generated",
                             ("url", &local_config.block_engine_url, String),
+                            ("is_primary", is_primary, bool),
                             ("count", num_full_refreshes, i64),
                         );
                         refresh_token = new_token;
                     }
                 }
-                _ = maintenance_tick.tick() => {
+                // Only update fee info periodically for primary connection
+                _ = maintenance_tick.tick(), if is_primary => {
                     let block_builder_info = timeout(
                         *connection_timeout,
                         client.get_block_builder_fee_info(BlockBuilderFeeInfoRequest{})
@@ -555,17 +644,39 @@ impl BlockEngineStage {
     }
 
     pub fn is_valid_block_engine_config(config: &BlockEngineConfig) -> bool {
-        if config.block_engine_url.is_empty() {
-            warn!("can't connect to block_engine. missing block_engine_url.");
-            return false;
-        }
+    let has_primary = !config.block_engine_url.is_empty();
+    let has_secondary = config.secondary_block_engine_urls.iter().any(|url| !url.is_empty());
+    
+    // Must have at least one non-empty URL (primary or secondary)
+    if !has_primary && !has_secondary {
+        warn!("can't connect to block_engine. missing both primary and secondary URLs.");
+        return false;
+    }
+    
+    // Validate primary URL if present
+    if has_primary {
         if let Err(e) = Endpoint::from_str(&config.block_engine_url) {
             error!(
-                "can't connect to block engine. error creating block engine endpoint - {}",
-                e.to_string()
+                "can't connect to primary block engine. error creating endpoint - {}",
+                e
             );
             return false;
         }
-        true
     }
+    
+    // Validate only non-empty secondary URLs
+    for url in &config.secondary_block_engine_urls {
+        if !url.is_empty() {  // Skip empty URLs in the list
+            if let Err(e) = Endpoint::from_str(url) {
+                error!(
+                    "can't connect to secondary block engine {}. error creating endpoint - {}",
+                    url, e
+                );
+                return false;
+            }
+        }
+    }
+    
+    true
+}
 }
