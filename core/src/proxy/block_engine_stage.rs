@@ -105,26 +105,26 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
-        let mut handles = Vec::new();
-
-        for (index, config) in std::iter
-            ::once(Either::Left(block_engine_config))
+        let handles = std::iter::once(Either::Left(block_engine_config))
             .chain(secondary_urls.into_iter().map(Either::Right))
-            .enumerate() {
-            let thread_name = config.is_left().then(|| "block-engine-primary".to_string())
-                .unwrap_or_else(|| format!("block-engine-secondary-{}", index));
-            let handle = Self::spawn_block_engine_thread(
-                thread_name,
-                config,
-                cluster_info.clone(),
-                bundle_tx.clone(),
-                packet_tx.clone(),
-                banking_packet_sender.clone(),
-                exit.clone(),
-                block_builder_fee_info.clone()
-            );
-            handles.push(handle);
-        }
+            .enumerate()
+            .map(|(index, config)| {
+                let thread_name = match &config {
+                    Either::Left(_) => "block-engine-primary".to_string(),
+                    Either::Right(_) => format!("block-engine-secondary-{}", index),
+                };
+
+                Self::spawn_block_engine_thread(
+                    thread_name,
+                    config,
+                    cluster_info.clone(),
+                    bundle_tx.clone(),
+                    packet_tx.clone(),
+                    banking_packet_sender.clone(),
+                    exit.clone(),
+                    block_builder_fee_info.clone()
+                )
+            }).collect::<Vec<_>>();
 
         Self {
             t_hdls: handles,

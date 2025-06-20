@@ -826,7 +826,7 @@ pub fn main() {
     let secondary_block_engine_urls = if matches.is_present("secondary_block_engines") {
         values_t_or_exit!(matches, "secondary_block_engines", String)
             .into_iter()
-            .filter(|url| !url.is_empty())
+            .inspect(|url| assert!(!url.is_empty(), "Invalid block engine URL: {url}"))
             .map(|url| url.to_string())
             .collect()
     } else {
