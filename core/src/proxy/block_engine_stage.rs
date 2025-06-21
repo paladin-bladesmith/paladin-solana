@@ -13,8 +13,8 @@ use {
             ProxyError,
         },
     },
-    itertools::Either,
     crossbeam_channel::Sender,
+    itertools::Either,
     jito_protos::proto::{
         auth::{auth_service_client::AuthServiceClient, Token},
         block_engine::{
@@ -37,7 +37,7 @@ use {
         time::Duration,
     },
     tokio::{
-        task::{self,JoinSet},
+        task::{self, JoinSet},
         time::{interval, sleep, timeout},
     },
     tonic::{
@@ -105,55 +105,49 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
-        let configs = std::iter::once(Either::Left(block_engine_config))
+        // Setup all the futures.
+        let mut set: JoinSet<_> = std::iter::once(Either::Left(block_engine_config))
             .chain(secondary_urls.into_iter().map(Either::Right))
-            .collect::<Vec<_>>();
+            .enumerate()
+            .map(|(index, config)| {
+                info!("starting block-engine-{}", index);
 
-        let handle = Builder::new()
+                Self::start(
+                    config,
+                    cluster_info.clone(),
+                    bundle_tx.clone(),
+                    packet_tx.clone(),
+                    banking_packet_sender.clone(),
+                    exit.clone(),
+                    block_builder_fee_info.clone(),
+                )
+            })
+            .collect();
+
+        // Spawn off to a dedicated runtime.
+        let thread = Builder::new()
             .name("block-engine-runtime".to_string())
-            .spawn({
-                let block_builder_fee_info = block_builder_fee_info.clone();
-                move || {
-                    tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap()
-                        .block_on(async move {
-                            let mut set = JoinSet::new();
-                            configs.into_iter().enumerate().for_each(|(index, config)| {
-                                let start_fut = Self::start(
-                                    config,
-                                    cluster_info.clone(),
-                                    bundle_tx.clone(),
-                                    packet_tx.clone(),
-                                    banking_packet_sender.clone(),
-                                    exit.clone(),
-                                    block_builder_fee_info.clone(),
-                                );
-                                set.spawn({
-                                    async move {
-                                        info!("starting block-engine-{}", index);
-                                        start_fut.await;
-                                    }
-                                });
-                            });
-                            
-                            // Wait for all tasks to complete
-                            while let Some(res) = set.join_next().await {
-                                match res {
-                                    Ok(_) => continue,
-                                    Err(e) => {
-                                        error!("Block engine task failed: {}", e);
-                                    }
+            .spawn(move || {
+                tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(async move {
+                        // Wait for all tasks to complete
+                        while let Some(res) = set.join_next().await {
+                            match res {
+                                Ok(_) => continue,
+                                Err(e) => {
+                                    error!("Block engine task failed: {}", e);
                                 }
                             }
-                        })
-                }
+                        }
+                    })
             })
             .unwrap();
 
         Self {
-            t_hdls: vec![handle],
+            t_hdls: vec![thread],
         }
     }
 
@@ -182,16 +176,16 @@ impl BlockEngineStage {
             // Wait until a valid config is supplied (either initially or by admin rpc)
             // Use if!/else here to avoid extra CONNECTION_BACKOFF wait on successful termination
             let local_block_engine_config = match &block_engine_config {
-                Either::Left(config)=>{
-                let block_engine_config = config.clone();
-                task::spawn_blocking(move || block_engine_config.lock().unwrap().clone())
-                    .await
-                    .unwrap()
+                Either::Left(config) => {
+                    let block_engine_config = config.clone();
+                    task::spawn_blocking(move || block_engine_config.lock().unwrap().clone())
+                        .await
+                        .unwrap()
                 }
-                Either::Right(url)=> BlockEngineConfig{
+                Either::Right(url) => BlockEngineConfig {
                     block_engine_url: url.clone(),
                     trust_packets: false, // Default to false for secondary URLs
-                }
+                },
             };
             if !Self::is_valid_block_engine_config(&local_block_engine_config) {
                 sleep(CONNECTION_BACKOFF).await;
@@ -220,7 +214,11 @@ impl BlockEngineStage {
                             "block_engine_stage-proxy_error",
                             ("count", error_count, i64),
                             ("error", e.to_string(), String),
-                            ("url", local_block_engine_config.block_engine_url.clone(), String),
+                            (
+                                "url",
+                                local_block_engine_config.block_engine_url.clone(),
+                                String
+                            ),
                             ("is_primary", block_engine_config.is_left(), bool),
                         );
                     }
@@ -437,7 +435,11 @@ impl BlockEngineStage {
         let mut metrics_and_auth_tick = interval(METRICS_TICK);
         let mut maintenance_tick = interval(MAINTENANCE_TICK);
 
-        info!("connected to packet and bundle stream: {} (primary: {})", local_config.block_engine_url, global_config.is_left());
+        info!(
+            "connected to packet and bundle stream: {} (primary: {})",
+            local_config.block_engine_url,
+            global_config.is_left()
+        );
 
         while !exit.load(Ordering::Relaxed) {
             tokio::select! {
