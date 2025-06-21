@@ -1165,6 +1165,7 @@ mod tests {
                 None,
                 loader,
                 &HashSet::default(),
+                false,
             )
             .unwrap()
         };

@@ -20,20 +20,26 @@ use {
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
     },
     agave_feature_set::{move_precompile_verification_to_svm, FeatureSet},
+    arrayref::array_ref,
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
     solana_accounts_db::account_locks::validate_account_locks,
     solana_bundle::{
         bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, SanitizedBundle,
     },
+    solana_cost_model::cost_model::CostModel,
     solana_measure::measure_us,
     solana_runtime::bank::Bank,
-    solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+    solana_runtime_transaction::{
+        runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
+    },
     solana_sdk::{
         clock::{Slot, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET},
+        fee::FeeBudgetLimits,
         hash::Hash,
+        instruction::CompiledInstruction,
         pubkey::Pubkey,
-        saturating_add_assign,
+        saturating_add_assign, system_program,
         transaction::SanitizedTransaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
@@ -491,6 +497,7 @@ impl UnprocessedTransactionStorage {
         bank: Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         blacklisted_accounts: &HashSet<Pubkey>,
+        tip_accounts: &HashSet<Pubkey>,
         processing_function: F,
     ) -> bool
     where
@@ -505,6 +512,7 @@ impl UnprocessedTransactionStorage {
                     bank,
                     bundle_stage_leader_metrics,
                     blacklisted_accounts,
+                    tip_accounts,
                     processing_function,
                 ),
             _ => panic!("class does not support processing bundles"),
@@ -1268,6 +1276,7 @@ impl BundleStorage {
         bank: Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         blacklisted_accounts: &HashSet<Pubkey>,
+        tip_accounts: &HashSet<Pubkey>,
         mut processing_function: F,
     ) -> bool
     where
@@ -1280,6 +1289,7 @@ impl BundleStorage {
             bank,
             bundle_stage_leader_metrics,
             blacklisted_accounts,
+            tip_accounts,
         );
 
         debug!("processing {} bundles", sanitized_bundles.len());
@@ -1368,6 +1378,7 @@ impl BundleStorage {
         bank: Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         blacklisted_accounts: &HashSet<Pubkey>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Vec<(ImmutableDeserializedBundle, SanitizedBundle)> {
         let mut error_metrics = TransactionErrorMetrics::default();
 
@@ -1436,20 +1447,100 @@ impl BundleStorage {
                 }
             },
         ));
+        let mut priority_counter = 0;
+        sanitized_bundles.sort_by_cached_key(|(immutable_bundle, sanitized_bundle)| {
+            Self::calculate_bundle_priority(
+                immutable_bundle,
+                sanitized_bundle,
+                &bank,
+                &mut priority_counter,
+                tip_accounts,
+            )
+        });
 
-        let elapsed = start.elapsed().as_micros();
+        let elapsed = start.elapsed().as_micros() as u64;
         bundle_stage_leader_metrics
             .bundle_stage_metrics_tracker()
-            .increment_sanitize_bundle_elapsed_us(elapsed as u64);
+            .increment_sanitize_bundle_elapsed_us(elapsed);
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
-            .increment_transactions_from_packets_us(elapsed as u64);
-
+            .increment_transactions_from_packets_us(elapsed);
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .accumulate_transaction_errors(&error_metrics);
 
         sanitized_bundles
+    }
+
+    fn calculate_bundle_priority(
+        immutable_bundle: &ImmutableDeserializedBundle,
+        sanitized_bundle: &SanitizedBundle,
+        bank: &Bank,
+        priority_counter: &mut u64,
+        tip_accounts: &HashSet<Pubkey>,
+    ) -> (std::cmp::Reverse<u64>, u64) {
+        let total_cu_cost: u64 = sanitized_bundle
+            .transactions
+            .iter()
+            .map(|tx| CostModel::calculate_cost(tx, &bank.feature_set).sum())
+            .sum();
+
+        let reward_from_tx: u64 = sanitized_bundle
+            .transactions
+            .iter()
+            .map(|tx| {
+                let limits = tx
+                    .compute_budget_instruction_details()
+                    .sanitize_and_convert_to_compute_budget_limits(&bank.feature_set)
+                    .unwrap_or_default();
+                bank.calculate_reward_for_transaction(tx, &FeeBudgetLimits::from(limits))
+            })
+            .sum();
+
+        let reward_from_tips: u64 = immutable_bundle
+            .packets()
+            .iter()
+            .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
+            .sum();
+
+        let total_reward = reward_from_tx.saturating_add(reward_from_tips);
+        const MULTIPLIER: u64 = 1_000_000;
+        let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
+        *priority_counter = priority_counter.wrapping_add(1);
+
+        (std::cmp::Reverse(priority), *priority_counter)
+    }
+
+    pub fn extract_tips_from_packet(
+        packet: &ImmutableDeserializedPacket,
+        tip_accounts: &HashSet<Pubkey>,
+    ) -> u64 {
+        let message = packet.transaction().get_message();
+        let account_keys = message.message.static_account_keys();
+        message
+            .program_instructions_iter()
+            .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
+            .filter(|(dest, _)| tip_accounts.contains(dest))
+            .map(|(_, amount)| amount)
+            .sum()
+    }
+
+    fn extract_transfer<'a>(
+        account_keys: &'a [Pubkey],
+        program_id: &Pubkey,
+        ix: &CompiledInstruction,
+    ) -> Option<(&'a Pubkey, u64)> {
+        if program_id == &system_program::ID
+            && ix.data.len() >= 12
+            && u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) == 2
+        {
+            let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
+            let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+
+            Some((destination, amount))
+        } else {
+            None
+        }
     }
 }
 
@@ -1457,14 +1548,18 @@ impl BundleStorage {
 mod tests {
     use {
         super::*,
+        crate::packet_bundle::PacketBundle,
         itertools::iproduct,
         solana_ledger::genesis_utils::{create_genesis_config, GenesisConfigInfo},
-        solana_perf::packet::{Packet, PacketFlags},
+        solana_perf::packet::{Packet, PacketBatch, PacketFlags},
         solana_runtime::genesis_utils,
         solana_sdk::{
+            compute_budget::ComputeBudgetInstruction,
             hash::Hash,
+            message::Message,
             signature::{Keypair, Signer},
-            system_transaction,
+            signer::SeedDerivable,
+            system_instruction, system_transaction,
             transaction::Transaction,
         },
         solana_vote_program::{
@@ -1472,6 +1567,219 @@ mod tests {
         },
         std::error::Error,
     };
+
+    #[test]
+    fn transfer_encoding() {
+        let from = Keypair::from_seed(&[1; 32]).unwrap();
+        let to = Pubkey::new_from_array([2; 32]);
+        let amount = 250;
+        let transfer =
+            system_transaction::transfer(&from, &to, amount, Hash::new_from_array([3; 32]));
+
+        let (recovered_to, recovered_amount) = BundleStorage::extract_transfer(
+            &transfer.message.account_keys,
+            &solana_system_program::id(),
+            &transfer.message.instructions[0],
+        )
+        .unwrap();
+        assert_eq!(recovered_to, &to);
+        assert_eq!(recovered_amount, amount);
+    }
+
+    #[test]
+    fn test_priority_sorting_behavior() {
+        let mut priorities = vec![
+            (std::cmp::Reverse(100), 1),
+            (std::cmp::Reverse(200), 2),
+            (std::cmp::Reverse(100), 3),
+            (std::cmp::Reverse(50), 4),
+        ];
+        priorities.sort();
+        assert_eq!(
+            priorities,
+            vec![
+                (std::cmp::Reverse(200), 2),
+                (std::cmp::Reverse(100), 1),
+                (std::cmp::Reverse(100), 3),
+                (std::cmp::Reverse(50), 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_bundle_priority_calculation() {
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(1_000_000_000);
+        genesis_config.fee_rate_governor.lamports_per_signature = 5000;
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.feature_set = Arc::new(FeatureSet::all_enabled());
+        let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        assert!(bank
+            .feature_set
+            .is_active(&solana_sdk::feature_set::reward_full_priority_fee::id()));
+
+        let blockhash = bank.last_blockhash();
+
+        let payer1 = Keypair::new();
+        let payer2 = Keypair::new();
+        let payer3 = Keypair::new();
+        let dest1 = Keypair::new();
+        let dest2 = Keypair::new();
+        let dest3 = Keypair::new();
+        let dest4 = Keypair::new();
+        let tip_account = Keypair::new();
+
+        let tip_accounts = [tip_account.pubkey()]
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let create_tx_with_priority_fee = |payer: &Keypair,
+                                           dest: &Pubkey,
+                                           transfer_amount: u64,
+                                           priority_fee_per_cu: u64,
+                                           compute_units: u32|
+         -> Transaction {
+            let mut instructions = vec![];
+            if compute_units > 0 {
+                instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(
+                    compute_units,
+                ));
+            }
+            if priority_fee_per_cu > 0 {
+                instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
+                    priority_fee_per_cu,
+                ));
+            }
+            instructions.push(system_instruction::transfer(
+                &payer.pubkey(),
+                dest,
+                transfer_amount,
+            ));
+
+            let message = Message::new(&instructions, Some(&payer.pubkey()));
+            Transaction::new(&[payer], message, blockhash)
+        };
+
+        let create_bundles_from_transactions =
+            |transactions: &[Transaction]| -> ImmutableDeserializedBundle {
+                ImmutableDeserializedBundle::new(
+                    &mut PacketBundle {
+                        batch: PacketBatch::new(
+                            transactions
+                                .iter()
+                                .map(|tx| Packet::from_data(None, tx).unwrap())
+                                .collect::<Vec<_>>(),
+                        ),
+                        bundle_id: format!("test_bundle_{}", rand::random::<u32>()),
+                    },
+                    None,
+                    &Ok,
+                )
+                .unwrap()
+            };
+
+        // Bundle 1: 1 transaction with low priority fee
+        let bundle1_txs = vec![create_tx_with_priority_fee(
+            &payer1,
+            &dest1.pubkey(),
+            1_000,
+            100,
+            50_000,
+        )];
+
+        // Bundle 2: 1 transaction with high priority fee
+        let bundle2_txs = vec![create_tx_with_priority_fee(
+            &payer2,
+            &dest2.pubkey(),
+            2_000,
+            5000,
+            40_000,
+        )];
+
+        // Bundle 3: 3 transactions with medium priority fees + one tip transaction
+        let bundle3_txs = vec![
+            create_tx_with_priority_fee(&payer1, &dest3.pubkey(), 500, 1000, 30_000),
+            system_transaction::transfer(&payer2, &tip_account.pubkey(), 50_000, blockhash),
+            create_tx_with_priority_fee(&payer3, &dest4.pubkey(), 1_500, 1200, 35_000),
+        ];
+
+        // Create immutable bundles
+        let immutable_bundle1 = create_bundles_from_transactions(&bundle1_txs);
+        let immutable_bundle2 = create_bundles_from_transactions(&bundle2_txs);
+        let immutable_bundle3 = create_bundles_from_transactions(&bundle3_txs);
+
+        // Create sanitized bundles (similar to drain_and_sanitize_bundles)
+        let mut error_metrics = TransactionErrorMetrics::default();
+        let move_precompile_verification_to_svm = bank
+            .feature_set
+            .is_active(&move_precompile_verification_to_svm::id());
+
+        let sanitized_bundle1 = immutable_bundle1
+            .build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut error_metrics,
+                move_precompile_verification_to_svm,
+            )
+            .expect("Bundle 1 should sanitize successfully");
+
+        let sanitized_bundle2 = immutable_bundle2
+            .build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut error_metrics,
+                move_precompile_verification_to_svm,
+            )
+            .expect("Bundle 2 should sanitize successfully");
+
+        let sanitized_bundle3 = immutable_bundle3
+            .build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut error_metrics,
+                move_precompile_verification_to_svm,
+            )
+            .expect("Bundle 3 should sanitize successfully");
+
+        let mut priority_counter = 0;
+        let bundle1_priority_key = BundleStorage::calculate_bundle_priority(
+            &immutable_bundle1,
+            &sanitized_bundle1,
+            &bank,
+            &mut priority_counter,
+            &tip_accounts,
+        );
+
+        let bundle2_priority_key = BundleStorage::calculate_bundle_priority(
+            &immutable_bundle2,
+            &sanitized_bundle2,
+            &bank,
+            &mut priority_counter,
+            &tip_accounts,
+        );
+
+        let bundle3_priority_key = BundleStorage::calculate_bundle_priority(
+            &immutable_bundle3,
+            &sanitized_bundle3,
+            &bank,
+            &mut priority_counter,
+            &tip_accounts,
+        );
+
+        let mut bundles_with_priority = vec![
+            (bundle1_priority_key, "Bundle 1"),
+            (bundle2_priority_key, "Bundle 2"),
+            (bundle3_priority_key, "Bundle 3"),
+        ];
+
+        bundles_with_priority.sort_by_key(|(priority_key, _)| *priority_key);
+
+        assert_eq!(bundles_with_priority[0].1, "Bundle 3");
+        assert_eq!(bundles_with_priority[1].1, "Bundle 2");
+        assert_eq!(bundles_with_priority[2].1, "Bundle 1");
+    }
 
     #[test]
     fn test_filter_processed_packets() {
