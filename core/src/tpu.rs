@@ -157,6 +157,7 @@ impl Tpu {
         enable_block_production_forwarding: bool,
         _generator_config: Option<GeneratorConfig>, /* vestigial code for replay invalidator */
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+        secondary_block_engine_urls: Vec<String>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,
@@ -288,6 +289,7 @@ impl Tpu {
         let (bundle_sender, bundle_receiver) = unbounded();
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
+            secondary_block_engine_urls,
             bundle_sender,
             cluster_info.clone(),
             packet_sender.clone(),
