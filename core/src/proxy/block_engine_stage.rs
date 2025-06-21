@@ -109,37 +109,32 @@ impl BlockEngineStage {
             .chain(secondary_urls.into_iter().map(Either::Right))
             .enumerate()
             .map(|(index, config)| {
-                Self::spawn_block_engine_thread(
-                    format!("block-engine-{}", index),
-                    config,
-                    cluster_info.clone(),
-                    bundle_tx.clone(),
-                    packet_tx.clone(),
-                    banking_packet_sender.clone(),
-                    exit.clone(),
-                    block_builder_fee_info.clone()
-                )
+                let cluster_info = cluster_info.clone();
+                let bundle_tx = bundle_tx.clone();
+                let packet_tx = packet_tx.clone();
+                let banking_packet_sender = banking_packet_sender.clone();
+                let exit = exit.clone();
+                let block_builder_fee_info = block_builder_fee_info.clone();
+                Builder::new().name(format!("block-engine-{}", index)).spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(Self::start(
+                        config,
+                        cluster_info,
+                        bundle_tx,
+                        packet_tx,
+                        banking_packet_sender,
+                        exit,
+                        block_builder_fee_info
+                    ));
+                }).unwrap()
             }).collect::<Vec<_>>();
 
         Self {
             t_hdls: handles,
         }
-    }
-
-    fn spawn_block_engine_thread(
-        thread_name: String,
-        config: Either<Arc<Mutex<BlockEngineConfig>>, String>,
-        cluster_info: Arc<ClusterInfo>,
-        bundle_tx: Sender<Vec<PacketBundle>>,
-        packet_tx: Sender<PacketBatch>,
-        banking_packet_sender: BankingPacketSender,
-        exit: Arc<AtomicBool>,
-        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
-    ) -> JoinHandle<()>{
-        Builder::new().name(thread_name).spawn(move ||{
-            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
-            rt.block_on(Self::start(config, cluster_info, bundle_tx, packet_tx, banking_packet_sender, exit, block_builder_fee_info));
-        }).unwrap()
     }
 
     pub fn join(self) -> thread::Result<()> {
