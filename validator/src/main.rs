@@ -823,6 +823,16 @@ pub fn main() {
         trust_packets: matches.is_present("trust_block_engine_packets"),
     };
 
+    let secondary_block_engine_urls = if matches.is_present("secondary_block_engines") {
+        values_t_or_exit!(matches, "secondary_block_engines", String)
+            .into_iter()
+            .inspect(|url| assert!(!url.is_empty(), "Invalid block engine URL: {url}"))
+            .map(|url| url.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
         value_of(&matches, "relayer_expected_heartbeat_interval_ms").unwrap();
@@ -1016,6 +1026,7 @@ pub fn main() {
         wen_restart_coordinator: value_t!(matches, "wen_restart_coordinator", Pubkey).ok(),
         relayer_config: Arc::new(Mutex::new(relayer_config)),
         block_engine_config: Arc::new(Mutex::new(block_engine_config)),
+        secondary_block_engine_urls,
         tip_manager_config,
         shred_receiver_address: Arc::new(RwLock::new(
             matches

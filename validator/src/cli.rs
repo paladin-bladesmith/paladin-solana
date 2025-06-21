@@ -1740,6 +1740,13 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
                 .takes_value(true)
         )
         .arg(
+            Arg::with_name("secondary_block_engines")
+            .long("secondary-block-engines")
+            .help("Additional block engine URLs (packets from these will not be trusted)")
+            .takes_value(true)
+            .multiple(true)
+        )
+        .arg(
             Arg::with_name("trust_relayer_packets")
                 .long("trust-relayer-packets")
                 .takes_value(false)

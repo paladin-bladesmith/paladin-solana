@@ -76,6 +76,7 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         delay_leader_block_for_pending_fork: config.delay_leader_block_for_pending_fork,
         relayer_config: config.relayer_config.clone(),
         block_engine_config: config.block_engine_config.clone(),
+        secondary_block_engine_urls: config.secondary_block_engine_urls.clone(),
         shred_receiver_address: config.shred_receiver_address.clone(),
         shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),
         tip_manager_config: config.tip_manager_config.clone(),

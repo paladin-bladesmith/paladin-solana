@@ -998,8 +998,7 @@ mod tests {
             accounts_index::AccountSecondaryIndexes,
         },
         solana_core::{
-            consensus::tower_storage::NullTowerStorage,
-            validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
+            consensus::tower_storage::NullTowerStorage, proxy::block_engine_stage::BlockEngineConfig, validator::{Validator, ValidatorConfig, ValidatorTpuConfig}
         },
         solana_gossip::cluster_info::{ClusterInfo, Node},
         solana_inline_spl::token,
