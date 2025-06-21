@@ -269,6 +269,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
                 (0..bundles_to_process.len()).map(|_| Ok(())).collect()
@@ -326,6 +327,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure the first 1000 bundles are the ones to process
                 assert_bundles_same(
@@ -376,6 +378,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
 
@@ -395,6 +398,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles[poh_max_height_reached_index..], bundles_to_process);
@@ -440,6 +444,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
 
@@ -458,6 +463,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles[bank_processing_done_index..], bundles_to_process);
@@ -499,6 +505,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -546,6 +553,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
                 vec![
@@ -590,6 +598,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 vec![Err(BundleExecutionError::LockError); bundles_to_process.len()]
             }
@@ -631,6 +640,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
                 vec![Err(BundleExecutionError::ExceedsCostModel); bundles_to_process.len()]
@@ -643,6 +653,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert!(bundles_to_process.is_empty());
@@ -661,6 +672,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             new_bank,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure same order as original
@@ -713,6 +725,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles0, bundles_to_process);
                 vec![Err(BundleExecutionError::ExceedsCostModel); bundles_to_process.len()]
@@ -741,6 +754,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles1, bundles_to_process);
                 vec![Err(BundleExecutionError::ExceedsCostModel); bundles_to_process.len()]
@@ -766,6 +780,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles2, bundles_to_process);
                 vec![Err(BundleExecutionError::ExceedsCostModel); bundles_to_process.len()]
@@ -784,6 +799,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             new_bank,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure same order as original

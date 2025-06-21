@@ -362,6 +362,7 @@ mod tests {
         std::{
             collections::HashSet,
             sync::{atomic::AtomicBool, Arc, RwLock},
+            time::Duration,
         },
         tempfile::TempDir,
         test_case::test_case,

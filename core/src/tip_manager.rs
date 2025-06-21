@@ -957,17 +957,15 @@ pub(crate) mod tests {
     use {
         super::*,
         funnel::LeaderState,
+        solana_account::Account,
         solana_accounts_db::accounts_db::CalcAccountsHashDataSource,
-        solana_ledger::leader_schedule::LeaderSchedule,
+        solana_fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
+        solana_genesis_config::ClusterType,
+        solana_ledger::leader_schedule::IdentityKeyedLeaderSchedule,
+        solana_native_token::sol_to_lamports,
         solana_program_test::programs::spl_programs,
+        solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
-        solana_sdk::{
-            account::Account,
-            fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
-            genesis_config::ClusterType,
-            native_token::sol_to_lamports,
-            rent::Rent,
-        },
         solana_vote_program::vote_state::VoteState,
         std::sync::RwLock,
     };
@@ -1007,7 +1005,7 @@ pub(crate) mod tests {
             &mint_keypair.pubkey(),
             &leader_keypair.pubkey(),
             &voting_keypair.pubkey(),
-            &solana_sdk::pubkey::new_rand(),
+            &solana_pubkey::new_rand(),
             rent.minimum_balance(VoteState::size_of()) + sol_to_lamports(1_000_000.0),
             sol_to_lamports(1_000_000.0),
             FeeRateGovernor {
@@ -1070,14 +1068,14 @@ pub(crate) mod tests {
 
             slot_leaders[offset as usize] = paladin.pubkey();
 
-            let leader_schedule = LeaderSchedule::new_from_schedule(slot_leaders);
+            let leader_schedule = IdentityKeyedLeaderSchedule::new_from_schedule(slot_leaders);
             *leader_schedule_cache
                 .cached_schedules
                 .write()
                 .unwrap()
                 .0
                 .get_mut(&epoch)
-                .unwrap() = Arc::new(leader_schedule);
+                .unwrap() = Arc::new(Box::new(leader_schedule));
         }
 
         TestFixture {
@@ -1156,7 +1154,7 @@ pub(crate) mod tests {
             .get_slot_leaders()
             .to_vec();
         slot_leaders[0] = Pubkey::new_unique();
-        let leader_schedule = LeaderSchedule::new_from_schedule(slot_leaders);
+        let leader_schedule = IdentityKeyedLeaderSchedule::new_from_schedule(slot_leaders);
         *fixture
             .leader_schedule_cache
             .cached_schedules
@@ -1164,7 +1162,7 @@ pub(crate) mod tests {
             .unwrap()
             .0
             .get_mut(&0)
-            .unwrap() = Arc::new(leader_schedule);
+            .unwrap() = Arc::new(Box::new(leader_schedule));
 
         // Act.
         let additional = fixture

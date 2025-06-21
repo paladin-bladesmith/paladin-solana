@@ -63,6 +63,8 @@ members = [
     "net-shaper",
     "net-utils",
     "notifier",
+    "p3",
+    "p3-quic",
     "perf",
     "platform-tools-sdk/cargo-build-sbf",
     "platform-tools-sdk/cargo-test-sbf",
@@ -332,6 +334,7 @@ num-traits = "0.2"
 num_cpus = "1.17.0"
 num_enum = "0.7.3"
 openssl = "0.10"
+p3-quic = { path = "p3-quic" }
 paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
 parking_lot = "0.12"
 pbkdf2 = { version = "0.11.0", default-features = false }

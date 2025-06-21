@@ -138,6 +138,7 @@ impl BundleConsumer {
             bank_start.working_bank.clone(),
             bundle_stage_leader_metrics,
             &self.blacklisted_accounts,
+            &self.tip_manager.get_tip_accounts(),
             |bundles, bundle_stage_leader_metrics| {
                 Self::do_process_bundles(
                     &self.bundle_account_locker,
@@ -802,7 +803,7 @@ mod tests {
         },
         solana_poh_config::PohConfig,
         solana_program_test::programs::spl_programs,
-        solana_pubkey::Pubkey,
+        solana_pubkey::{pubkey, Pubkey},
         solana_rent::Rent,
         solana_runtime::{
             bank::Bank,

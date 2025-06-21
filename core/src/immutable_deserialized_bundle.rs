@@ -109,6 +109,10 @@ impl ImmutableDeserializedBundle {
         })
     }
 
+    pub fn packets(&self) -> &[ImmutableDeserializedPacket] {
+        &self.packets
+    }
+
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.packets.len()
