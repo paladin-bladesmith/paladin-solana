@@ -37,7 +37,7 @@ use {
         time::Duration,
     },
     tokio::{
-        task,
+        task::{self,JoinSet},
         time::{interval, sleep, timeout},
     },
     tonic::{
@@ -105,35 +105,55 @@ impl BlockEngineStage {
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
-        let handles = std::iter::once(Either::Left(block_engine_config))
+        let configs = std::iter::once(Either::Left(block_engine_config))
             .chain(secondary_urls.into_iter().map(Either::Right))
-            .enumerate()
-            .map(|(index, config)| {
-                let cluster_info = cluster_info.clone();
-                let bundle_tx = bundle_tx.clone();
-                let packet_tx = packet_tx.clone();
-                let banking_packet_sender = banking_packet_sender.clone();
-                let exit = exit.clone();
+            .collect::<Vec<_>>();
+
+        let handle = Builder::new()
+            .name("block-engine-runtime".to_string())
+            .spawn({
                 let block_builder_fee_info = block_builder_fee_info.clone();
-                Builder::new().name(format!("block-engine-{}", index)).spawn(move || {
-                    let rt = tokio::runtime::Builder::new_multi_thread()
+                move || {
+                    tokio::runtime::Builder::new_multi_thread()
                         .enable_all()
                         .build()
-                        .unwrap();
-                    rt.block_on(Self::start(
-                        config,
-                        cluster_info,
-                        bundle_tx,
-                        packet_tx,
-                        banking_packet_sender,
-                        exit,
-                        block_builder_fee_info
-                    ));
-                }).unwrap()
-            }).collect::<Vec<_>>();
+                        .unwrap()
+                        .block_on(async move {
+                            let mut set = JoinSet::new();
+                            configs.into_iter().enumerate().for_each(|(index, config)| {
+                                let start_fut = Self::start(
+                                    config,
+                                    cluster_info.clone(),
+                                    bundle_tx.clone(),
+                                    packet_tx.clone(),
+                                    banking_packet_sender.clone(),
+                                    exit.clone(),
+                                    block_builder_fee_info.clone(),
+                                );
+                                set.spawn({
+                                    async move {
+                                        info!("starting block-engine-{}", index);
+                                        start_fut.await;
+                                    }
+                                });
+                            });
+                            
+                            // Wait for all tasks to complete
+                            while let Some(res) = set.join_next().await {
+                                match res {
+                                    Ok(_) => continue,
+                                    Err(e) => {
+                                        error!("Block engine task failed: {}", e);
+                                    }
+                                }
+                            }
+                        })
+                }
+            })
+            .unwrap();
 
         Self {
-            t_hdls: handles,
+            t_hdls: vec![handle],
         }
     }
 
