@@ -38,7 +38,7 @@ use {
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
-        collections::{HashMap, HashSet, VecDeque},
+        collections::{HashMap, HashSet},
         sync::{atomic::Ordering, Arc},
         time::Instant,
     },
@@ -295,10 +295,10 @@ impl UnprocessedTransactionStorage {
     pub fn new_bundle_storage() -> Self {
         Self::BundleStorage(BundleStorage {
             last_update_slot: Slot::default(),
-            unprocessed_bundle_storage: VecDeque::with_capacity(
+            unprocessed_bundle_storage: Vec::with_capacity(
                 BundleStorage::BUNDLE_STORAGE_CAPACITY,
             ),
-            cost_model_buffered_bundle_storage: VecDeque::with_capacity(
+            cost_model_buffered_bundle_storage: Vec::with_capacity(
                 BundleStorage::BUNDLE_STORAGE_CAPACITY,
             ),
         })
@@ -1126,15 +1126,15 @@ pub struct InsertPacketBundlesSummary {
     pub num_bundles_dropped: usize,
 }
 
-/// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
+/// Bundle storage has two sorted vectors: one for unprocessed bundles and another for ones that exceeded
 /// the cost model and need to get retried next slot.
 #[derive(Debug)]
 pub struct BundleStorage {
     last_update_slot: Slot,
-    pub unprocessed_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub unprocessed_bundle_storage: Vec<ImmutableDeserializedBundle>,
     // Storage for bundles that exceeded the cost model for the slot they were last attempted
     // execution on
-    pub cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub cost_model_buffered_bundle_storage: Vec<ImmutableDeserializedBundle>,
 }
 
 impl BundleStorage {
@@ -1182,16 +1182,32 @@ impl BundleStorage {
         (num_unprocessed_bundles, num_cost_model_buffered_bundles)
     }
 
+    fn calculate_bundle_priority(bundle: &ImmutableDeserializedBundle) -> u64 {
+        let total_priority_fee = bundle
+            .packets().iter()
+            .map(|packet| packet.compute_unit_price())
+            .sum::<u64>();
+        let total_cu_limit = bundle
+            .packets().iter()
+            .map(|packet| packet.compute_unit_limit())
+            .sum::<u64>();
+        // TODO: tip extraction
+        // tips will have to be extracted from packet.transaction().message().instructions().. 
+        // and check the tip instructions
+        // let total_tip = bundle.packets().iter().map(|packet| packet.tip()).sum::<u64>();
+        ((total_priority_fee) * 1_000_000).saturating_div(total_cu_limit)
+    }
+
     fn insert_bundles(
-        deque: &mut VecDeque<ImmutableDeserializedBundle>,
-        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-        push_back: bool,
+        storage: &mut Vec<ImmutableDeserializedBundle>,
+        mut deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+        push_back: bool
     ) -> InsertPacketBundlesSummary {
-        // deque should be initialized with size [Self::BUNDLE_STORAGE_CAPACITY]
-        let deque_free_space = Self::BUNDLE_STORAGE_CAPACITY
-            .checked_sub(deque.len())
+        // storage should be initialized with size [Self::BUNDLE_STORAGE_CAPACITY]
+        let storage_free_space = Self::BUNDLE_STORAGE_CAPACITY
+            .checked_sub(storage.len())
             .unwrap();
-        let bundles_to_insert_count = std::cmp::min(deque_free_space, deserialized_bundles.len());
+        let bundles_to_insert_count = std::cmp::min(storage_free_space, deserialized_bundles.len());
         let num_bundles_dropped = deserialized_bundles
             .len()
             .checked_sub(bundles_to_insert_count)
@@ -1207,13 +1223,31 @@ impl BundleStorage {
             .map(|b| b.len())
             .sum::<usize>();
 
-        let to_insert = deserialized_bundles
-            .into_iter()
-            .take(bundles_to_insert_count);
+        deserialized_bundles.truncate(bundles_to_insert_count);
+        
+        // Sort bundles by descending priority up front
+        deserialized_bundles
+            .sort_by_key(|bundle| std::cmp::Reverse(Self::calculate_bundle_priority(bundle)));
+
         if push_back {
-            deque.extend(to_insert)
+            // Insert each bundle into `storage` in priority order
+            for bundle in deserialized_bundles {
+                let priority = Self::calculate_bundle_priority(&bundle);
+                // Find insertion point to keep storage sorted by descending priority
+                let pos = storage
+                    .binary_search_by_key(
+                        &std::cmp::Reverse(priority),
+                        |probe| std::cmp::Reverse(Self::calculate_bundle_priority(probe)),
+                    )
+                    .unwrap_or_else(|e| e);
+                storage.insert(pos, bundle);
+            }
         } else {
-            to_insert.for_each(|b| deque.push_front(b));
+            // Rebuffer at front in priority order: reverse iterate so highest
+            // priority bundles end up first
+            deserialized_bundles.into_iter().rev().for_each(|bundle| {
+                storage.insert(0, bundle);
+            });
         }
 
         InsertPacketBundlesSummary {

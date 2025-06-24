@@ -114,6 +114,10 @@ impl ImmutableDeserializedBundle {
         &self.bundle_id
     }
 
+    pub fn packets(&self) -> &[ImmutableDeserializedPacket] {
+        &self.packets
+    }
+
     /// A bundle has the following requirements:
     /// - all transactions must be sanitiz-able
     /// - no duplicate signatures
