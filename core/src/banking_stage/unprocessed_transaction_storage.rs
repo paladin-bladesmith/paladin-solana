@@ -1191,11 +1191,8 @@ impl BundleStorage {
             .packets().iter()
             .map(|packet| packet.compute_unit_limit())
             .sum::<u64>();
-        // TODO: tip extraction
-        // tips will have to be extracted from packet.transaction().message().instructions().. 
-        // and check the tip instructions
-        // let total_tip = bundle.packets().iter().map(|packet| packet.tip()).sum::<u64>();
-        ((total_priority_fee) * 1_000_000).saturating_div(total_cu_limit)
+        let tip_amount = bundle.tip_amount();
+        ((total_priority_fee + tip_amount) * 1_000_000).saturating_div(total_cu_limit)
     }
 
     fn insert_bundles(
