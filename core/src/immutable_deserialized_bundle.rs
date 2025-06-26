@@ -114,27 +114,47 @@ impl ImmutableDeserializedBundle {
         // Assuming tip transactions are SystemProgram transfers with a specific data format
         let tip_amount = immutable_packets
             .iter()
-            .filter(|p| {
-                p.transaction()
-                    .get_message()
-                    .message
-                    .static_account_keys()
-                    .iter()
-                    .any(|acc| tip_accounts.contains(acc))
-            })
-            .flat_map(|p| p.transaction().get_message().instructions().iter())
-            .map(|ix| {
-                ix.data[4..12]
-                    .try_into()
-                    .map_or(0, |bytes: [u8; 8]| u64::from_le_bytes(bytes))
-            })
-            .sum();
+            .map(|packet| Self::extract_tips_from_packet(packet, tip_accounts))
+            .sum::<u64>();
 
         Ok(Self {
             bundle_id: bundle.bundle_id.clone(),
             packets: immutable_packets,
             tip_amount,
         })
+    }
+
+    fn extract_tips_from_packet(
+        packet: &ImmutableDeserializedPacket,
+        tip_accounts: &HashSet<Pubkey>,
+    ) -> u64 {
+        let tx = packet.transaction();
+        let message = tx.get_message();
+        let account_keys = message.message.static_account_keys();
+
+        message
+            .program_instructions_iter()
+            .filter(|(program_id, _)| *program_id == &solana_sdk::system_program::id())
+            .filter_map(|(_, instruction)| {
+                // System program transfer instruction layout:
+                // [0..4]: instruction discriminator (2 = Transfer)
+                // [4..12]: lamports amount (u64)
+                if instruction.data.len() >= 12
+                    && instruction.data[0..4] == [2, 0, 0, 0]
+                    && account_keys.iter().any(|acc| tip_accounts.contains(acc))
+                {
+                    let lamports_bytes = &instruction.data[4..12];
+                    let lamports = u64::from_le_bytes(
+                        lamports_bytes
+                            .try_into()
+                            .expect("Slice with incorrect length"),
+                    );
+                    Some(lamports)
+                } else {
+                    None
+                }
+            })
+            .sum::<u64>()
     }
 
     #[allow(clippy::len_without_is_empty)]

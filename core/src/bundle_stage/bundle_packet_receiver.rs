@@ -1,5 +1,6 @@
 use {
-    super::BundleStageLoopMetrics, crate::{
+    super::BundleStageLoopMetrics,
+    crate::{
         banking_stage::{
             immutable_deserialized_packet::ImmutableDeserializedPacket,
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
@@ -10,7 +11,12 @@ use {
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
-    }, crossbeam_channel::{Receiver, RecvTimeoutError}, solana_measure::{measure::Measure, measure_us}, solana_pubkey::Pubkey, solana_sdk::timing::timestamp, std::{collections::HashSet, time::Duration}
+    },
+    crossbeam_channel::{Receiver, RecvTimeoutError},
+    solana_measure::{measure::Measure, measure_us},
+    solana_pubkey::Pubkey,
+    solana_sdk::timing::timestamp,
+    std::{collections::HashSet, time::Duration},
 };
 
 pub struct BundleReceiver {
@@ -473,7 +479,6 @@ mod tests {
                 });
                 results
             },
-
         ));
 
         // 0, 1, 2 processed; 3, 4 buffered

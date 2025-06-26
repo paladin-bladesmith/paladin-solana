@@ -1071,7 +1071,7 @@ mod tests {
             packet_bundles.get_mut(0).unwrap(),
             None,
             &Ok,
-            &tip_manager.get_tip_accounts()
+            &tip_manager.get_tip_accounts(),
         )
         .unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
@@ -1223,8 +1223,13 @@ mod tests {
             bundle_id: "test_transfer".to_string(),
         };
 
-        let deserialized_bundle =
-            BundlePacketDeserializer::deserialize_bundle(&mut packet_bundle, None, &Ok, &tip_accounts).unwrap();
+        let deserialized_bundle = BundlePacketDeserializer::deserialize_bundle(
+            &mut packet_bundle,
+            None,
+            &Ok,
+            &tip_accounts,
+        )
+        .unwrap();
         let mut error_metrics = TransactionErrorMetrics::default();
         let sanitized_bundle = deserialized_bundle
             .build_sanitized_bundle(
