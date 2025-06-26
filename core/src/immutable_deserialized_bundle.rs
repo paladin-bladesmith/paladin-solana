@@ -64,6 +64,7 @@ pub enum DeserializedBundleError {
 pub struct ImmutableDeserializedBundle {
     bundle_id: String,
     packets: Vec<ImmutableDeserializedPacket>,
+    tip_amount: u64,
 }
 
 impl ImmutableDeserializedBundle {
@@ -73,6 +74,17 @@ impl ImmutableDeserializedBundle {
         packet_filter: &impl Fn(
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+    ) -> Result<Self, DeserializedBundleError> {
+        Self::new_with_tips(bundle, max_len, packet_filter, &HashSet::default())
+    }
+
+    pub fn new_with_tips(
+        bundle: &mut PacketBundle,
+        max_len: Option<usize>,
+        packet_filter: &impl Fn(
+            ImmutableDeserializedPacket,
+        ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<Self, DeserializedBundleError> {
         // Checks: non-zero, less than some length, marked for discard, signature verification failed, failed to sanitize to
         // ImmutableDeserializedPacket
@@ -99,9 +111,29 @@ impl ImmutableDeserializedBundle {
             immutable_packets.push(immutable_packet);
         }
 
+        // Assuming tip transactions are SystemProgram transfers with a specific data format
+        let tip_amount = immutable_packets
+            .iter()
+            .filter(|p| {
+                p.transaction()
+                    .get_message()
+                    .message
+                    .static_account_keys()
+                    .iter()
+                    .any(|acc| tip_accounts.contains(acc))
+            })
+            .flat_map(|p| p.transaction().get_message().instructions().iter())
+            .map(|ix| {
+                ix.data[4..12]
+                    .try_into()
+                    .map_or(0, |bytes: [u8; 8]| u64::from_le_bytes(bytes))
+            })
+            .sum();
+
         Ok(Self {
             bundle_id: bundle.bundle_id.clone(),
             packets: immutable_packets,
+            tip_amount,
         })
     }
 
@@ -116,6 +148,10 @@ impl ImmutableDeserializedBundle {
 
     pub fn packets(&self) -> &[ImmutableDeserializedPacket] {
         &self.packets
+    }
+
+    pub fn tip_amount(&self) -> u64 {
+        self.tip_amount
     }
 
     /// A bundle has the following requirements:

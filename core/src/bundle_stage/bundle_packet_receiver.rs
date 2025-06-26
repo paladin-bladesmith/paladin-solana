@@ -1,6 +1,5 @@
 use {
-    super::BundleStageLoopMetrics,
-    crate::{
+    super::BundleStageLoopMetrics, crate::{
         banking_stage::{
             immutable_deserialized_packet::ImmutableDeserializedPacket,
             unprocessed_transaction_storage::UnprocessedTransactionStorage,
@@ -11,11 +10,7 @@ use {
         },
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
-    },
-    crossbeam_channel::{Receiver, RecvTimeoutError},
-    solana_measure::{measure::Measure, measure_us},
-    solana_sdk::timing::timestamp,
-    std::time::Duration,
+    }, crossbeam_channel::{Receiver, RecvTimeoutError}, solana_measure::{measure::Measure, measure_us}, solana_pubkey::Pubkey, solana_sdk::timing::timestamp, std::{collections::HashSet, time::Duration}
 };
 
 pub struct BundleReceiver {
@@ -44,6 +39,7 @@ impl BundleReceiver {
         unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
             let recv_timeout = Self::get_receive_timeout(unprocessed_bundle_storage);
@@ -58,6 +54,7 @@ impl BundleReceiver {
                         packet.check_excessive_precompiles()?;
                         Ok(packet)
                     },
+                    tip_accounts,
                 )
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
@@ -272,6 +269,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -330,6 +328,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -383,6 +382,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -450,6 +450,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -471,7 +472,8 @@ mod tests {
                     results[index] = Err(BundleExecutionError::BankProcessingTimeLimitReached);
                 });
                 results
-            }
+            },
+
         ));
 
         // 0, 1, 2 processed; 3, 4 buffered
@@ -515,6 +517,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -563,6 +566,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -609,6 +613,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -651,6 +656,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -735,6 +741,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -764,6 +771,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -790,6 +798,7 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
         );
         assert!(result.is_ok());
 
