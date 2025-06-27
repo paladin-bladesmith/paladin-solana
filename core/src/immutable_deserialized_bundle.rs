@@ -139,9 +139,10 @@ impl ImmutableDeserializedBundle {
                 // System program transfer instruction layout:
                 // [0..4]: instruction discriminator (2 = Transfer)
                 // [4..12]: lamports amount (u64)
+                let destination_pubkey = account_keys.get(*instruction.accounts.get(1)? as usize)?;
                 if instruction.data.len() >= 12
                     && instruction.data[0..4] == [2, 0, 0, 0]
-                    && account_keys.iter().any(|acc| tip_accounts.contains(acc))
+                    && tip_accounts.contains(destination_pubkey)
                 {
                     let lamports_bytes = &instruction.data[4..12];
                     let lamports = u64::from_le_bytes(
