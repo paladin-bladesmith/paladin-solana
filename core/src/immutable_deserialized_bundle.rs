@@ -6,6 +6,7 @@ use {
         },
         packet_bundle::PacketBundle,
     },
+    arrayref::array_ref,
     solana_bundle::SanitizedBundle,
     solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, verify_precompiles::verify_precompiles},
@@ -144,12 +145,7 @@ impl ImmutableDeserializedBundle {
                     && instruction.data[0..4] == [2, 0, 0, 0]
                     && tip_accounts.contains(destination_pubkey)
                 {
-                    let lamports_bytes = &instruction.data[4..12];
-                    let lamports = u64::from_le_bytes(
-                        lamports_bytes
-                            .try_into()
-                            .expect("Slice with incorrect length"),
-                    );
+                    let lamports = u64::from_le_bytes(*array_ref![&instruction.data, 4, 8]);
                     Some(lamports)
                 } else {
                     None

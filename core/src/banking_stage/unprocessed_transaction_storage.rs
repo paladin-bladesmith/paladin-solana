@@ -38,7 +38,7 @@ use {
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
-        collections::{BTreeMap, HashMap, HashSet, VecDeque},
+        collections::{BTreeMap, HashMap, HashSet},
         sync::{atomic::Ordering, Arc},
         time::Instant,
     },
@@ -296,7 +296,7 @@ impl UnprocessedTransactionStorage {
         Self::BundleStorage(BundleStorage {
             last_update_slot: Slot::default(),
             unprocessed_bundle_storage: BTreeMap::new(),
-            cost_model_buffered_bundle_storage: VecDeque::with_capacity(
+            cost_model_buffered_bundle_storage: Vec::with_capacity(
                 BundleStorage::BUNDLE_STORAGE_CAPACITY,
             ),
             priority_counter: 0,
@@ -1137,7 +1137,7 @@ impl PriorityId {
     }
 }
 
-/// Bundle storage has two btree maps: one for unprocessed bundles and another for ones that exceeded
+/// Bundle storage has one btree map for unprocessed bundles and one Vec for bundles that exceeded
 /// the cost model and need to get retried next slot.
 #[derive(Debug)]
 pub struct BundleStorage {
@@ -1145,7 +1145,7 @@ pub struct BundleStorage {
     pub unprocessed_bundle_storage: BTreeMap<PriorityId, ImmutableDeserializedBundle>,
     // Storage for bundles that exceeded the cost model for the slot they were last attempted
     // execution on
-    pub cost_model_buffered_bundle_storage: VecDeque<ImmutableDeserializedBundle>,
+    pub cost_model_buffered_bundle_storage: Vec<ImmutableDeserializedBundle>,
     priority_counter: u64,
 }
 
@@ -1194,30 +1194,14 @@ impl BundleStorage {
         (num_unprocessed_bundles, num_cost_model_buffered_bundles)
     }
 
-    fn calculate_bundle_priority(bundle: &ImmutableDeserializedBundle) -> u64 {
-        let total_priority_fee = bundle
-            .packets()
-            .iter()
-            .map(|packet| packet.compute_unit_price())
-            .sum::<u64>();
-        let total_cu_limit = bundle
-            .packets()
-            .iter()
-            .map(|packet| packet.compute_unit_limit())
-            .sum::<u64>();
-        let tip_amount = bundle.tip_amount();
-
-        ((total_priority_fee + tip_amount) * 1_000_000).saturating_div(total_cu_limit)
-    }
-
     fn insert_bundles(
         storage: Either<
             &mut BTreeMap<PriorityId, ImmutableDeserializedBundle>,
-            &mut VecDeque<ImmutableDeserializedBundle>,
+            &mut Vec<ImmutableDeserializedBundle>,
         >,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
         priority_counter: &mut u64,
-        push_back: bool,
+        _push_back: bool,
     ) -> InsertPacketBundlesSummary {
         let len = match &storage {
             Either::Left(btree) => btree.len(),
@@ -1241,28 +1225,36 @@ impl BundleStorage {
             .sum::<usize>();
 
         match storage {
-            Either::Left(unprocessed_storage) => {
+            Either::Left(storage) => {
                 deserialized_bundles
                     .into_iter()
                     .take(bundles_to_insert_count)
                     .for_each(|bundle| {
-                        let priority = Self::calculate_bundle_priority(&bundle);
+                        let total_priority_fee = bundle
+                            .packets()
+                            .iter()
+                            .map(|packet| packet.compute_unit_price())
+                            .sum::<u64>();
+                        let total_cu_limit = bundle
+                            .packets()
+                            .iter()
+                            .map(|packet| packet.compute_unit_limit())
+                            .sum::<u64>();
+                        let tip_amount = bundle.tip_amount();
+
+                        let priority = ((total_priority_fee + tip_amount) * 1_000_000)
+                            .saturating_div(total_cu_limit);
                         *priority_counter = priority_counter.wrapping_add(1);
                         let priority_id = PriorityId::new(priority, *priority_counter);
-                        unprocessed_storage.insert(priority_id, bundle);
+                        storage.insert(priority_id, bundle);
                     });
             }
             Either::Right(storage) => {
-                deserialized_bundles
-                    .into_iter()
-                    .take(bundles_to_insert_count)
-                    .for_each(|bundle| {
-                        if push_back {
-                            storage.push_back(bundle);
-                        } else {
-                            storage.push_front(bundle);
-                        }
-                    });
+                storage.extend(
+                    deserialized_bundles
+                        .into_iter()
+                        .take(bundles_to_insert_count),
+                );
             }
         }
 
@@ -1304,13 +1296,13 @@ impl BundleStorage {
     fn insert_unprocessed_bundles(
         &mut self,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-        push_back: bool,
+        _push_back: bool,
     ) -> InsertPacketBundlesSummary {
         Self::insert_bundles(
             Either::Left(&mut self.unprocessed_bundle_storage),
             deserialized_bundles,
             &mut self.priority_counter,
-            push_back,
+            _push_back,
         )
     }
 
@@ -1463,37 +1455,40 @@ impl BundleStorage {
             self.last_update_slot = bank.slot();
         }
 
-        let unprocessed_storage = std::mem::take(&mut self.unprocessed_bundle_storage);
-        let unprocessed_bundles: Vec<_> = unprocessed_storage
-            .into_iter()
+        let priority_keys: Vec<_> = self
+            .unprocessed_bundle_storage
+            .keys()
             .rev() // BTreeMap iterates in ascending order, we want descending
-            .map(|(_, bundle)| bundle)
+            .cloned()
             .collect();
 
-        self.unprocessed_bundle_storage.clear();
-
-        sanitized_bundles.extend(unprocessed_bundles.into_iter().filter_map(|packet_bundle| {
-            let r = packet_bundle.build_sanitized_bundle(
-                &bank,
-                blacklisted_accounts,
-                &mut error_metrics,
-                move_precompile_verification_to_svm,
-            );
-            bundle_stage_leader_metrics
-                .bundle_stage_metrics_tracker()
-                .increment_sanitize_transaction_result(&r);
-            match r {
-                Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-                Err(e) => {
-                    debug!(
-                        "bundle id: {} error sanitizing: {}",
-                        packet_bundle.bundle_id(),
-                        e
+        sanitized_bundles.extend(
+            priority_keys
+                .into_iter()
+                .filter_map(|key| self.unprocessed_bundle_storage.remove(&key))
+                .filter_map(|packet_bundle| {
+                    let r = packet_bundle.build_sanitized_bundle(
+                        &bank,
+                        blacklisted_accounts,
+                        &mut error_metrics,
+                        move_precompile_verification_to_svm,
                     );
-                    None
-                }
-            }
-        }));
+                    bundle_stage_leader_metrics
+                        .bundle_stage_metrics_tracker()
+                        .increment_sanitize_transaction_result(&r);
+                    match r {
+                        Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
+                        Err(e) => {
+                            debug!(
+                                "bundle id: {} error sanitizing: {}",
+                                packet_bundle.bundle_id(),
+                                e
+                            );
+                            None
+                        }
+                    }
+                }),
+        );
 
         let elapsed = start.elapsed().as_micros();
         bundle_stage_leader_metrics
