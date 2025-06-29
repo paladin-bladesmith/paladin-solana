@@ -1259,9 +1259,9 @@ impl BundleStorage {
         }
 
         InsertPacketBundlesSummary {
-            insert_packets_summary: (PacketBatchInsertionMetrics {
+            insert_packets_summary: PacketBatchInsertionMetrics {
                 num_dropped_packets: num_packets_dropped,
-            })
+            }
             .into(),
             num_bundles_inserted: bundles_to_insert_count,
             num_packets_inserted,
