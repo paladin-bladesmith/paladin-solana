@@ -1247,12 +1247,12 @@ impl BundleStorage {
 
         match storage {
             Either::Left(storage) => {
-                deserialized_bundles
-                    .into_iter()
-                    .take(bundles_to_insert_count)
-                    .for_each(|bundle| {
-                        storage.insert(PriorityId::new(priority_counter, &bundle), bundle);
-                    });
+                storage.extend(
+                    deserialized_bundles
+                        .into_iter()
+                        .take(bundles_to_insert_count)
+                        .map(|bundle| (PriorityId::new(priority_counter, &bundle), bundle)),
+                );
             }
             Either::Right(storage) => {
                 storage.extend(
