@@ -1420,8 +1420,8 @@ impl BundleStorage {
         blacklisted_accounts: &HashSet<Pubkey>,
     ) -> Vec<(ImmutableDeserializedBundle, SanitizedBundle)> {
         let mut error_metrics = TransactionErrorMetrics::default();
+
         let start = Instant::now();
-        let mut sanitized_bundles = Vec::new();
 
         let move_precompile_verification_to_svm = bank
             .feature_set
@@ -1429,71 +1429,42 @@ impl BundleStorage {
 
         // on new slot, drain anything that was buffered from last slot
         if bank.slot() != self.last_update_slot {
-            sanitized_bundles.extend(
+            self.unprocessed_bundle_storage.extend(
                 self.cost_model_buffered_bundle_storage
                     .drain(..)
-                    .filter_map(|packet_bundle| {
-                        let r = packet_bundle.build_sanitized_bundle(
-                            &bank,
-                            blacklisted_accounts,
-                            &mut error_metrics,
-                            move_precompile_verification_to_svm,
-                        );
-                        bundle_stage_leader_metrics
-                            .bundle_stage_metrics_tracker()
-                            .increment_sanitize_transaction_result(&r);
-
-                        match r {
-                            Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-                            Err(e) => {
-                                debug!(
-                                    "bundle id: {} error sanitizing: {}",
-                                    packet_bundle.bundle_id(),
-                                    e
-                                );
-                                None
-                            }
-                        }
-                    }),
+                    .map(|bundle| (PriorityId::new(&mut self.priority_counter, &bundle), bundle)),
             );
 
             self.last_update_slot = bank.slot();
         }
 
-        let priority_keys: Vec<_> = self
-            .unprocessed_bundle_storage
-            .keys()
-            .rev() // BTreeMap iterates in ascending order, we want descending
-            .cloned()
-            .collect();
+        let sanitized_bundles = std::mem::take(&mut self.unprocessed_bundle_storage)
+            .into_values()
+            .rev()
+            .filter_map(|bundle| {
+                let res = bundle.build_sanitized_bundle(
+                    &bank,
+                    blacklisted_accounts,
+                    &mut error_metrics,
+                    move_precompile_verification_to_svm,
+                );
+                bundle_stage_leader_metrics
+                    .bundle_stage_metrics_tracker()
+                    .increment_sanitize_transaction_result(&res);
 
-        sanitized_bundles.extend(
-            priority_keys
-                .into_iter()
-                .filter_map(|key| self.unprocessed_bundle_storage.remove(&key))
-                .filter_map(|packet_bundle| {
-                    let r = packet_bundle.build_sanitized_bundle(
-                        &bank,
-                        blacklisted_accounts,
-                        &mut error_metrics,
-                        move_precompile_verification_to_svm,
-                    );
-                    bundle_stage_leader_metrics
-                        .bundle_stage_metrics_tracker()
-                        .increment_sanitize_transaction_result(&r);
-                    match r {
-                        Ok(sanitized_bundle) => Some((packet_bundle, sanitized_bundle)),
-                        Err(e) => {
-                            debug!(
-                                "bundle id: {} error sanitizing: {}",
-                                packet_bundle.bundle_id(),
-                                e
-                            );
-                            None
-                        }
+                match res {
+                    Ok(sanitized_bundle) => Some((bundle, sanitized_bundle)),
+                    Err(err) => {
+                        debug!(
+                            "bundle id: {} error sanitizing: {}",
+                            bundle.bundle_id(),
+                            err
+                        );
+                        None
                     }
-                }),
-        );
+                }
+            })
+            .collect();
 
         let elapsed = start.elapsed().as_micros();
         bundle_stage_leader_metrics
