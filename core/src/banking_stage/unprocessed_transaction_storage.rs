@@ -1127,8 +1127,10 @@ pub struct InsertPacketBundlesSummary {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PriorityId {
-    priority: u64, // Higher values = higher priority
-    id: u64,       // FIFO tie-breaker (monotonic counter)
+    /// Higher values = higher priority
+    priority: u64,
+    /// FIFO tie-breaker (monotonic counter)
+    id: u64,
 }
 
 impl PriorityId {
