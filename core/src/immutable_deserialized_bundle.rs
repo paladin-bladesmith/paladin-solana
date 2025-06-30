@@ -76,10 +76,10 @@ impl ImmutableDeserializedBundle {
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
     ) -> Result<Self, DeserializedBundleError> {
-        Self::new_with_tips(bundle, max_len, packet_filter, &HashSet::default())
+        Self::new_with_tip_amount(bundle, max_len, packet_filter, &HashSet::default())
     }
 
-    pub fn new_with_tips(
+    pub fn new_with_tip_amount(
         bundle: &mut PacketBundle,
         max_len: Option<usize>,
         packet_filter: &impl Fn(

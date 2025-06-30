@@ -150,7 +150,7 @@ impl BundlePacketDeserializer {
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
         tip_accounts: &HashSet<Pubkey>,
     ) -> Result<ImmutableDeserializedBundle, DeserializedBundleError> {
-        ImmutableDeserializedBundle::new_with_tips(
+        ImmutableDeserializedBundle::new_with_tip_amount(
             bundle,
             max_packets_per_bundle,
             packet_filter,
