@@ -1132,8 +1132,27 @@ pub struct PriorityId {
 }
 
 impl PriorityId {
-    fn new(priority: u64, id: u64) -> Self {
-        Self { priority, id }
+    fn new(priority_counter: &mut u64, bundle: &ImmutableDeserializedBundle) -> Self {
+        let total_priority_fee = bundle
+            .packets()
+            .iter()
+            .map(|packet| packet.compute_unit_price())
+            .sum::<u64>();
+        let total_cu_limit = bundle
+            .packets()
+            .iter()
+            .map(|packet| packet.compute_unit_limit())
+            .sum::<u64>();
+        let tip_amount = bundle.tip_amount();
+        let priority =
+            ((total_priority_fee + tip_amount) * 1_000_000).saturating_div(total_cu_limit);
+
+        *priority_counter = priority_counter.wrapping_add(1);
+
+        Self {
+            priority,
+            id: *priority_counter,
+        }
     }
 }
 
@@ -1230,23 +1249,7 @@ impl BundleStorage {
                     .into_iter()
                     .take(bundles_to_insert_count)
                     .for_each(|bundle| {
-                        let total_priority_fee = bundle
-                            .packets()
-                            .iter()
-                            .map(|packet| packet.compute_unit_price())
-                            .sum::<u64>();
-                        let total_cu_limit = bundle
-                            .packets()
-                            .iter()
-                            .map(|packet| packet.compute_unit_limit())
-                            .sum::<u64>();
-                        let tip_amount = bundle.tip_amount();
-
-                        let priority = ((total_priority_fee + tip_amount) * 1_000_000)
-                            .saturating_div(total_cu_limit);
-                        *priority_counter = priority_counter.wrapping_add(1);
-                        let priority_id = PriorityId::new(priority, *priority_counter);
-                        storage.insert(priority_id, bundle);
+                        storage.insert(PriorityId::new(priority_counter, &bundle), bundle);
                     });
             }
             Either::Right(storage) => {
