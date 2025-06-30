@@ -6,6 +6,7 @@ use {
         },
         packet_bundle::PacketBundle,
     },
+    arrayref::array_ref,
     solana_bundle::SanitizedBundle,
     solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, verify_precompiles::verify_precompiles},
@@ -64,6 +65,7 @@ pub enum DeserializedBundleError {
 pub struct ImmutableDeserializedBundle {
     bundle_id: String,
     packets: Vec<ImmutableDeserializedPacket>,
+    tip_amount: u64,
 }
 
 impl ImmutableDeserializedBundle {
@@ -73,6 +75,17 @@ impl ImmutableDeserializedBundle {
         packet_filter: &impl Fn(
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+    ) -> Result<Self, DeserializedBundleError> {
+        Self::new_with_tip_amount(bundle, max_len, packet_filter, &HashSet::default())
+    }
+
+    pub fn new_with_tip_amount(
+        bundle: &mut PacketBundle,
+        max_len: Option<usize>,
+        packet_filter: &impl Fn(
+            ImmutableDeserializedPacket,
+        ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<Self, DeserializedBundleError> {
         // Checks: non-zero, less than some length, marked for discard, signature verification failed, failed to sanitize to
         // ImmutableDeserializedPacket
@@ -99,10 +112,46 @@ impl ImmutableDeserializedBundle {
             immutable_packets.push(immutable_packet);
         }
 
+        // Assuming tip transactions are SystemProgram transfers with a specific data format
+        let tip_amount = immutable_packets
+            .iter()
+            .map(|packet| Self::extract_tips_from_packet(packet, tip_accounts))
+            .sum::<u64>();
+
         Ok(Self {
             bundle_id: bundle.bundle_id.clone(),
             packets: immutable_packets,
+            tip_amount,
         })
+    }
+
+    fn extract_tips_from_packet(
+        packet: &ImmutableDeserializedPacket,
+        tip_accounts: &HashSet<Pubkey>,
+    ) -> u64 {
+        let tx = packet.transaction();
+        let message = tx.get_message();
+        let account_keys = message.message.static_account_keys();
+
+        message
+            .program_instructions_iter()
+            .filter(|(program_id, _)| *program_id == &solana_sdk::system_program::id())
+            .filter_map(|(_, instruction)| {
+                // System program transfer instruction layout:
+                // [0..4]: instruction discriminator (2 = Transfer)
+                // [4..12]: lamports amount (u64)
+                let destination_pubkey = account_keys.get(*instruction.accounts.get(1)? as usize)?;
+                if instruction.data.len() >= 12
+                    && instruction.data[0..4] == [2, 0, 0, 0]
+                    && tip_accounts.contains(destination_pubkey)
+                {
+                    let lamports = u64::from_le_bytes(*array_ref![&instruction.data, 4, 8]);
+                    Some(lamports)
+                } else {
+                    None
+                }
+            })
+            .sum::<u64>()
     }
 
     #[allow(clippy::len_without_is_empty)]
@@ -112,6 +161,14 @@ impl ImmutableDeserializedBundle {
 
     pub fn bundle_id(&self) -> &str {
         &self.bundle_id
+    }
+
+    pub fn packets(&self) -> &[ImmutableDeserializedPacket] {
+        &self.packets
+    }
+
+    pub fn tip_amount(&self) -> u64 {
+        self.tip_amount
     }
 
     /// A bundle has the following requirements:

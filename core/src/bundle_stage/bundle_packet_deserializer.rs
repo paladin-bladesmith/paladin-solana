@@ -9,8 +9,12 @@ use {
         packet_bundle::PacketBundle,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
+    solana_pubkey::Pubkey,
     solana_sdk::saturating_add_assign,
-    std::time::{Duration, Instant},
+    std::{
+        collections::HashSet,
+        time::{Duration, Instant},
+    },
 };
 
 /// Results from deserializing packet batches.
@@ -48,6 +52,7 @@ impl BundlePacketDeserializer {
         packet_filter: &impl Fn(
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<ReceiveBundleResults, RecvTimeoutError> {
         let (bundle_count, _packet_count, mut bundles) =
             self.receive_until(recv_timeout, capacity)?;
@@ -57,6 +62,7 @@ impl BundlePacketDeserializer {
             &mut bundles,
             self.max_packets_per_bundle,
             packet_filter,
+            tip_accounts,
         ))
     }
 
@@ -69,12 +75,18 @@ impl BundlePacketDeserializer {
         packet_filter: &impl Fn(
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> ReceiveBundleResults {
         let mut deserialized_bundles = Vec::with_capacity(bundle_count);
         let mut num_dropped_bundles: usize = 0;
 
         for bundle in bundles.iter_mut() {
-            match Self::deserialize_bundle(bundle, max_packets_per_bundle, packet_filter) {
+            match Self::deserialize_bundle(
+                bundle,
+                max_packets_per_bundle,
+                packet_filter,
+                tip_accounts,
+            ) {
                 Ok(deserialized_bundle) => {
                     deserialized_bundles.push(deserialized_bundle);
                 }
@@ -136,8 +148,14 @@ impl BundlePacketDeserializer {
         packet_filter: &impl Fn(
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<ImmutableDeserializedBundle, DeserializedBundleError> {
-        ImmutableDeserializedBundle::new(bundle, max_packets_per_bundle, packet_filter)
+        ImmutableDeserializedBundle::new_with_tip_amount(
+            bundle,
+            max_packets_per_bundle,
+            packet_filter,
+            tip_accounts,
+        )
     }
 }
 
@@ -154,10 +172,13 @@ mod tests {
 
     #[test]
     fn test_deserialize_and_collect_bundles_empty() {
-        let results =
-            BundlePacketDeserializer::deserialize_and_collect_bundles(0, &mut [], Some(5), &|p| {
-                Ok(p)
-            });
+        let results = BundlePacketDeserializer::deserialize_and_collect_bundles(
+            0,
+            &mut [],
+            Some(5),
+            &|p| Ok(p),
+            &HashSet::new(),
+        );
         assert_eq!(results.deserialized_bundles.len(), 0);
         assert_eq!(results.num_dropped_bundles, 0);
     }
@@ -194,7 +215,7 @@ mod tests {
         sender.send(packet_bundles.clone()).unwrap();
 
         let bundles = deserializer
-            .receive_bundles(Duration::from_millis(100), 5, &Ok)
+            .receive_bundles(Duration::from_millis(100), 5, &Ok, &HashSet::new())
             .unwrap();
         // this is confusing, but it's sent as one batch
         assert_eq!(bundles.deserialized_bundles.len(), 10);
@@ -202,7 +223,7 @@ mod tests {
 
         // make sure empty
         assert_matches!(
-            deserializer.receive_bundles(Duration::from_millis(100), 5, &Ok),
+            deserializer.receive_bundles(Duration::from_millis(100), 5, &Ok, &HashSet::new()),
             Err(RecvTimeoutError::Timeout)
         );
 
@@ -210,19 +231,19 @@ mod tests {
         sender.send(packet_bundles.clone()).unwrap();
         sender.send(packet_bundles).unwrap();
         let bundles = deserializer
-            .receive_bundles(Duration::from_millis(100), 5, &Ok)
+            .receive_bundles(Duration::from_millis(100), 5, &Ok, &HashSet::new())
             .unwrap();
         assert_eq!(bundles.deserialized_bundles.len(), 10);
         assert_eq!(bundles.num_dropped_bundles, 0);
 
         let bundles = deserializer
-            .receive_bundles(Duration::from_millis(100), 5, &Ok)
+            .receive_bundles(Duration::from_millis(100), 5, &Ok, &HashSet::new())
             .unwrap();
         assert_eq!(bundles.deserialized_bundles.len(), 10);
         assert_eq!(bundles.num_dropped_bundles, 0);
 
         assert_matches!(
-            deserializer.receive_bundles(Duration::from_millis(100), 5, &Ok),
+            deserializer.receive_bundles(Duration::from_millis(100), 5, &Ok, &HashSet::new()),
             Err(RecvTimeoutError::Timeout)
         );
     }
@@ -243,7 +264,7 @@ mod tests {
         sender.send(packet_bundles).unwrap();
 
         let bundles = deserializer
-            .receive_bundles(Duration::from_millis(100), 5, &Ok)
+            .receive_bundles(Duration::from_millis(100), 5, &Ok, &HashSet::new())
             .unwrap();
         // this is confusing, but it's sent as one batch
         assert_eq!(bundles.deserialized_bundles.len(), 0);
