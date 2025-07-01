@@ -136,7 +136,9 @@ impl ImmutableDeserializedBundle {
     ) -> u64 {
         let tx = packet.transaction();
         let message = tx.get_message();
-        // TODO: Check if Jito tip accounts can be in lookup tables.
+        // Tip accounts should not be in lookup tables.
+        //
+        // https://docs.jito.wtf/lowlatencytxnsend/#tips
         let account_keys = message.message.static_account_keys();
 
         message
