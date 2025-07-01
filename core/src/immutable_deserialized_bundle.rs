@@ -12,12 +12,8 @@ use {
     solana_runtime::{bank::Bank, verify_precompiles::verify_precompiles},
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
-        clock::MAX_PROCESSING_AGE,
-        hash::Hash,
-        instruction::{CompiledInstruction, Instruction},
-        pubkey::Pubkey,
-        system_program,
-        transaction::SanitizedTransaction,
+        clock::MAX_PROCESSING_AGE, hash::Hash, instruction::CompiledInstruction, pubkey::Pubkey,
+        system_program, transaction::SanitizedTransaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
@@ -285,7 +281,6 @@ mod tests {
             pubkey::Pubkey,
             signature::{Keypair, Signer},
             signer::SeedDerivable,
-            system_instruction::{self, SystemInstruction},
             system_transaction::{self, transfer},
             transaction::Transaction,
         },

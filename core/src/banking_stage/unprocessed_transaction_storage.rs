@@ -1135,19 +1135,14 @@ pub struct PriorityId {
 
 impl PriorityId {
     fn new(priority_counter: &mut u64, bundle: &ImmutableDeserializedBundle) -> Self {
-        let total_priority_fee = bundle
-            .packets()
-            .iter()
-            .map(|packet| packet.compute_unit_price())
-            .sum::<u64>();
-        let total_cu_limit = bundle
-            .packets()
-            .iter()
-            .map(|packet| packet.compute_unit_limit())
-            .sum::<u64>();
+        // TODO: Need to calculate transaction reward which is not just sum cu_price.
+        let total_priority_fee = 0u64;
+        // TODO: Need to calculate transaction cost which is not just sum cu_limit.
+        let total_cu_limit = 0u64;
         let tip_amount = bundle.tip_amount();
-        let priority =
-            ((total_priority_fee + tip_amount) * 1_000_000).saturating_div(total_cu_limit);
+        let numerator = (total_priority_fee.saturating_add(tip_amount)).saturating_mul(1_000_000);
+        let denominator = std::cmp::max(total_cu_limit, 1);
+        let priority = numerator / denominator;
 
         *priority_counter = priority_counter.wrapping_add(1);
 
