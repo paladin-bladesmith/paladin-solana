@@ -12,7 +12,12 @@ use {
     solana_runtime::{bank::Bank, verify_precompiles::verify_precompiles},
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
-        clock::MAX_PROCESSING_AGE, hash::Hash, pubkey::Pubkey, transaction::SanitizedTransaction,
+        clock::MAX_PROCESSING_AGE,
+        hash::Hash,
+        instruction::{CompiledInstruction, Instruction},
+        pubkey::Pubkey,
+        system_program,
+        transaction::SanitizedTransaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
@@ -131,27 +136,36 @@ impl ImmutableDeserializedBundle {
     ) -> u64 {
         let tx = packet.transaction();
         let message = tx.get_message();
+        // TODO: Check if Jito tip accounts can be in lookup tables.
         let account_keys = message.message.static_account_keys();
 
         message
             .program_instructions_iter()
-            .filter(|(program_id, _)| *program_id == &solana_sdk::system_program::id())
-            .filter_map(|(_, instruction)| {
-                // System program transfer instruction layout:
-                // [0..4]: instruction discriminator (2 = Transfer)
-                // [4..12]: lamports amount (u64)
-                let destination_pubkey = account_keys.get(*instruction.accounts.get(1)? as usize)?;
-                if instruction.data.len() >= 12
-                    && instruction.data[0..4] == [2, 0, 0, 0]
-                    && tip_accounts.contains(destination_pubkey)
-                {
-                    let lamports = u64::from_le_bytes(*array_ref![&instruction.data, 4, 8]);
-                    Some(lamports)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
+            .filter(|(destination, _)| tip_accounts.contains(destination))
+            .map(|(_, amount)| amount)
             .sum::<u64>()
+    }
+
+    fn extract_transfer<'a>(
+        account_keys: &'a [Pubkey],
+        program_id: &Pubkey,
+        ix: &CompiledInstruction,
+    ) -> Option<(&'a Pubkey, u64)> {
+        if program_id != &system_program::ID {
+            return None;
+        }
+        if ix.data.len() < 12 {
+            return None;
+        }
+        if u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) != 2 {
+            return None;
+        }
+
+        let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
+        let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+
+        Some((destination, amount))
     }
 
     #[allow(clippy::len_without_is_empty)]
@@ -268,12 +282,32 @@ mod tests {
             packet::Packet,
             pubkey::Pubkey,
             signature::{Keypair, Signer},
-            system_transaction::transfer,
+            signer::SeedDerivable,
+            system_instruction::{self, SystemInstruction},
+            system_transaction::{self, transfer},
             transaction::Transaction,
         },
         solana_svm::transaction_error_metrics::TransactionErrorMetrics,
         std::{collections::HashSet, sync::Arc},
     };
+
+    #[test]
+    fn transfer_encoding() {
+        let from = Keypair::from_seed(&[1; 32]).unwrap();
+        let to = Pubkey::new_from_array([2; 32]);
+        let amount = 250;
+        let transfer =
+            system_transaction::transfer(&from, &to, amount, Hash::new_from_array([3; 32]));
+
+        let (recovered_to, recovered_amount) = ImmutableDeserializedBundle::extract_transfer(
+            &transfer.message.account_keys,
+            &solana_system_program::id(),
+            &transfer.message.instructions[0],
+        )
+        .unwrap();
+        assert_eq!(recovered_to, &to);
+        assert_eq!(recovered_amount, amount);
+    }
 
     /// Happy case
     #[test]
