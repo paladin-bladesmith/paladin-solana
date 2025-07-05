@@ -1447,8 +1447,7 @@ impl BundleStorage {
                 }
             },
         ));
-
-        let mut priority_counter: u64 = 0;
+        let mut priority_counter = 0;
         sanitized_bundles.sort_by_cached_key(|(immutable_bundle, sanitized_bundle)| {
             Self::calculate_bundle_priority(
                 immutable_bundle,
@@ -1459,14 +1458,13 @@ impl BundleStorage {
             )
         });
 
-        let elapsed = start.elapsed().as_micros();
+        let elapsed = start.elapsed().as_micros() as u64;
         bundle_stage_leader_metrics
             .bundle_stage_metrics_tracker()
-            .increment_sanitize_bundle_elapsed_us(elapsed as u64);
+            .increment_sanitize_bundle_elapsed_us(elapsed);
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
-            .increment_transactions_from_packets_us(elapsed as u64);
-
+            .increment_transactions_from_packets_us(elapsed);
         bundle_stage_leader_metrics
             .leader_slot_metrics_tracker()
             .accumulate_transaction_errors(&error_metrics);
@@ -1481,39 +1479,34 @@ impl BundleStorage {
         priority_counter: &mut u64,
         tip_accounts: &HashSet<Pubkey>,
     ) -> (std::cmp::Reverse<u64>, u64) {
-        let total_cu_cost = sanitized_bundle
+        let total_cu_cost: u64 = sanitized_bundle
             .transactions
             .iter()
             .map(|tx| CostModel::calculate_cost(tx, &bank.feature_set).sum())
-            .sum::<u64>();
+            .sum();
 
-        let reward_from_transaction = sanitized_bundle
+        let reward_from_tx: u64 = sanitized_bundle
             .transactions
             .iter()
             .map(|tx| {
-                let details = tx.compute_budget_instruction_details();
-                let limits = details
+                let limits = tx
+                    .compute_budget_instruction_details()
                     .sanitize_and_convert_to_compute_budget_limits(&bank.feature_set)
                     .unwrap_or_default();
                 bank.calculate_reward_for_transaction(tx, &FeeBudgetLimits::from(limits))
             })
-            .sum::<u64>();
+            .sum();
 
-        let reward_from_tips = immutable_bundle
+        let reward_from_tips: u64 = immutable_bundle
             .packets()
             .iter()
             .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
-            .sum::<u64>();
+            .sum();
 
-        let total_reward = reward_from_transaction.saturating_add(reward_from_tips);
-
+        let total_reward = reward_from_tx.saturating_add(reward_from_tips);
         const MULTIPLIER: u64 = 1_000_000;
-        let numerator = total_reward.saturating_mul(MULTIPLIER);
-        let denominator = std::cmp::max(total_cu_cost, 1);
-        let priority = numerator / denominator;
-
+        let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
         *priority_counter = priority_counter.wrapping_add(1);
-
         (std::cmp::Reverse(priority), *priority_counter)
     }
 
@@ -1521,19 +1514,14 @@ impl BundleStorage {
         packet: &ImmutableDeserializedPacket,
         tip_accounts: &HashSet<Pubkey>,
     ) -> u64 {
-        let tx = packet.transaction();
-        let message = tx.get_message();
-        // Tip accounts should not be in lookup tables.
-        //
-        // https://docs.jito.wtf/lowlatencytxnsend/#tips
+        let message = packet.transaction().get_message();
         let account_keys = message.message.static_account_keys();
-
         message
             .program_instructions_iter()
             .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
-            .filter(|(destination, _)| tip_accounts.contains(destination))
+            .filter(|(dest, _)| tip_accounts.contains(dest))
             .map(|(_, amount)| amount)
-            .sum::<u64>()
+            .sum()
     }
 
     fn extract_transfer<'a>(
@@ -1541,20 +1529,16 @@ impl BundleStorage {
         program_id: &Pubkey,
         ix: &CompiledInstruction,
     ) -> Option<(&'a Pubkey, u64)> {
-        if program_id != &system_program::ID {
-            return None;
+        if program_id == &system_program::ID
+            && ix.data.len() >= 12
+            && u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) == 2
+        {
+            let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
+            let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+            Some((destination, amount))
+        } else {
+            None
         }
-        if ix.data.len() < 12 {
-            return None;
-        }
-        if u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) != 2 {
-            return None;
-        }
-
-        let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
-        let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
-
-        Some((destination, amount))
     }
 }
 
