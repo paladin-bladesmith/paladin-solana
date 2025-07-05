@@ -20,6 +20,7 @@ use {
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
     },
     agave_feature_set::{move_precompile_verification_to_svm, FeatureSet},
+    arrayref::array_ref,
     itertools::Itertools,
     min_max_heap::MinMaxHeap,
     solana_accounts_db::account_locks::validate_account_locks,
@@ -36,8 +37,9 @@ use {
         clock::{Slot, FORWARD_TRANSACTIONS_TO_LEADER_AT_SLOT_OFFSET},
         fee::FeeBudgetLimits,
         hash::Hash,
+        instruction::CompiledInstruction,
         pubkey::Pubkey,
-        saturating_add_assign,
+        saturating_add_assign, system_program,
         transaction::SanitizedTransaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
@@ -495,6 +497,7 @@ impl UnprocessedTransactionStorage {
         bank: Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         blacklisted_accounts: &HashSet<Pubkey>,
+        tip_accounts: &HashSet<Pubkey>,
         processing_function: F,
     ) -> bool
     where
@@ -509,6 +512,7 @@ impl UnprocessedTransactionStorage {
                     bank,
                     bundle_stage_leader_metrics,
                     blacklisted_accounts,
+                    tip_accounts,
                     processing_function,
                 ),
             _ => panic!("class does not support processing bundles"),
@@ -1272,6 +1276,7 @@ impl BundleStorage {
         bank: Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         blacklisted_accounts: &HashSet<Pubkey>,
+        tip_accounts: &HashSet<Pubkey>,
         mut processing_function: F,
     ) -> bool
     where
@@ -1284,6 +1289,7 @@ impl BundleStorage {
             bank,
             bundle_stage_leader_metrics,
             blacklisted_accounts,
+            tip_accounts,
         );
 
         debug!("processing {} bundles", sanitized_bundles.len());
@@ -1372,6 +1378,7 @@ impl BundleStorage {
         bank: Arc<Bank>,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
         blacklisted_accounts: &HashSet<Pubkey>,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> Vec<(ImmutableDeserializedBundle, SanitizedBundle)> {
         let mut error_metrics = TransactionErrorMetrics::default();
 
@@ -1448,6 +1455,7 @@ impl BundleStorage {
                 sanitized_bundle,
                 &bank,
                 &mut priority_counter,
+                tip_accounts,
             )
         });
 
@@ -1471,6 +1479,7 @@ impl BundleStorage {
         sanitized_bundle: &SanitizedBundle,
         bank: &Bank,
         priority_counter: &mut u64,
+        tip_accounts: &HashSet<Pubkey>,
     ) -> (std::cmp::Reverse<u64>, u64) {
         let total_cu_cost = sanitized_bundle
             .transactions
@@ -1490,7 +1499,12 @@ impl BundleStorage {
             })
             .sum::<u64>();
 
-        let reward_from_tips = immutable_bundle.tip_amount();
+        let reward_from_tips = immutable_bundle
+            .packets()
+            .iter()
+            .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
+            .sum::<u64>();
+
         let total_reward = reward_from_transaction.saturating_add(reward_from_tips);
 
         const MULTIPLIER: u64 = 1_000_000;
@@ -1499,7 +1513,48 @@ impl BundleStorage {
         let priority = numerator / denominator;
 
         *priority_counter = priority_counter.wrapping_add(1);
+
         (std::cmp::Reverse(priority), *priority_counter)
+    }
+
+    pub fn extract_tips_from_packet(
+        packet: &ImmutableDeserializedPacket,
+        tip_accounts: &HashSet<Pubkey>,
+    ) -> u64 {
+        let tx = packet.transaction();
+        let message = tx.get_message();
+        // Tip accounts should not be in lookup tables.
+        //
+        // https://docs.jito.wtf/lowlatencytxnsend/#tips
+        let account_keys = message.message.static_account_keys();
+
+        message
+            .program_instructions_iter()
+            .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
+            .filter(|(destination, _)| tip_accounts.contains(destination))
+            .map(|(_, amount)| amount)
+            .sum::<u64>()
+    }
+
+    fn extract_transfer<'a>(
+        account_keys: &'a [Pubkey],
+        program_id: &Pubkey,
+        ix: &CompiledInstruction,
+    ) -> Option<(&'a Pubkey, u64)> {
+        if program_id != &system_program::ID {
+            return None;
+        }
+        if ix.data.len() < 12 {
+            return None;
+        }
+        if u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) != 2 {
+            return None;
+        }
+
+        let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
+        let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+
+        Some((destination, amount))
     }
 }
 
@@ -1514,6 +1569,7 @@ mod tests {
         solana_sdk::{
             hash::Hash,
             signature::{Keypair, Signer},
+            signer::SeedDerivable,
             system_transaction,
             transaction::Transaction,
         },
@@ -1522,6 +1578,44 @@ mod tests {
         },
         std::error::Error,
     };
+
+    #[test]
+    fn transfer_encoding() {
+        let from = Keypair::from_seed(&[1; 32]).unwrap();
+        let to = Pubkey::new_from_array([2; 32]);
+        let amount = 250;
+        let transfer =
+            system_transaction::transfer(&from, &to, amount, Hash::new_from_array([3; 32]));
+
+        let (recovered_to, recovered_amount) = BundleStorage::extract_transfer(
+            &transfer.message.account_keys,
+            &solana_system_program::id(),
+            &transfer.message.instructions[0],
+        )
+        .unwrap();
+        assert_eq!(recovered_to, &to);
+        assert_eq!(recovered_amount, amount);
+    }
+
+    #[test]
+    fn test_priority_sorting_behavior() {
+        let mut priorities = vec![
+            (std::cmp::Reverse(100), 1),
+            (std::cmp::Reverse(200), 2),
+            (std::cmp::Reverse(100), 3),
+            (std::cmp::Reverse(50), 4),
+        ];
+        priorities.sort();
+        assert_eq!(
+            priorities,
+            vec![
+                (std::cmp::Reverse(200), 2),
+                (std::cmp::Reverse(100), 1),
+                (std::cmp::Reverse(100), 3),
+                (std::cmp::Reverse(50), 4),
+            ]
+        );
+    }
 
     #[test]
     fn test_filter_processed_packets() {

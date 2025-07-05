@@ -14,9 +14,8 @@ use {
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_measure::{measure::Measure, measure_us},
-    solana_pubkey::Pubkey,
     solana_sdk::timing::timestamp,
-    std::{collections::HashSet, time::Duration},
+    std::time::Duration,
 };
 
 pub struct BundleReceiver {
@@ -45,7 +44,6 @@ impl BundleReceiver {
         unprocessed_bundle_storage: &mut UnprocessedTransactionStorage,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
             let recv_timeout = Self::get_receive_timeout(unprocessed_bundle_storage);
@@ -60,7 +58,6 @@ impl BundleReceiver {
                         packet.check_excessive_precompiles()?;
                         Ok(packet)
                     },
-                    tip_accounts,
                 )
                 // Consumes results if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
@@ -275,7 +272,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -289,6 +285,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -334,7 +331,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -348,6 +344,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure the first 1000 bundles are the ones to process
@@ -388,7 +385,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -401,6 +397,7 @@ mod tests {
         assert!(bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -421,6 +418,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles[poh_max_height_reached_index..], bundles_to_process);
@@ -456,7 +454,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -469,6 +466,7 @@ mod tests {
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
 
@@ -478,7 +476,7 @@ mod tests {
                     results[index] = Err(BundleExecutionError::BankProcessingTimeLimitReached);
                 });
                 results
-            },
+            }
         ));
 
         // 0, 1, 2 processed; 3, 4 buffered
@@ -487,6 +485,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles[bank_processing_done_index..], bundles_to_process);
@@ -522,7 +521,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -531,6 +529,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -571,7 +570,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -580,6 +578,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -618,7 +617,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -627,6 +625,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 vec![Err(BundleExecutionError::LockError); bundles_to_process.len()]
@@ -661,7 +660,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -671,6 +669,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -684,6 +683,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert!(bundles_to_process.is_empty());
@@ -702,6 +702,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             new_bank,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure same order as original
@@ -746,7 +747,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -755,6 +755,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles0, bundles_to_process);
@@ -776,7 +777,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -785,6 +785,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles1, bundles_to_process);
@@ -803,7 +804,6 @@ mod tests {
             &mut unprocessed_storage,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
-            &HashSet::default(),
         );
         assert!(result.is_ok());
 
@@ -812,6 +812,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles2, bundles_to_process);
@@ -831,6 +832,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             new_bank,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure same order as original

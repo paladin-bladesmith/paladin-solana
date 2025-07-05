@@ -21,13 +21,11 @@ use {
     solana_ledger::blockstore_processor::TransactionStatusSender,
     solana_measure::measure_us,
     solana_poh::poh_recorder::PohRecorder,
-    solana_pubkey::Pubkey,
     solana_runtime::{
         prioritization_fee_cache::PrioritizationFeeCache, vote_sender_types::ReplayVoteSender,
     },
     solana_sdk::timing::AtomicInterval,
     std::{
-        collections::HashSet,
         sync::{
             atomic::{AtomicBool, AtomicU64, Ordering},
             Arc, Mutex, RwLock,
@@ -265,7 +263,7 @@ impl BundleStage {
             poh_recorder.read().unwrap().new_recorder(),
             QosService::new(BUNDLE_STAGE_ID),
             log_message_bytes_limit,
-            tip_manager.clone(),
+            tip_manager,
             bundle_account_locker,
             block_builder_fee_info.clone(),
             max_bundle_retry_duration,
@@ -282,7 +280,6 @@ impl BundleStage {
                     BUNDLE_STAGE_ID,
                     unprocessed_bundle_storage,
                     exit,
-                    &tip_manager.get_tip_accounts(),
                 );
             })
             .unwrap();
@@ -298,7 +295,6 @@ impl BundleStage {
         id: u32,
         mut unprocessed_bundle_storage: UnprocessedTransactionStorage,
         exit: Arc<AtomicBool>,
-        tip_accounts: &HashSet<Pubkey>,
     ) {
         let mut last_metrics_update = Instant::now();
 
@@ -326,7 +322,6 @@ impl BundleStage {
                 &mut unprocessed_bundle_storage,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
-                tip_accounts,
             ) {
                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => break,

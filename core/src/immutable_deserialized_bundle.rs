@@ -6,14 +6,12 @@ use {
         },
         packet_bundle::PacketBundle,
     },
-    arrayref::array_ref,
     solana_bundle::SanitizedBundle,
     solana_perf::sigverify::verify_packet,
     solana_runtime::{bank::Bank, verify_precompiles::verify_precompiles},
     solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
     solana_sdk::{
-        clock::MAX_PROCESSING_AGE, hash::Hash, instruction::CompiledInstruction, pubkey::Pubkey,
-        system_program, transaction::SanitizedTransaction,
+        clock::MAX_PROCESSING_AGE, hash::Hash, pubkey::Pubkey, transaction::SanitizedTransaction,
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     std::{
@@ -66,7 +64,6 @@ pub enum DeserializedBundleError {
 pub struct ImmutableDeserializedBundle {
     bundle_id: String,
     packets: Vec<ImmutableDeserializedPacket>,
-    tip_amount: u64,
 }
 
 impl ImmutableDeserializedBundle {
@@ -76,17 +73,6 @@ impl ImmutableDeserializedBundle {
         packet_filter: &impl Fn(
             ImmutableDeserializedPacket,
         ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
-    ) -> Result<Self, DeserializedBundleError> {
-        Self::new_with_tip_amount(bundle, max_len, packet_filter, &HashSet::default())
-    }
-
-    pub fn new_with_tip_amount(
-        bundle: &mut PacketBundle,
-        max_len: Option<usize>,
-        packet_filter: &impl Fn(
-            ImmutableDeserializedPacket,
-        ) -> Result<ImmutableDeserializedPacket, PacketFilterFailure>,
-        tip_accounts: &HashSet<Pubkey>,
     ) -> Result<Self, DeserializedBundleError> {
         // Checks: non-zero, less than some length, marked for discard, signature verification failed, failed to sanitize to
         // ImmutableDeserializedPacket
@@ -113,57 +99,14 @@ impl ImmutableDeserializedBundle {
             immutable_packets.push(immutable_packet);
         }
 
-        // Assuming tip transactions are SystemProgram transfers with a specific data format
-        let tip_amount = immutable_packets
-            .iter()
-            .map(|packet| Self::extract_tips_from_packet(packet, tip_accounts))
-            .sum::<u64>();
-
         Ok(Self {
             bundle_id: bundle.bundle_id.clone(),
             packets: immutable_packets,
-            tip_amount,
         })
     }
 
-    fn extract_tips_from_packet(
-        packet: &ImmutableDeserializedPacket,
-        tip_accounts: &HashSet<Pubkey>,
-    ) -> u64 {
-        let tx = packet.transaction();
-        let message = tx.get_message();
-        // Tip accounts should not be in lookup tables.
-        //
-        // https://docs.jito.wtf/lowlatencytxnsend/#tips
-        let account_keys = message.message.static_account_keys();
-
-        message
-            .program_instructions_iter()
-            .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
-            .filter(|(destination, _)| tip_accounts.contains(destination))
-            .map(|(_, amount)| amount)
-            .sum::<u64>()
-    }
-
-    fn extract_transfer<'a>(
-        account_keys: &'a [Pubkey],
-        program_id: &Pubkey,
-        ix: &CompiledInstruction,
-    ) -> Option<(&'a Pubkey, u64)> {
-        if program_id != &system_program::ID {
-            return None;
-        }
-        if ix.data.len() < 12 {
-            return None;
-        }
-        if u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) != 2 {
-            return None;
-        }
-
-        let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
-        let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
-
-        Some((destination, amount))
+    pub fn packets(&self) -> &[ImmutableDeserializedPacket] {
+        &self.packets
     }
 
     #[allow(clippy::len_without_is_empty)]
@@ -173,14 +116,6 @@ impl ImmutableDeserializedBundle {
 
     pub fn bundle_id(&self) -> &str {
         &self.bundle_id
-    }
-
-    pub fn packets(&self) -> &[ImmutableDeserializedPacket] {
-        &self.packets
-    }
-
-    pub fn tip_amount(&self) -> u64 {
-        self.tip_amount
     }
 
     /// A bundle has the following requirements:
@@ -280,31 +215,12 @@ mod tests {
             packet::Packet,
             pubkey::Pubkey,
             signature::{Keypair, Signer},
-            signer::SeedDerivable,
-            system_transaction::{self, transfer},
+            system_transaction::transfer,
             transaction::Transaction,
         },
         solana_svm::transaction_error_metrics::TransactionErrorMetrics,
         std::{collections::HashSet, sync::Arc},
     };
-
-    #[test]
-    fn transfer_encoding() {
-        let from = Keypair::from_seed(&[1; 32]).unwrap();
-        let to = Pubkey::new_from_array([2; 32]);
-        let amount = 250;
-        let transfer =
-            system_transaction::transfer(&from, &to, amount, Hash::new_from_array([3; 32]));
-
-        let (recovered_to, recovered_amount) = ImmutableDeserializedBundle::extract_transfer(
-            &transfer.message.account_keys,
-            &solana_system_program::id(),
-            &transfer.message.instructions[0],
-        )
-        .unwrap();
-        assert_eq!(recovered_to, &to);
-        assert_eq!(recovered_amount, amount);
-    }
 
     /// Happy case
     #[test]
