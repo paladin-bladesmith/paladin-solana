@@ -133,6 +133,7 @@ impl BundleConsumer {
             bank_start.working_bank.clone(),
             bundle_stage_leader_metrics,
             &self.blacklisted_accounts,
+            &self.tip_manager.get_tip_accounts(),
             |bundles, bundle_stage_leader_metrics| {
                 Self::do_process_bundles(
                     &self.bundle_account_locker,
