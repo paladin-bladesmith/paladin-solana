@@ -1507,6 +1507,7 @@ impl BundleStorage {
         const MULTIPLIER: u64 = 1_000_000;
         let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
         *priority_counter = priority_counter.wrapping_add(1);
+        
         (std::cmp::Reverse(priority), *priority_counter)
     }
 
