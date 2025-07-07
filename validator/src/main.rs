@@ -79,7 +79,7 @@ use {
         collections::HashSet,
         env,
         fs::{self, File},
-        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
+        net::{IpAddr, Ipv4Addr, SocketAddr},
         num::NonZeroUsize,
         path::{Path, PathBuf},
         process::exit,
@@ -867,15 +867,6 @@ pub fn main() {
         DEFAULT_BATCH_INTERVAL
     };
 
-    let p3_socket = SocketAddr::V4(SocketAddrV4::new(
-        Ipv4Addr::UNSPECIFIED,
-        value_of(&matches, "p3_port").expect("couldn't parse --p3-port"),
-    ));
-    let p3_mev_socket = SocketAddr::V4(SocketAddrV4::new(
-        Ipv4Addr::UNSPECIFIED,
-        value_of(&matches, "p3_mev_port").expect("couldn't parse --p3-mev-port"),
-    ));
-
     let mut validator_config = ValidatorConfig {
         require_tower: matches.is_present("require_tower"),
         tower_storage,
@@ -1043,8 +1034,6 @@ pub fn main() {
         preallocated_bundle_cost: value_of(&matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
         batch_interval,
-        p3_socket,
-        p3_mev_socket,
         ..ValidatorConfig::default()
     };
 
