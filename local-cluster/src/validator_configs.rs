@@ -82,8 +82,6 @@ pub fn safe_clone_config(config: &ValidatorConfig) -> ValidatorConfig {
         tip_manager_config: config.tip_manager_config.clone(),
         preallocated_bundle_cost: config.preallocated_bundle_cost,
         batch_interval: config.batch_interval,
-        p3_socket: config.p3_socket,
-        p3_mev_socket: config.p3_mev_socket,
     }
 }
 

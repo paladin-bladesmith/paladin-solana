@@ -92,14 +92,14 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .arg(
             Arg::with_name("p3_port")
                 .long("p3-port")
-                .help("Which port to bind P3 to")
+                .help("DEPRECATED: Run standalone `p3` binary")
                 .default_value(DEFAULT_P3_PORT)
                 .takes_value(true)
         )
         .arg(
             Arg::with_name("p3_mev_port")
                 .long("p3-mev-port")
-                .help("Which port to bind P3 MEV to")
+                .help("DEPRECATED: Run standalone `p3` binary")
                 .default_value(DEFAULT_P3_MEV_PORT)
                 .takes_value(true)
         )
