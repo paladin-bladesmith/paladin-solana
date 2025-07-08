@@ -1547,15 +1547,18 @@ impl BundleStorage {
 mod tests {
     use {
         super::*,
+        crate::packet_bundle::PacketBundle,
         itertools::iproduct,
         solana_ledger::genesis_utils::{create_genesis_config, GenesisConfigInfo},
-        solana_perf::packet::{Packet, PacketFlags},
+        solana_perf::packet::{Packet, PacketBatch, PacketFlags},
         solana_runtime::genesis_utils,
         solana_sdk::{
+            compute_budget::ComputeBudgetInstruction,
             hash::Hash,
+            message::Message,
             signature::{Keypair, Signer},
             signer::SeedDerivable,
-            system_transaction,
+            system_instruction, system_transaction,
             transaction::Transaction,
         },
         solana_vote_program::{
@@ -1600,6 +1603,199 @@ mod tests {
                 (std::cmp::Reverse(50), 4),
             ]
         );
+    }
+
+    #[test]
+    fn test_bundle_priority_calculation() {
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(1_000_000_000);
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.feature_set = Arc::new(FeatureSet::all_enabled());
+        // let transaction_fee = 100;
+        // let priority_fee = 200;
+        // bank.collector_fee_details = RwLock::new(CollectorFeeDetails {
+        //     transaction_fee,
+        //     priority_fee,
+        // });
+        let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        println!(
+            "reward_full_priority_fee feature active: {}",
+            bank.feature_set
+                .is_active(&solana_sdk::feature_set::reward_full_priority_fee::id())
+        );
+
+        let blockhash = bank.last_blockhash();
+
+        let payer1 = Keypair::new();
+        let payer2 = Keypair::new();
+        let payer3 = Keypair::new();
+        let dest1 = Keypair::new();
+        let dest2 = Keypair::new();
+        let dest3 = Keypair::new();
+        let dest4 = Keypair::new();
+        let tip_account = Keypair::new();
+
+        // Fund payers from mint
+        for payer in [&payer1, &payer2, &payer3] {
+            let fund_tx =
+                system_transaction::transfer(&mint_keypair, &payer.pubkey(), 10_000_000, blockhash);
+            bank.process_transaction(&fund_tx).unwrap();
+        }
+
+        let tip_accounts = [tip_account.pubkey()]
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let create_tx_with_priority_fee = |payer: &Keypair,
+                                           dest: &Pubkey,
+                                           transfer_amount: u64,
+                                           priority_fee_per_cu: u64,
+                                           compute_units: u32|
+         -> Transaction {
+            let mut instructions = vec![];
+            if compute_units > 0 {
+                instructions.push(ComputeBudgetInstruction::set_compute_unit_limit(
+                    compute_units,
+                ));
+            }
+            if priority_fee_per_cu > 0 {
+                instructions.push(ComputeBudgetInstruction::set_compute_unit_price(
+                    priority_fee_per_cu,
+                ));
+            }
+            instructions.push(system_instruction::transfer(
+                &payer.pubkey(),
+                dest,
+                transfer_amount,
+            ));
+
+            let message = Message::new(&instructions, Some(&payer.pubkey()));
+            Transaction::new(&[payer], message, blockhash)
+        };
+
+        let create_bundles_from_transactions =
+            |transactions: &[Transaction]| -> ImmutableDeserializedBundle {
+                ImmutableDeserializedBundle::new(
+                    &mut PacketBundle {
+                        batch: PacketBatch::new(
+                            transactions
+                                .iter()
+                                .map(|tx| Packet::from_data(None, tx).unwrap())
+                                .collect::<Vec<_>>(),
+                        ),
+                        bundle_id: format!("test_bundle_{}", rand::random::<u32>()),
+                    },
+                    None,
+                    &Ok,
+                )
+                .unwrap()
+            };
+
+        // Bundle 1: 1 transaction with low priority fee
+        let bundle1_txs = vec![create_tx_with_priority_fee(
+            &payer1,
+            &dest1.pubkey(),
+            1_000,
+            100,
+            50_000,
+        )];
+
+        // Bundle 2: 1 transaction with high priority fee
+        let bundle2_txs = vec![create_tx_with_priority_fee(
+            &payer2,
+            &dest2.pubkey(),
+            2_000,
+            5000,
+            40_000,
+        )];
+
+        // Bundle 3: 3 transactions with medium priority fees + one tip transaction
+        let bundle3_txs = vec![
+            create_tx_with_priority_fee(&payer1, &dest3.pubkey(), 500, 1000, 30_000),
+            system_transaction::transfer(&payer2, &tip_account.pubkey(), 50_000, blockhash),
+            create_tx_with_priority_fee(&payer3, &dest4.pubkey(), 1_500, 1200, 35_000),
+        ];
+
+        // Create immutable bundles
+        let immutable_bundle1 = create_bundles_from_transactions(&bundle1_txs);
+        let immutable_bundle2 = create_bundles_from_transactions(&bundle2_txs);
+        let immutable_bundle3 = create_bundles_from_transactions(&bundle3_txs);
+
+        // Create sanitized bundles (similar to drain_and_sanitize_bundles)
+        let mut error_metrics = TransactionErrorMetrics::default();
+        let move_precompile_verification_to_svm = bank
+            .feature_set
+            .is_active(&move_precompile_verification_to_svm::id());
+
+        let sanitized_bundle1 = immutable_bundle1
+            .build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut error_metrics,
+                move_precompile_verification_to_svm,
+            )
+            .expect("Bundle 1 should sanitize successfully");
+
+        let sanitized_bundle2 = immutable_bundle2
+            .build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut error_metrics,
+                move_precompile_verification_to_svm,
+            )
+            .expect("Bundle 2 should sanitize successfully");
+
+        let sanitized_bundle3 = immutable_bundle3
+            .build_sanitized_bundle(
+                &bank,
+                &HashSet::default(),
+                &mut error_metrics,
+                move_precompile_verification_to_svm,
+            )
+            .expect("Bundle 3 should sanitize successfully");
+
+        let mut priority_counter = 0;
+        let bundle1_priority_key = BundleStorage::calculate_bundle_priority(
+            &immutable_bundle1,
+            &sanitized_bundle1,
+            &bank,
+            &mut priority_counter,
+            &tip_accounts,
+        );
+        println!("Priority key {:?}", bundle1_priority_key);
+
+        let bundle2_priority_key = BundleStorage::calculate_bundle_priority(
+            &immutable_bundle2,
+            &sanitized_bundle2,
+            &bank,
+            &mut priority_counter,
+            &tip_accounts,
+        );
+        println!("Priority key {:?}", bundle2_priority_key);
+
+        let bundle3_priority_key = BundleStorage::calculate_bundle_priority(
+            &immutable_bundle3,
+            &sanitized_bundle3,
+            &bank,
+            &mut priority_counter,
+            &tip_accounts,
+        );
+        println!("Priority key {:?}", bundle3_priority_key);
+        // Test that sorting works correctly
+        let mut bundles_with_priority = vec![
+            (bundle1_priority_key, "Bundle 1"),
+            (bundle2_priority_key, "Bundle 2"),
+            (bundle3_priority_key, "Bundle 3"),
+        ];
+
+        bundles_with_priority.sort_by_key(|(priority_key, _)| *priority_key);
+
+        // After sorting, Bundle 2 should be first (highest priority)
+        assert_eq!(bundles_with_priority[0].1, "Bundle 2");
     }
 
     #[test]
