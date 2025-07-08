@@ -1609,7 +1609,6 @@ mod tests {
     fn test_bundle_priority_calculation() {
         let GenesisConfigInfo {
             genesis_config,
-            mint_keypair,
             ..
         } = create_genesis_config(1_000_000_000);
         let mut bank = Bank::new_for_tests(&genesis_config);
@@ -1621,8 +1620,7 @@ mod tests {
         //     priority_fee,
         // });
         let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
-        println!(
-            "reward_full_priority_fee feature active: {}",
+        assert!(
             bank.feature_set
                 .is_active(&solana_sdk::feature_set::reward_full_priority_fee::id())
         );
@@ -1637,13 +1635,6 @@ mod tests {
         let dest3 = Keypair::new();
         let dest4 = Keypair::new();
         let tip_account = Keypair::new();
-
-        // Fund payers from mint
-        for payer in [&payer1, &payer2, &payer3] {
-            let fund_tx =
-                system_transaction::transfer(&mint_keypair, &payer.pubkey(), 10_000_000, blockhash);
-            bank.process_transaction(&fund_tx).unwrap();
-        }
 
         let tip_accounts = [tip_account.pubkey()]
             .iter()
