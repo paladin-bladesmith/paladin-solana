@@ -1608,22 +1608,15 @@ mod tests {
     #[test]
     fn test_bundle_priority_calculation() {
         let GenesisConfigInfo {
-            genesis_config,
-            ..
+            mut genesis_config, ..
         } = create_genesis_config(1_000_000_000);
+        genesis_config.fee_rate_governor.lamports_per_signature = 5000;
         let mut bank = Bank::new_for_tests(&genesis_config);
         bank.feature_set = Arc::new(FeatureSet::all_enabled());
-        // let transaction_fee = 100;
-        // let priority_fee = 200;
-        // bank.collector_fee_details = RwLock::new(CollectorFeeDetails {
-        //     transaction_fee,
-        //     priority_fee,
-        // });
         let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
-        assert!(
-            bank.feature_set
-                .is_active(&solana_sdk::feature_set::reward_full_priority_fee::id())
-        );
+        assert!(bank
+            .feature_set
+            .is_active(&solana_sdk::feature_set::reward_full_priority_fee::id()));
 
         let blockhash = bank.last_blockhash();
 
@@ -1757,7 +1750,6 @@ mod tests {
             &mut priority_counter,
             &tip_accounts,
         );
-        println!("Priority key {:?}", bundle1_priority_key);
 
         let bundle2_priority_key = BundleStorage::calculate_bundle_priority(
             &immutable_bundle2,
@@ -1766,7 +1758,6 @@ mod tests {
             &mut priority_counter,
             &tip_accounts,
         );
-        println!("Priority key {:?}", bundle2_priority_key);
 
         let bundle3_priority_key = BundleStorage::calculate_bundle_priority(
             &immutable_bundle3,
@@ -1775,8 +1766,7 @@ mod tests {
             &mut priority_counter,
             &tip_accounts,
         );
-        println!("Priority key {:?}", bundle3_priority_key);
-        // Test that sorting works correctly
+
         let mut bundles_with_priority = vec![
             (bundle1_priority_key, "Bundle 1"),
             (bundle2_priority_key, "Bundle 2"),
@@ -1785,8 +1775,9 @@ mod tests {
 
         bundles_with_priority.sort_by_key(|(priority_key, _)| *priority_key);
 
-        // After sorting, Bundle 2 should be first (highest priority)
-        assert_eq!(bundles_with_priority[0].1, "Bundle 2");
+        assert_eq!(bundles_with_priority[0].1, "Bundle 3");
+        assert_eq!(bundles_with_priority[1].1, "Bundle 2");
+        assert_eq!(bundles_with_priority[2].1, "Bundle 1");
     }
 
     #[test]
