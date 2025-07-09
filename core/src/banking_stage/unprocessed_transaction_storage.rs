@@ -1536,6 +1536,7 @@ impl BundleStorage {
         {
             let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
             let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+
             Some((destination, amount))
         } else {
             None
