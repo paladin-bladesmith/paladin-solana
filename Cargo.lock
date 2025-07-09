@@ -7651,6 +7651,7 @@ dependencies = [
  "ahash 0.8.11",
  "anchor-lang",
  "anyhow",
+ "arrayref",
  "arrayvec",
  "assert_matches",
  "base64 0.22.1",

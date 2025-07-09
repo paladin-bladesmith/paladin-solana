@@ -46,6 +46,7 @@ ahash = { workspace = true }
 anchor-lang = { workspace = true }
 anyhow = { workspace = true }
 arrayvec = { workspace = true }
+arrayref = { workspace = true}
 assert_matches = { workspace = true }
 base64 = { workspace = true }
 bincode = { workspace = true }
