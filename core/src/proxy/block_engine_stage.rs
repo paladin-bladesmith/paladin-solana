@@ -106,43 +106,48 @@ impl BlockEngineStage {
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         // Setup all the futures.
-        let mut set: JoinSet<_> = std::iter::once(Either::Left(block_engine_config))
-            .chain(secondary_urls.into_iter().map(Either::Right))
-            .enumerate()
-            .map(|(index, config)| {
-                info!("starting block-engine-{}", index);
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-                Self::start(
-                    config,
-                    cluster_info.clone(),
-                    bundle_tx.clone(),
-                    packet_tx.clone(),
-                    banking_packet_sender.clone(),
-                    exit.clone(),
-                    block_builder_fee_info.clone(),
-                )
-            })
-            .collect();
+        let mut set: JoinSet<_> = {
+            let _rt_guard = rt.enter();
+
+            std::iter::once(Either::Left(block_engine_config))
+                .chain(secondary_urls.into_iter().map(Either::Right))
+                .enumerate()
+                .map(|(index, config)| {
+                    info!("starting block-engine-{}", index);
+
+                    Self::start(
+                        config,
+                        cluster_info.clone(),
+                        bundle_tx.clone(),
+                        packet_tx.clone(),
+                        banking_packet_sender.clone(),
+                        exit.clone(),
+                        block_builder_fee_info.clone(),
+                    )
+                })
+                .collect()
+        };
 
         // Spawn off to a dedicated runtime.
         let thread = Builder::new()
             .name("block-engine-runtime".to_string())
             .spawn(move || {
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap()
-                    .block_on(async move {
-                        // Wait for all tasks to complete
-                        while let Some(res) = set.join_next().await {
-                            match res {
-                                Ok(_) => continue,
-                                Err(e) => {
-                                    error!("Block engine task failed: {}", e);
-                                }
+                rt.block_on(async move {
+                    // Wait for all tasks to complete
+                    while let Some(res) = set.join_next().await {
+                        match res {
+                            Ok(_) => continue,
+                            Err(e) => {
+                                error!("Block engine task failed: {}", e);
                             }
                         }
-                    })
+                    }
+                })
             })
             .unwrap();
 
