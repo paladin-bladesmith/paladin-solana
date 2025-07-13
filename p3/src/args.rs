@@ -1,13 +1,26 @@
-use std::path::PathBuf;
+use std::{net::SocketAddr, path::PathBuf};
 
 use clap::{Parser, ValueHint};
 
 #[derive(Debug, Parser)]
 #[command(version = toolbox::version!(), long_version = toolbox::long_version!())]
 pub(crate) struct Args {
-    /// Arguments for your app.
-    #[clap(long, value_hint = ValueHint::Url, default_value = "tcp://127.0.0.1:1337")]
-    pub(crate) important_value: String,
+    /// P3 QUIC server address for regular packets
+    #[clap(long, default_value = "127.0.0.1:4819")]
+    pub(crate) p3_addr: SocketAddr,
+
+    /// P3 QUIC server address for MEV packets
+    #[clap(long, default_value = "127.0.0.1:4820")]
+    pub(crate) p3_mev_addr: SocketAddr,
+
+    /// RPC URL to connect to Solana validator for chain state
+    #[clap(long, value_hint = ValueHint::Url, default_value = "http://127.0.0.1:8899")]
+    pub(crate) rpc_url: String,
+
+    /// Identity keypair file path
+    #[clap(long, value_hint = ValueHint::FilePath)]
+    pub(crate) identity_keypair: Option<PathBuf>,
+
     /// Generate completions for provided shell.
     #[arg(long, value_name = "SHELL")]
     pub(crate) completions: Option<clap_complete::Shell>,
