@@ -19,6 +19,22 @@ toolbox = { git = "https://github.com/OliverNChalk/toolbox-rs.git", version = "0
   "version",
 ] }
 tracing = "0.1.41"
+crossbeam-channel = { workspace = true }
+jito-protos = { workspace = true}
+prost = { workspace = true }
+serde = { workspace = true }
+solana-perf = { workspace = true }
+solana-rpc-client = { workspace = true }
+solana-rpc-client-api = { workspace = true }
+solana-sdk = { workspace = true }
+solana-streamer = { workspace = true }
+solana-metrics = { workspace = true }
+spl-discriminator = { workspace = true }
+paladin-lockup-program = {workspace = true}
+tonic = { workspace = true }
+bytes = { workspace = true }
+bytemuck = { workspace = true }
+futures = { workspace = true }
 
 [build-dependencies]
 vergen-git2 = { version = "1.0.7", features = ["rustc", "cargo"] }
