@@ -1,6 +1,5 @@
-use std::{net::SocketAddr, path::PathBuf};
-
 use clap::{Parser, ValueHint};
+use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(version = toolbox::version!(), long_version = toolbox::long_version!())]
@@ -19,7 +18,11 @@ pub(crate) struct Args {
 
     /// Identity keypair file path
     #[clap(long, value_hint = ValueHint::FilePath)]
-    pub(crate) identity_keypair: Option<PathBuf>,
+    pub(crate) keypair_path: PathBuf,
+
+    /// Block engine Grpc server address
+    #[arg(long, default_value = "127.0.0.1:5999")]
+    pub(crate) grpc_bind_ip: SocketAddr,
 
     /// Generate completions for provided shell.
     #[arg(long, value_name = "SHELL")]

@@ -9,9 +9,12 @@ edition = { workspace = true }
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
+bytes = { workspace = true }
+bytemuck = { workspace = true }
 clap = { version = "4.2.7", features = ["derive"] }
 clap_complete = "4.5.54"
 dotenvy = "0.15.7"
+hostname = "0.3.1"
 tokio.workspace = true
 tokio-util.workspace = true
 toolbox = { git = "https://github.com/OliverNChalk/toolbox-rs.git", version = "0.2.0", features = [
@@ -20,8 +23,11 @@ toolbox = { git = "https://github.com/OliverNChalk/toolbox-rs.git", version = "0
 ] }
 tracing = "0.1.41"
 crossbeam-channel = { workspace = true }
+futures = { workspace = true }
 jito-protos = { workspace = true}
+log = { workspace = true }
 prost = { workspace = true }
+prost-types = { workspace = true }
 serde = { workspace = true }
 solana-perf = { workspace = true }
 solana-rpc-client = { workspace = true }
@@ -32,9 +38,7 @@ solana-metrics = { workspace = true }
 spl-discriminator = { workspace = true }
 paladin-lockup-program = {workspace = true}
 tonic = { workspace = true }
-bytes = { workspace = true }
-bytemuck = { workspace = true }
-futures = { workspace = true }
+tokio-stream = { workspace = true }
 
 [build-dependencies]
 vergen-git2 = { version = "1.0.7", features = ["rustc", "cargo"] }
