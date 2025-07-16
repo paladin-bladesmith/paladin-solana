@@ -1,5 +1,4 @@
 use crate::convert::packet_to_proto_packet;
-use crossbeam_channel::Receiver;
 use jito_protos::proto::block_engine::block_engine_validator_server::{
     BlockEngineValidator, BlockEngineValidatorServer,
 };
@@ -12,7 +11,7 @@ use solana_perf::packet::PacketBatch;
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
@@ -20,12 +19,12 @@ use tracing::{error, info};
 
 pub struct BlockEngine {
     exit: Arc<AtomicBool>,
-    packet_rx: Arc<Receiver<PacketBatch>>,
+    packet_tx: broadcast::Sender<PacketBatch>,
 }
 
 impl BlockEngine {
-    pub fn new(exit: Arc<AtomicBool>, packet_rx: Arc<Receiver<PacketBatch>>) -> Self {
-        Self { exit, packet_rx }
+    pub fn new(exit: Arc<AtomicBool>, packet_tx: broadcast::Sender<PacketBatch>) -> Self {
+        Self { exit, packet_tx }
     }
 
     pub async fn serve(
@@ -44,16 +43,17 @@ impl BlockEngine {
 
     pub fn spawn_server(
         exit: Arc<AtomicBool>,
-        packet_rx: Arc<Receiver<PacketBatch>>,
+        packet_tx: broadcast::Sender<PacketBatch>,
         bind_addr: SocketAddr,
     ) -> tokio::task::JoinHandle<Result<(), Box<dyn std::error::Error + Send + Sync>>> {
         tokio::spawn(async move {
-            let block_engine = BlockEngine::new(exit, packet_rx);
+            let block_engine = BlockEngine::new(exit, packet_tx);
             block_engine.serve(bind_addr).await
         })
     }
 }
 
+// https://github.com/jito-labs/mev-protos/blob/master/block_engine.proto#L72
 #[tonic::async_trait]
 impl BlockEngineValidator for BlockEngine {
     type SubscribePacketsStream = ReceiverStream<Result<SubscribePacketsResponse, Status>>;
@@ -67,18 +67,12 @@ impl BlockEngineValidator for BlockEngine {
 
         let (tx, rx) = mpsc::channel(1024);
 
-        let packet_rx = self.packet_rx.clone();
+        let mut packet_rx = self.packet_tx.subscribe();
         let exit = self.exit.clone();
 
         tokio::spawn(async move {
-            loop {
-                // Check exit signal
-                if exit.load(std::sync::atomic::Ordering::Relaxed) {
-                    info!("Exiting packet subscription loop");
-                    break;
-                }
-
-                match packet_rx.try_recv() {
+            while !exit.load(std::sync::atomic::Ordering::Relaxed) {
+                match packet_rx.recv().await {
                     Ok(packet_batch) => {
                         // Convert PacketBatch to proto packet format
                         let proto_batch = jito_protos::proto::packet::PacketBatch {
@@ -102,12 +96,13 @@ impl BlockEngineValidator for BlockEngine {
                             break;
                         }
                     }
-                    Err(crossbeam_channel::TryRecvError::Empty) => {
-                        // No packets available, yield control
-                        tokio::task::yield_now().await;
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        // Some packets were missed due to lag
+                        error!("Packet receiver lagged, missed {} packets", n);
+                        // Continue processing
                     }
-                    Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                        error!("Packet receiver disconnected");
+                    Err(broadcast::error::RecvError::Closed) => {
+                        error!("Packet receiver closed");
                         break;
                     }
                 }

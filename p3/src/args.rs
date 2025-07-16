@@ -18,7 +18,7 @@ pub(crate) struct Args {
 
     /// Identity keypair file path
     #[clap(long, value_hint = ValueHint::FilePath)]
-    pub(crate) keypair_path: PathBuf,
+    pub(crate) identity_keypair: Option<PathBuf>,
 
     /// Block engine Grpc server address
     #[arg(long, default_value = "127.0.0.1:5999")]

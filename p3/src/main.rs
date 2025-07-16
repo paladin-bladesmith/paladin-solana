@@ -5,11 +5,12 @@ mod p3_quic;
 
 use crate::block_engine_service::BlockEngine;
 use ::{
-    crossbeam_channel::{unbounded, Receiver, Sender},
+    solana_sdk::signature::Keypair,
     solana_perf::packet::PacketBatch,
     solana_rpc_client::rpc_client::RpcClient,
     solana_sdk::{signature::read_keypair_file, signer::Signer},
     std::sync::{atomic::AtomicBool, Arc},
+    tokio::sync::broadcast,
     tracing::{error, info, warn},
 };
 
@@ -57,16 +58,30 @@ async fn main() {
         default_panic(panic_info);
     }));
 
-    let keypair =
-        Arc::new(read_keypair_file(args.keypair_path).expect("keypair file does not exist"));
+    // Load the identity keypair
+    let keypair = if let Some(keypair_path) = args.identity_keypair {
+        match read_keypair_file(&keypair_path) {
+            Ok(keypair) => Arc::new(keypair),
+            Err(e) => {
+                error!(
+                    "Failed to read identity keypair from {:?}: {}",
+                    keypair_path, e
+                );
+                return;
+            }
+        }
+    } else {
+        info!("No identity keypair provided, generating a new one");
+        Arc::new(Keypair::new())
+    };
+
+    info!("P3 Identity: {}", keypair.pubkey());
 
     solana_metrics::set_host_id(format!(
         "{}_{}",
         hostname::get().unwrap().to_str().unwrap(), // hostname should follow RFC1123
         keypair.pubkey()
     ));
-
-    info!("P3 Identity: {}", keypair.pubkey());
 
     // Create RPC client
     let rpc_client = Arc::new(RpcClient::new(args.rpc_url.clone()));
@@ -82,8 +97,8 @@ async fn main() {
         }
     }
 
-    // Create packet forwarding channel
-    let (p3_packet_tx, p3_packet_rx): (Sender<PacketBatch>, Receiver<PacketBatch>) = unbounded();
+    // Create packet forwarding channel - broadcast so all validators get all packets
+    let (p3_packet_tx, _p3_packet_rx) = broadcast::channel::<PacketBatch>(10000);
 
     // Setup exit signal
     let exit = Arc::new(AtomicBool::new(false));
@@ -92,10 +107,10 @@ async fn main() {
         "Starting P3 QUIC servers on {} and {}",
         args.p3_addr, args.p3_mev_addr
     );
-    let p3_packet_rx = Arc::new(p3_packet_rx);
+    let p3_packet_tx_clone = p3_packet_tx.clone();
     let (p3_handle, _key_updaters) = p3_quic::P3Quic::spawn(
         exit.clone(),
-        p3_packet_tx,
+        p3_packet_tx_clone,
         rpc_client.clone(),
         &keypair,
         (args.p3_addr, args.p3_mev_addr),
@@ -103,7 +118,7 @@ async fn main() {
 
     // Spawn BlockEngine gRPC server
     let block_engine_handle =
-        BlockEngine::spawn_server(exit.clone(), p3_packet_rx, args.grpc_bind_ip);
+        BlockEngine::spawn_server(exit.clone(), p3_packet_tx, args.grpc_bind_ip);
 
     // Create cancellation token
     let cxl = tokio_util::sync::CancellationToken::new();
@@ -130,6 +145,7 @@ async fn main() {
     }
 
     exit.store(true, std::sync::atomic::Ordering::Relaxed);
+
     // Wait for P3 QUIC server
     if let Err(e) = p3_handle.join() {
         error!("P3 QUIC server panicked: {:?}", e);
