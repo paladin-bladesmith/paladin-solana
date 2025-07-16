@@ -1,5 +1,4 @@
-use {
-    crossbeam_channel::{RecvError, TrySendError},
+use ::{
     paladin_lockup_program::state::LockupPool,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
@@ -20,6 +19,7 @@ use {
         },
         time::{Duration, Instant},
     },
+    tokio::sync::broadcast,
     tracing::{debug, info, trace, warn},
 };
 
@@ -39,7 +39,7 @@ pub(crate) struct P3Quic {
     staked_connection_table: Arc<Mutex<ConnectionTable>>,
     reg_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
-    packet_tx: crossbeam_channel::Sender<PacketBatch>,
+    packet_tx: broadcast::Sender<PacketBatch>,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
@@ -48,7 +48,7 @@ pub(crate) struct P3Quic {
 impl P3Quic {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
-        packet_tx: crossbeam_channel::Sender<PacketBatch>,
+        packet_tx: broadcast::Sender<PacketBatch>,
         rpc_client: Arc<RpcClient>,
         keypair: &Keypair,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
@@ -162,11 +162,11 @@ impl P3Quic {
             crossbeam_channel::select_biased! {
                 recv(self.mev_packet_rx) -> res => match res {
                     Ok(packets) => self.on_mev_packets(packets),
-                    Err(RecvError) => break,
+                    Err(_) => break,
                 },
                 recv(self.reg_packet_rx) -> res => match res {
                     Ok(packets) => self.on_regular_packets(packets),
-                    Err(RecvError) => break,
+                    Err(_) => break,
                 }
             }
 
@@ -211,7 +211,7 @@ impl P3Quic {
         }
 
         // Forward for verification & inclusion.
-        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
+        if let Err(_) = self.packet_tx.send(packets) {
             saturating_add_assign!(self.metrics.p3_dropped, len)
         }
     }
@@ -228,7 +228,7 @@ impl P3Quic {
         }
 
         // Forward for verification & inclusion.
-        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
+        if let Err(_) = self.packet_tx.send(packets) {
             saturating_add_assign!(self.metrics.mev_dropped, len)
         }
     }
