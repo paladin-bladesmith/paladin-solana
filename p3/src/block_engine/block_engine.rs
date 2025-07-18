@@ -366,26 +366,6 @@ pub type BlockEngineResult<T> = Result<T, BlockEngineError>;
 
 type PacketSubscriptions =
     Arc<RwLock<HashMap<Pubkey, TokioSender<Result<SubscribePacketsResponse, Status>>>>>;
-pub struct BlockEngineHandle {
-    packet_subscriptions: PacketSubscriptions,
-}
-
-impl BlockEngineHandle {
-    pub fn new(packet_subscriptions: &PacketSubscriptions) -> BlockEngineHandle {
-        BlockEngineHandle {
-            packet_subscriptions: packet_subscriptions.clone(),
-        }
-    }
-
-    pub fn connected_validators(&self) -> Vec<Pubkey> {
-        self.packet_subscriptions
-            .read()
-            .unwrap()
-            .keys()
-            .cloned()
-            .collect()
-    }
-}
 
 pub struct BlockEngineImpl {
     subscription_sender: Sender<Subscription>,
@@ -434,7 +414,7 @@ impl BlockEngineImpl {
                         forward_all,
                         heartbeat_tick_time,
                     );
-                    warn!("RelayerImpl thread exited with result {res:?}")
+                    warn!("BlockEngineImpl thread exited with result {res:?}")
                 })
                 .unwrap()
         };
@@ -445,10 +425,6 @@ impl BlockEngineImpl {
             health_state,
             packet_subscriptions,
         }
-    }
-
-    pub fn handle(&self) -> BlockEngineHandle {
-        BlockEngineHandle::new(&self.packet_subscriptions)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -607,7 +583,7 @@ impl BlockEngineImpl {
         subscriptions: &PacketSubscriptions,
         slot_leaders: &HashSet<Pubkey>,
         relayer_metrics: &mut BlockEngineMetrics,
-        validator_packet_batch_size: usize,
+        _validator_packet_batch_size: usize,
         forward_all: bool,
     ) -> BlockEngineResult<Vec<Pubkey>> {
         let packet_batch = maybe_packet_batch?;
@@ -724,7 +700,7 @@ impl BlockEngineImpl {
 impl BlockEngineValidator for BlockEngineImpl {
     type SubscribePacketsStream = ReceiverStream<Result<SubscribePacketsResponse, Status>>;
 
-    /// Validator calls this to subscribe to packets (BlockEngine version)
+    /// Validator calls this to subscribe to packets
     async fn subscribe_packets(
         &self,
         request: Request<SubscribePacketsRequest>,

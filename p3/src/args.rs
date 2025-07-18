@@ -33,15 +33,7 @@ pub(crate) struct Args {
     /// How long it takes to miss a slot for the system to be considered unhealthy
     #[arg(long, default_value_t = 10)]
     pub(crate) missing_slot_unhealthy_secs: u64,
-
-    /// Generate completions for provided shell.
-    #[arg(long, value_name = "SHELL")]
-    pub(crate) completions: Option<clap_complete::Shell>,
-
-    /// If provided, will write hourly log files to this directory.
-    #[arg(long, value_hint = ValueHint::DirPath)]
-    pub(crate) logs: Option<PathBuf>,
-
+    
     /// Validators allowed to authenticate and connect to the relayer, comma separated.
     /// If null then all validators on the leader schedule shall be permitted.
     #[arg(long, value_delimiter = ',')]
@@ -87,4 +79,13 @@ pub(crate) struct Args {
     /// Time in milliseconds between heartbeat ticks
     #[arg(long, default_value_t = 100)]
     pub(crate) heartbeat_tick_time: u64,
+    
+    /// Generate completions for provided shell.
+    #[arg(long, value_name = "SHELL")]
+    pub(crate) completions: Option<clap_complete::Shell>,
+
+    /// If provided, will write hourly log files to this directory.
+    #[arg(long, value_hint = ValueHint::DirPath)]
+    pub(crate) logs: Option<PathBuf>,
+
 }
