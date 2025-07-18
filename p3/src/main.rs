@@ -193,7 +193,7 @@ async fn main() {
     );
 
     // Create BlockEngine service
-    let relayer_svc = BlockEngineImpl::new(
+    let block_engine_svc = BlockEngineImpl::new(
         downstream_slot_receiver,
         p3_packet_rx,
         leader_cache.handle(),
@@ -223,7 +223,7 @@ async fn main() {
     info!("starting BlockEngine server at: {:?}", server_addr);
     Server::builder()
         .add_service(BlockEngineValidatorServer::with_interceptor(
-            relayer_svc,
+            block_engine_svc,
             AuthInterceptor::new(verifying_key.clone(), AlgorithmType::Rs256),
         ))
         .add_service(AuthServiceServer::new(auth_svc))
