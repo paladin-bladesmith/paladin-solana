@@ -4131,6 +4131,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jwt"
+version = "0.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6204285f77fe7d9784db3fdc449ecce1a0114927a51d5a41c4c7a292011c015f"
+dependencies = [
+ "base64 0.13.1",
+ "crypto-common",
+ "digest 0.10.7",
+ "hmac 0.12.1",
+ "openssl",
+ "serde",
+ "serde_json",
+ "sha2 0.10.8",
+]
+
+[[package]]
 name = "keccak"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4147,6 +4163,15 @@ checksum = "7507624b29483431c0ba2d82aece8ca6cdba9382bff4ddd0f7490560c056098d"
 dependencies = [
  "winapi 0.2.8",
  "winapi-build",
+]
+
+[[package]]
+name = "keyed_priority_queue"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ee7893dab2e44ae5f9d0173f26ff4aa327c10b01b06a72b52dd9405b628640d"
+dependencies = [
+ "indexmap 2.7.1",
 ]
 
 [[package]]
@@ -4914,25 +4939,34 @@ version = "2.2.19"
 dependencies = [
  "bytemuck",
  "bytes",
+ "chrono",
  "clap 4.5.40",
  "clap_complete",
  "crossbeam-channel",
+ "dashmap",
  "dotenvy",
+ "ed25519-dalek",
  "futures 0.3.31",
+ "histogram",
  "hostname",
  "jito-protos",
+ "jwt",
+ "keyed_priority_queue",
  "log",
+ "openssl",
  "paladin-lockup-program",
  "prost",
  "prost-types",
+ "rand 0.8.5",
  "serde",
+ "smpl_jwt",
+ "solana-client",
  "solana-metrics",
  "solana-perf",
- "solana-rpc-client",
- "solana-rpc-client-api",
  "solana-sdk",
  "solana-streamer",
  "spl-discriminator",
+ "thiserror 2.0.11",
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.13",

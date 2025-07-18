@@ -1,8 +1,9 @@
 use ::{
+    crossbeam_channel::Sender,
     paladin_lockup_program::state::LockupPool,
+    solana_client::rpc_client::RpcClient,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
-    solana_rpc_client::rpc_client::RpcClient,
     solana_sdk::{pubkey::Pubkey, saturating_add_assign, signature::Keypair},
     solana_streamer::{
         nonblocking::quic::{ConnectionPeerType, ConnectionTable},
@@ -19,7 +20,6 @@ use ::{
         },
         time::{Duration, Instant},
     },
-    tokio::sync::broadcast,
     tracing::{debug, info, trace, warn},
 };
 
@@ -39,7 +39,7 @@ pub(crate) struct P3Quic {
     staked_connection_table: Arc<Mutex<ConnectionTable>>,
     reg_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
-    packet_tx: broadcast::Sender<PacketBatch>,
+    packet_tx: Sender<PacketBatch>,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
@@ -48,7 +48,7 @@ pub(crate) struct P3Quic {
 impl P3Quic {
     pub(crate) fn spawn(
         exit: Arc<AtomicBool>,
-        packet_tx: broadcast::Sender<PacketBatch>,
+        packet_tx: Sender<PacketBatch>,
         rpc_client: Arc<RpcClient>,
         keypair: &Keypair,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
@@ -211,7 +211,7 @@ impl P3Quic {
         }
 
         // Forward for verification & inclusion.
-        if let Err(_) = self.packet_tx.send(packets) {
+        if let Err(_) = self.packet_tx.try_send(packets) {
             saturating_add_assign!(self.metrics.p3_dropped, len)
         }
     }
@@ -228,7 +228,7 @@ impl P3Quic {
         }
 
         // Forward for verification & inclusion.
-        if let Err(_) = self.packet_tx.send(packets) {
+        if let Err(_) = self.packet_tx.try_send(packets) {
             saturating_add_assign!(self.metrics.mev_dropped, len)
         }
     }
