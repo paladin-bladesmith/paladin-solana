@@ -1,5 +1,6 @@
+// https://github.com/jito-foundation/jito-relayer/blob/master/relayer/src/relayer.rs
 use std::{
-    collections::{hash_map::Entry, HashMap, HashSet},
+    collections::{hash_map::Entry, HashMap},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, RwLock,
@@ -31,10 +32,7 @@ use tokio::sync::mpsc::{channel, error::TrySendError, Sender as TokioSender};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use crate::{
-    block_engine::{health_manager::HealthState, schedule_cache::LeaderScheduleUpdatingHandle},
-    convert::packet_to_proto_packet,
-};
+use crate::{block_engine::health_manager::HealthState, convert::packet_to_proto_packet};
 
 #[derive(Default)]
 struct PacketForwardStats {
@@ -43,20 +41,15 @@ struct PacketForwardStats {
 }
 
 struct BlockEngineMetrics {
-    pub highest_slot: u64,
     pub num_added_connections: u64,
     pub num_removed_connections: u64,
     pub num_current_connections: u64,
-    pub num_heartbeats: u64,
-    pub max_heartbeat_tick_latency_us: u64,
     pub metrics_latency_us: u64,
     pub num_try_send_channel_full: u64,
     pub packet_latencies_us: Histogram,
 
-    pub crossbeam_slot_receiver_processing_us: Histogram,
     pub crossbeam_delay_packet_receiver_processing_us: Histogram,
     pub crossbeam_subscription_receiver_processing_us: Histogram,
-    pub crossbeam_heartbeat_tick_processing_us: Histogram,
     pub crossbeam_metrics_tick_processing_us: Histogram,
 
     // channel stats
@@ -77,19 +70,14 @@ impl BlockEngineMetrics {
         delay_packet_receiver_capacity: usize,
     ) -> Self {
         BlockEngineMetrics {
-            highest_slot: 0,
             num_added_connections: 0,
             num_removed_connections: 0,
             num_current_connections: 0,
-            num_heartbeats: 0,
-            max_heartbeat_tick_latency_us: 0,
             metrics_latency_us: 0,
             num_try_send_channel_full: 0,
             packet_latencies_us: Histogram::default(),
-            crossbeam_slot_receiver_processing_us: Histogram::default(),
             crossbeam_delay_packet_receiver_processing_us: Histogram::default(),
             crossbeam_subscription_receiver_processing_us: Histogram::default(),
-            crossbeam_heartbeat_tick_processing_us: Histogram::default(),
             crossbeam_metrics_tick_processing_us: Histogram::default(),
             slot_receiver_max_len: 0,
             slot_receiver_capacity,
@@ -163,22 +151,15 @@ impl BlockEngineMetrics {
         }
         datapoint_info!(
             "relayer_metrics",
-            ("highest_slot", self.highest_slot, i64),
             ("num_added_connections", self.num_added_connections, i64),
             ("num_removed_connections", self.num_removed_connections, i64),
             ("num_current_connections", self.num_current_connections, i64),
-            ("num_heartbeats", self.num_heartbeats, i64),
             (
                 "num_try_send_channel_full",
                 self.num_try_send_channel_full,
                 i64
             ),
             ("metrics_latency_us", self.metrics_latency_us, i64),
-            (
-                "max_heartbeat_tick_latency_us",
-                self.max_heartbeat_tick_latency_us,
-                i64
-            ),
             // packet latencies
             (
                 "packet_latencies_us_min",
@@ -234,27 +215,6 @@ impl BlockEngineMetrics {
                 i64
             ),
             (
-                "crossbeam_slot_receiver_processing_us_p50",
-                self.crossbeam_slot_receiver_processing_us
-                    .percentile(50.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "crossbeam_slot_receiver_processing_us_p90",
-                self.crossbeam_slot_receiver_processing_us
-                    .percentile(90.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "crossbeam_slot_receiver_processing_us_p99",
-                self.crossbeam_slot_receiver_processing_us
-                    .percentile(99.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
                 "crossbeam_metrics_tick_processing_us_p50",
                 self.crossbeam_metrics_tick_processing_us
                     .percentile(50.0)
@@ -296,27 +256,6 @@ impl BlockEngineMetrics {
                     .unwrap_or_default(),
                 i64
             ),
-            (
-                "crossbeam_heartbeat_tick_processing_us_p50",
-                self.crossbeam_heartbeat_tick_processing_us
-                    .percentile(50.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "crossbeam_heartbeat_tick_processing_us_p90",
-                self.crossbeam_heartbeat_tick_processing_us
-                    .percentile(90.0)
-                    .unwrap_or_default(),
-                i64
-            ),
-            (
-                "crossbeam_heartbeat_tick_processing_us_p99",
-                self.crossbeam_heartbeat_tick_processing_us
-                    .percentile(99.0)
-                    .unwrap_or_default(),
-                i64
-            ),
             // channel lengths
             ("slot_receiver_len", self.slot_receiver_max_len, i64),
             ("slot_receiver_capacity", self.slot_receiver_capacity, i64),
@@ -354,6 +293,10 @@ pub enum Subscription {
         pubkey: Pubkey,
         sender: TokioSender<Result<SubscribePacketsResponse, Status>>,
     },
+    BlockEngineBundleSubscription {
+        pubkey: Pubkey,
+        sender: TokioSender<Result<SubscribeBundlesResponse, Status>>,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -366,12 +309,15 @@ pub type BlockEngineResult<T> = Result<T, BlockEngineError>;
 
 type PacketSubscriptions =
     Arc<RwLock<HashMap<Pubkey, TokioSender<Result<SubscribePacketsResponse, Status>>>>>;
+type BundleSubscriptions =
+    Arc<RwLock<HashMap<Pubkey, TokioSender<Result<SubscribeBundlesResponse, Status>>>>>;
 
 pub struct BlockEngineImpl {
     subscription_sender: Sender<Subscription>,
     threads: Vec<JoinHandle<()>>,
     health_state: Arc<RwLock<HealthState>>,
     packet_subscriptions: PacketSubscriptions,
+    bundle_subscriptions: BundleSubscriptions,
 }
 
 impl BlockEngineImpl {
@@ -381,23 +327,20 @@ impl BlockEngineImpl {
     pub fn new(
         slot_receiver: Receiver<Slot>,
         delay_packet_receiver: Receiver<PacketBatch>,
-        leader_schedule_cache: LeaderScheduleUpdatingHandle,
         health_state: Arc<RwLock<HealthState>>,
         exit: Arc<AtomicBool>,
-        validator_packet_batch_size: usize,
-        forward_all: bool,
-        slot_lookahead: u64,
-        heartbeat_tick_time: u64,
     ) -> Self {
         // receiver tracked as relayer_metrics.subscription_receiver_len
         let (subscription_sender, subscription_receiver) =
             bounded(LoadBalancer::SLOT_QUEUE_CAPACITY);
 
         let packet_subscriptions = Arc::new(RwLock::new(HashMap::default()));
+        let bundle_subscriptions = Arc::new(RwLock::new(HashMap::default()));
 
         let thread = {
             let health_state = health_state.clone();
             let packet_subscriptions = packet_subscriptions.clone();
+            let bundle_subscriptions = bundle_subscriptions.clone();
             thread::Builder::new()
                 .name("block_engine-event_loop_thread".to_string())
                 .spawn(move || {
@@ -405,14 +348,10 @@ impl BlockEngineImpl {
                         slot_receiver,
                         subscription_receiver,
                         delay_packet_receiver,
-                        leader_schedule_cache,
-                        slot_lookahead,
                         health_state,
                         exit,
                         &packet_subscriptions,
-                        validator_packet_batch_size,
-                        forward_all,
-                        heartbeat_tick_time,
+                        &bundle_subscriptions,
                     );
                     warn!("BlockEngineImpl thread exited with result {res:?}")
                 })
@@ -424,6 +363,7 @@ impl BlockEngineImpl {
             threads: vec![thread],
             health_state,
             packet_subscriptions,
+            bundle_subscriptions,
         }
     }
 
@@ -432,18 +372,11 @@ impl BlockEngineImpl {
         slot_receiver: Receiver<Slot>,
         subscription_receiver: Receiver<Subscription>,
         delay_packet_receiver: Receiver<PacketBatch>,
-        leader_schedule_cache: LeaderScheduleUpdatingHandle,
-        slot_lookahead: u64,
         _health_state: Arc<RwLock<HealthState>>,
         exit: Arc<AtomicBool>,
         packet_subscriptions: &PacketSubscriptions,
-        validator_packet_batch_size: usize,
-        forward_all: bool,
-        heartbeat_tick_time: u64,
+        bundle_subscriptions: &BundleSubscriptions,
     ) -> BlockEngineResult<()> {
-        let mut highest_slot = Slot::default();
-
-        let _heartbeat_tick = crossbeam_channel::tick(Duration::from_millis(heartbeat_tick_time));
         let metrics_tick = crossbeam_channel::tick(Duration::from_millis(1000));
 
         let mut relayer_metrics = BlockEngineMetrics::new(
@@ -452,50 +385,19 @@ impl BlockEngineImpl {
             delay_packet_receiver.capacity().unwrap(),
         );
 
-        let mut slot_leaders = HashSet::new();
-
         while !exit.load(Ordering::Relaxed) {
             crossbeam_channel::select! {
-                recv(slot_receiver) -> maybe_slot => {
-                    let start = Instant::now();
-
-                    Self::update_highest_slot(maybe_slot, &mut highest_slot, &mut relayer_metrics)?;
-
-                    let slots: Vec<_> = (highest_slot..highest_slot + slot_lookahead).collect();
-                    slot_leaders = leader_schedule_cache.leaders_for_slots(&slots);
-
-                    let _ = relayer_metrics.crossbeam_slot_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
-                },
                 recv(delay_packet_receiver) -> maybe_packet_batches => {
                     let start = Instant::now();
-                    let failed_forwards = Self::forward_packets(maybe_packet_batches, packet_subscriptions, &slot_leaders, &mut relayer_metrics, validator_packet_batch_size, forward_all)?;
+                    let failed_forwards = Self::forward_packets(maybe_packet_batches, packet_subscriptions, &mut relayer_metrics)?;
                     Self::drop_connections(failed_forwards, packet_subscriptions, &mut relayer_metrics);
                     let _ = relayer_metrics.crossbeam_delay_packet_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
                 },
                 recv(subscription_receiver) -> maybe_subscription => {
                     let start = Instant::now();
-                    Self::handle_subscription(maybe_subscription, packet_subscriptions, &mut relayer_metrics)?;
+                    Self::handle_subscription(maybe_subscription, packet_subscriptions, bundle_subscriptions, &mut relayer_metrics)?;
                     let _ = relayer_metrics.crossbeam_subscription_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
                 }
-                // recv(heartbeat_tick) -> time_generated => {
-                //     let start = Instant::now();
-                //     if let Ok(time_generated) = time_generated {
-                //         relayer_metrics.max_heartbeat_tick_latency_us = std::cmp::max(relayer_metrics.max_heartbeat_tick_latency_us, Instant::now().duration_since(time_generated).as_micros() as u64);
-                //     }
-
-                //     // heartbeat if state is healthy, drop all connections on unhealthy
-                //     let pubkeys_to_drop = match *health_state.read().unwrap() {
-                //         HealthState::Healthy => {
-                //             Self::handle_heartbeat(
-                //                 packet_subscriptions,
-                //                 &mut relayer_metrics,
-                //             )
-                //         },
-                //         HealthState::Unhealthy => packet_subscriptions.read().unwrap().keys().cloned().collect(),
-                //     };
-                //     Self::drop_connections(pubkeys_to_drop, packet_subscriptions, &mut relayer_metrics);
-                //     let _ = relayer_metrics.crossbeam_heartbeat_tick_processing_us.increment(start.elapsed().as_micros() as u64);
-                // }
                 recv(metrics_tick) -> time_generated => {
                     let start = Instant::now();
                     let l_packet_subscriptions = packet_subscriptions.read().unwrap();
@@ -545,6 +447,7 @@ impl BlockEngineImpl {
         }
     }
 
+    #[allow(dead_code)]
     fn handle_heartbeat(
         subscriptions: &PacketSubscriptions,
         relayer_metrics: &mut BlockEngineMetrics,
@@ -572,8 +475,6 @@ impl BlockEngineImpl {
             })
             .collect();
 
-        relayer_metrics.num_heartbeats += 1;
-
         failed_pubkey_updates
     }
 
@@ -581,10 +482,7 @@ impl BlockEngineImpl {
     fn forward_packets(
         maybe_packet_batch: Result<PacketBatch, RecvError>,
         subscriptions: &PacketSubscriptions,
-        slot_leaders: &HashSet<Pubkey>,
         relayer_metrics: &mut BlockEngineMetrics,
-        _validator_packet_batch_size: usize,
-        forward_all: bool,
     ) -> BlockEngineResult<Vec<Pubkey>> {
         let packet_batch = maybe_packet_batch?;
         let packets: Vec<_> = packet_batch
@@ -598,17 +496,10 @@ impl BlockEngineImpl {
             HashMap<Pubkey, TokioSender<Result<SubscribePacketsResponse, Status>>>,
         > = subscriptions.read().unwrap();
 
-        let senders = if forward_all {
-            l_subscriptions.iter().collect::<Vec<(
-                &Pubkey,
-                &TokioSender<Result<SubscribePacketsResponse, Status>>,
-            )>>()
-        } else {
-            slot_leaders
-                .iter()
-                .filter_map(|pubkey| l_subscriptions.get(pubkey).map(|sender| (pubkey, sender)))
-                .collect()
-        };
+        let senders = l_subscriptions.iter().collect::<Vec<(
+            &Pubkey,
+            &TokioSender<Result<SubscribePacketsResponse, Status>>,
+        )>>();
 
         let mut failed_forwards = Vec::new();
 
@@ -639,12 +530,13 @@ impl BlockEngineImpl {
 
     fn handle_subscription(
         maybe_subscription: Result<Subscription, RecvError>,
-        subscriptions: &PacketSubscriptions,
+        packet_subscriptions: &PacketSubscriptions,
+        bundle_subscriptions: &BundleSubscriptions,
         relayer_metrics: &mut BlockEngineMetrics,
     ) -> BlockEngineResult<()> {
         match maybe_subscription? {
             Subscription::BlockEnginePacketSubscription { pubkey, sender } => {
-                match subscriptions.write().unwrap().entry(pubkey) {
+                match packet_subscriptions.write().unwrap().entry(pubkey) {
                     Entry::Vacant(entry) => {
                         entry.insert(sender);
 
@@ -664,18 +556,40 @@ impl BlockEngineImpl {
                     }
                 }
             }
+            Subscription::BlockEngineBundleSubscription { pubkey, sender } => {
+                match bundle_subscriptions.write().unwrap().entry(pubkey) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(sender);
+
+                        relayer_metrics.num_added_connections += 1;
+                        datapoint_info!(
+                            "relayer_new_bundle_subscription",
+                            ("pubkey", pubkey.to_string(), String)
+                        );
+                    }
+                    Entry::Occupied(mut entry) => {
+                        datapoint_info!(
+                            "relayer_duplicate_bundle_subscription",
+                            ("pubkey", pubkey.to_string(), String)
+                        );
+                        error!(
+                            "already connected for bundles, dropping old connection: {pubkey:?}"
+                        );
+                        entry.insert(sender);
+                    }
+                }
+            }
         }
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn update_highest_slot(
         maybe_slot: Result<u64, RecvError>,
         highest_slot: &mut Slot,
-        relayer_metrics: &mut BlockEngineMetrics,
     ) -> BlockEngineResult<()> {
         *highest_slot = maybe_slot?;
         datapoint_info!("relayer-highest_slot", ("slot", *highest_slot as i64, i64));
-        relayer_metrics.highest_slot = *highest_slot;
         Ok(())
     }
 
@@ -688,6 +602,7 @@ impl BlockEngineImpl {
         }
     }
 
+    #[allow(dead_code)]
     pub fn join(self) -> thread::Result<()> {
         for t in self.threads {
             t.join()?;
@@ -727,21 +642,37 @@ impl BlockEngineValidator for BlockEngineImpl {
 
     async fn subscribe_bundles(
         &self,
-        _request: Request<SubscribeBundlesRequest>,
+        request: Request<SubscribeBundlesRequest>,
     ) -> Result<Response<Self::SubscribeBundlesStream>, Status> {
-        // TODO: Implement bundle subscription
-        Err(Status::unimplemented(
-            "Bundle subscription not yet implemented",
-        ))
+        Self::check_health(&self.health_state)?;
+
+        let pubkey: &Pubkey = request
+            .extensions()
+            .get()
+            .ok_or_else(|| Status::internal("internal error fetching public key"))?;
+
+        let (sender, receiver) = channel(BlockEngineImpl::SUBSCRIBER_QUEUE_CAPACITY);
+        self.subscription_sender
+            .send(Subscription::BlockEngineBundleSubscription {
+                pubkey: *pubkey,
+                sender,
+            })
+            .map_err(|_| Status::internal("internal error adding bundle subscription"))?;
+
+        Ok(Response::new(ReceiverStream::new(receiver)))
     }
 
     async fn get_block_builder_fee_info(
         &self,
         _request: Request<BlockBuilderFeeInfoRequest>,
     ) -> Result<Response<BlockBuilderFeeInfoResponse>, Status> {
-        // TODO: Implement fee info
-        Err(Status::unimplemented(
-            "Block builder fee info not yet implemented",
-        ))
+        Self::check_health(&self.health_state)?;
+
+        // Return a simple fee structure
+        // In a real implementation, this would come from configuration
+        Ok(Response::new(BlockBuilderFeeInfoResponse {
+            pubkey: "11111111111111111111111111111111".to_string(), // System program
+            commission: 5,                                          // 5% commission
+        }))
     }
 }

@@ -4,6 +4,7 @@ mod convert;
 mod p3_quic;
 mod rpc;
 
+use crate::block_engine::LeaderScheduleCacheUpdater;
 use args::Args;
 use block_engine::health_manager::HealthManager;
 use block_engine::{
@@ -30,7 +31,6 @@ use std::time::Duration;
 use std::{collections::HashSet, fs};
 use tonic::transport::Server;
 use tracing::{error, info, warn};
-use crate::block_engine::LeaderScheduleCacheUpdater;
 
 enum ValidatorStore {
     LeaderSchedule(LeaderScheduleUpdatingHandle),
@@ -196,13 +196,8 @@ async fn main() {
     let block_engine_svc = BlockEngineImpl::new(
         downstream_slot_receiver,
         p3_packet_rx,
-        leader_cache.handle(),
         health_manager.handle(),
         exit.clone(),
-        args.validator_packet_batch_size,
-        args.forward_all,
-        args.slot_lookahead,
-        args.heartbeat_tick_time,
     );
 
     let auth_svc = AuthServiceImpl::new(

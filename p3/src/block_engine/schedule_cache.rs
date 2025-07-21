@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     str::FromStr,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -35,14 +35,6 @@ pub struct LeaderScheduleUpdatingHandle {
 impl LeaderScheduleUpdatingHandle {
     pub fn new(schedule: Arc<RwLock<HashMap<Slot, Pubkey>>>) -> LeaderScheduleUpdatingHandle {
         LeaderScheduleUpdatingHandle { schedule }
-    }
-
-    pub fn leaders_for_slots(&self, slots: &[Slot]) -> HashSet<Pubkey> {
-        let schedule = self.schedule.read().unwrap();
-        slots
-            .iter()
-            .filter_map(|s| schedule.get(s).cloned())
-            .collect()
     }
 
     pub fn is_scheduled_validator(&self, pubkey: &Pubkey) -> bool {

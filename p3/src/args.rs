@@ -33,7 +33,7 @@ pub(crate) struct Args {
     /// How long it takes to miss a slot for the system to be considered unhealthy
     #[arg(long, default_value_t = 10)]
     pub(crate) missing_slot_unhealthy_secs: u64,
-    
+
     /// Validators allowed to authenticate and connect to the relayer, comma separated.
     /// If null then all validators on the leader schedule shall be permitted.
     #[arg(long, value_delimiter = ',')]
@@ -63,23 +63,6 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 180)]
     pub(crate) challenge_expiration_sleep_interval_secs: u64,
 
-    /// Number of packets to send in each packet batch to the validator
-    #[arg(long, default_value_t = 4)]
-    pub(crate) validator_packet_batch_size: usize,
-
-    /// Forward all received packets to all connected validators,
-    /// regardless of leader schedule.
-    #[arg(long, default_value_t = false)]
-    pub(crate) forward_all: bool,
-
-    /// The slot lookahead to use when forwarding transactions
-    #[arg(long, default_value_t = 5)]
-    pub(crate) slot_lookahead: u64,
-
-    /// Time in milliseconds between heartbeat ticks
-    #[arg(long, default_value_t = 100)]
-    pub(crate) heartbeat_tick_time: u64,
-    
     /// Generate completions for provided shell.
     #[arg(long, value_name = "SHELL")]
     pub(crate) completions: Option<clap_complete::Shell>,
@@ -87,5 +70,4 @@ pub(crate) struct Args {
     /// If provided, will write hourly log files to this directory.
     #[arg(long, value_hint = ValueHint::DirPath)]
     pub(crate) logs: Option<PathBuf>,
-
 }
