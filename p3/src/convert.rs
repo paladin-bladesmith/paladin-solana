@@ -1,8 +1,11 @@
-use solana_perf::packet::Packet;
-
-use jito_protos::proto::packet::{
-    Meta as ProtoMeta, Packet as ProtoPacket, PacketFlags as ProtoPacketFlags,
+use jito_protos::proto::{
+    bundle::Bundle as ProtoBundle,
+    bundle::BundleUuid as ProtoBundleUuid,
+    packet::{Meta as ProtoMeta, Packet as ProtoPacket, PacketFlags as ProtoPacketFlags},
+    shared::Header,
 };
+use solana_perf::packet::{Packet, PacketBatch};
+use std::time::SystemTime;
 
 pub fn packet_to_proto_packet(p: &Packet) -> Option<ProtoPacket> {
     Some(ProtoPacket {
@@ -21,5 +24,24 @@ pub fn packet_to_proto_packet(p: &Packet) -> Option<ProtoPacket> {
             }),
             sender_stake: 0,
         }),
+    })
+}
+
+pub fn packet_batch_to_bundle(
+    p: &PacketBatch,
+    ts: SystemTime,
+    s: String,
+) -> Option<ProtoBundleUuid> {
+    Some(ProtoBundleUuid {
+        bundle: Some(ProtoBundle {
+            packets: p
+                .iter()
+                .filter_map(packet_to_proto_packet)
+                .collect::<Vec<_>>(),
+            header: Some(Header {
+                ts: Some(ts.into()),
+            }),
+        }),
+        uuid: s,
     })
 }

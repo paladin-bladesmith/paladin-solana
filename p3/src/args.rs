@@ -1,7 +1,6 @@
-use std::{net::SocketAddr, path::PathBuf};
-
 use clap::{Parser, ValueHint};
 use solana_sdk::pubkey::Pubkey;
+use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Debug, Parser)]
 #[command(version = toolbox::version!(), long_version = toolbox::long_version!())]

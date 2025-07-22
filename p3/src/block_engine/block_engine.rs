@@ -10,7 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use crate::rpc::load_balancer::LoadBalancer;
+use crate::{convert::packet_batch_to_bundle, rpc::load_balancer::LoadBalancer};
 use crossbeam_channel::{bounded, Receiver, RecvError, Sender};
 use histogram::Histogram;
 use jito_protos::proto::{
@@ -389,7 +389,7 @@ impl BlockEngineImpl {
             crossbeam_channel::select! {
                 recv(delay_packet_receiver) -> maybe_packet_batches => {
                     let start = Instant::now();
-                    let failed_forwards = Self::forward_packets(maybe_packet_batches, packet_subscriptions, &mut relayer_metrics)?;
+                    let failed_forwards = Self::forward_packets(maybe_packet_batches, packet_subscriptions, bundle_subscriptions, &mut relayer_metrics)?;
                     Self::drop_connections(failed_forwards, packet_subscriptions, &mut relayer_metrics);
                     let _ = relayer_metrics.crossbeam_delay_packet_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
                 },
@@ -481,7 +481,8 @@ impl BlockEngineImpl {
     /// Returns pubkeys of subscribers that failed to send
     fn forward_packets(
         maybe_packet_batch: Result<PacketBatch, RecvError>,
-        subscriptions: &PacketSubscriptions,
+        packet_subscriptions: &PacketSubscriptions,
+        bundle_subscriptions: &BundleSubscriptions,
         relayer_metrics: &mut BlockEngineMetrics,
     ) -> BlockEngineResult<Vec<Pubkey>> {
         let packet_batch = maybe_packet_batch?;
@@ -490,41 +491,56 @@ impl BlockEngineImpl {
             .filter_map(packet_to_proto_packet)
             .collect();
         let batch = ProtoPacketBatch { packets };
-
-        let l_subscriptions: std::sync::RwLockReadGuard<
-            '_,
-            HashMap<Pubkey, TokioSender<Result<SubscribePacketsResponse, Status>>>,
-        > = subscriptions.read().unwrap();
-
-        let senders = l_subscriptions.iter().collect::<Vec<(
-            &Pubkey,
-            &TokioSender<Result<SubscribePacketsResponse, Status>>,
-        )>>();
-
+        let num_packets = batch.packets.len() as u64;
         let mut failed_forwards = Vec::new();
 
-        for (pubkey, sender) in &senders {
-            // try send because it's a bounded channel and we don't want to block if the channel is full
-            match sender.try_send(Ok(SubscribePacketsResponse {
+        fn broadcast<T: Clone>(
+            entries: Vec<(&Pubkey, &TokioSender<Result<T, Status>>)>,
+            make_resp: impl Fn(&Pubkey) -> T,
+            metrics: &mut BlockEngineMetrics,
+            count: u64,
+        ) -> Vec<Pubkey> {
+            let mut failed = Vec::new();
+            for (pubkey, sender) in entries {
+                let resp = make_resp(pubkey);
+                match sender.try_send(Ok(resp)) {
+                    Ok(_) => metrics.increment_packets_forwarded(pubkey, count),
+                    Err(TrySendError::Full(_)) => metrics.increment_packets_dropped(pubkey, count),
+                    Err(TrySendError::Closed(_)) => failed.push(*pubkey),
+                }
+            }
+            failed
+        }
+
+        // send packets to packet_subscriptions
+        let l_senders = packet_subscriptions.read().unwrap();
+        let packet_senders = l_senders.iter().collect::<Vec<_>>();
+        failed_forwards.extend(broadcast(
+            packet_senders,
+            |_pubkey| SubscribePacketsResponse {
                 header: Some(Header {
                     ts: Some(Timestamp::from(SystemTime::now())),
                 }),
                 batch: Some(batch.clone()),
-            })) {
-                Ok(_) => {
-                    relayer_metrics.increment_packets_forwarded(pubkey, batch.packets.len() as u64);
-                }
-                Err(TrySendError::Full(_)) => {
-                    error!("packet channel is full for pubkey: {:?}", pubkey);
-                    relayer_metrics.increment_packets_dropped(pubkey, batch.packets.len() as u64);
-                }
-                Err(TrySendError::Closed(_)) => {
-                    error!("channel is closed for pubkey: {:?}", pubkey);
-                    failed_forwards.push(**pubkey);
-                    break;
-                }
-            }
-        }
+            },
+            relayer_metrics,
+            num_packets,
+        ));
+
+        // build and send bundles to bundle_subscriptions
+        let bundle = packet_batch_to_bundle(&packet_batch, SystemTime::now(), String::default())
+            .unwrap_or_default();
+        let l_senders = bundle_subscriptions.read().unwrap();
+        let bundle_senders = l_senders.iter().collect::<Vec<_>>();
+        failed_forwards.extend(broadcast(
+            bundle_senders,
+            |_| SubscribeBundlesResponse {
+                bundles: vec![bundle.clone()],
+            },
+            relayer_metrics,
+            num_packets,
+        ));
+
         Ok(failed_forwards)
     }
 

@@ -1,11 +1,10 @@
-use std::{net::IpAddr, str::FromStr, sync::Arc};
-
 use chrono::{DateTime, NaiveDateTime, Utc};
 use jwt::{AlgorithmType, Header, PKeyWithDigest, Token, Verified, VerifyWithKey};
 use log::*;
 use openssl::pkey::Public;
 use serde::{Deserialize, Serialize};
 use solana_sdk::pubkey::Pubkey;
+use std::{net::IpAddr, str::FromStr, sync::Arc};
 use tonic::{metadata::MetadataMap, service::Interceptor, Request, Status};
 
 /// What the JWT token will be encoded with.
