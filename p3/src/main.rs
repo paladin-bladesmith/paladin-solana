@@ -34,20 +34,25 @@ use tonic::transport::Server;
 use tracing::{error, info, warn};
 
 enum ValidatorStore {
+    #[allow(dead_code)]
     LeaderSchedule(LeaderScheduleUpdatingHandle),
+    #[allow(dead_code)]
     UserDefined(HashSet<Pubkey>),
 }
 
 struct ValidatorAutherImpl {
+    #[allow(dead_code)]
     store: ValidatorStore,
 }
 
 impl ValidatorAuther for ValidatorAutherImpl {
-    fn is_authorized(&self, pubkey: &Pubkey) -> bool {
-        match &self.store {
-            ValidatorStore::LeaderSchedule(cache) => cache.is_scheduled_validator(pubkey),
-            ValidatorStore::UserDefined(pubkeys) => pubkeys.contains(pubkey),
-        }
+    fn is_authorized(&self, _pubkey: &Pubkey) -> bool {
+        // match &self.store {
+        //     ValidatorStore::LeaderSchedule(cache) => cache.is_scheduled_validator(pubkey),
+        //     ValidatorStore::UserDefined(pubkeys) => pubkeys.contains(pubkey),
+        // }
+        // Allow everyone as the grpc server is private and will run locally behind a firewall
+        true
     }
 }
 
