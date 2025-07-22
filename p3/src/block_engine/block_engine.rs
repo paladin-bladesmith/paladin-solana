@@ -143,14 +143,14 @@ impl BlockEngineMetrics {
 
     fn report(&self) {
         for (pubkey, stats) in &self.packet_stats_per_validator {
-            datapoint_info!("relayer_validator_metrics",
+            datapoint_info!("block_engine_validator_metrics",
                 "pubkey" => pubkey.to_string(),
                 ("num_packets_forwarded", stats.num_packets_forwarded, i64),
                 ("num_packets_dropped", stats.num_packets_dropped, i64),
             );
         }
         datapoint_info!(
-            "relayer_metrics",
+            "block_engine_metrics",
             ("num_added_connections", self.num_added_connections, i64),
             ("num_removed_connections", self.num_removed_connections, i64),
             ("num_current_connections", self.num_current_connections, i64),
@@ -316,8 +316,8 @@ pub struct BlockEngineImpl {
     subscription_sender: Sender<Subscription>,
     threads: Vec<JoinHandle<()>>,
     health_state: Arc<RwLock<HealthState>>,
-    packet_subscriptions: PacketSubscriptions,
-    bundle_subscriptions: BundleSubscriptions,
+    _packet_subscriptions: PacketSubscriptions,
+    _bundle_subscriptions: BundleSubscriptions,
 }
 
 impl BlockEngineImpl {
@@ -330,7 +330,7 @@ impl BlockEngineImpl {
         health_state: Arc<RwLock<HealthState>>,
         exit: Arc<AtomicBool>,
     ) -> Self {
-        // receiver tracked as relayer_metrics.subscription_receiver_len
+        // receiver tracked as block_engine_metrics.subscription_receiver_len
         let (subscription_sender, subscription_receiver) =
             bounded(LoadBalancer::SLOT_QUEUE_CAPACITY);
 
@@ -362,8 +362,8 @@ impl BlockEngineImpl {
             subscription_sender,
             threads: vec![thread],
             health_state,
-            packet_subscriptions,
-            bundle_subscriptions,
+            _packet_subscriptions: packet_subscriptions,
+            _bundle_subscriptions: bundle_subscriptions,
         }
     }
 
@@ -439,7 +439,7 @@ impl BlockEngineImpl {
         for disconnected in disconnected_pubkeys {
             if let Some(sender) = l_subscriptions.remove(&disconnected) {
                 datapoint_info!(
-                    "relayer_removed_subscription",
+                    "block_engine_removed_subscription",
                     ("pubkey", disconnected.to_string(), String)
                 );
                 drop(sender);
@@ -542,13 +542,13 @@ impl BlockEngineImpl {
 
                         relayer_metrics.num_added_connections += 1;
                         datapoint_info!(
-                            "relayer_new_subscription",
+                            "block_engine_new_subscription",
                             ("pubkey", pubkey.to_string(), String)
                         );
                     }
                     Entry::Occupied(mut entry) => {
                         datapoint_info!(
-                            "relayer_duplicate_subscription",
+                            "block_engine_duplicate_subscription",
                             ("pubkey", pubkey.to_string(), String)
                         );
                         error!("already connected, dropping old connection: {pubkey:?}");
@@ -563,13 +563,13 @@ impl BlockEngineImpl {
 
                         relayer_metrics.num_added_connections += 1;
                         datapoint_info!(
-                            "relayer_new_bundle_subscription",
+                            "block_engine_new_bundle_subscription",
                             ("pubkey", pubkey.to_string(), String)
                         );
                     }
                     Entry::Occupied(mut entry) => {
                         datapoint_info!(
-                            "relayer_duplicate_bundle_subscription",
+                            "block_engine_duplicate_bundle_subscription",
                             ("pubkey", pubkey.to_string(), String)
                         );
                         error!(

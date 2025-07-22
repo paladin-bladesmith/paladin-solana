@@ -180,6 +180,7 @@ impl LoadBalancer {
         (server.to_string(), *slot)
     }
 
+    #[allow(dead_code)]
     pub fn join(self) -> thread::Result<()> {
         for s in self.subscription_threads {
             s.join()?;

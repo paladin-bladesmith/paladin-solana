@@ -13,7 +13,8 @@ use block_engine::{
     block_engine::BlockEngineImpl,
     schedule_cache::LeaderScheduleUpdatingHandle,
 };
-use crossbeam_channel::unbounded;
+use clap::{CommandFactory, Parser};
+use crossbeam_channel::bounded;
 use jito_protos::{
     proto::auth::auth_service_server::AuthServiceServer,
     proto::block_engine::block_engine_validator_server::BlockEngineValidatorServer,
@@ -52,12 +53,6 @@ impl ValidatorAuther for ValidatorAutherImpl {
 
 #[tokio::main]
 async fn main() {
-    use ::{
-        clap::{CommandFactory, Parser},
-        tokio::signal::unix::SignalKind,
-        tracing::{error, info},
-    };
-
     // Parse .env if it exists (and before args in case args want to read
     // environment).
     match dotenvy::dotenv() {
@@ -166,7 +161,8 @@ async fn main() {
     };
 
     // Setup health manager
-    let (downstream_slot_sender, downstream_slot_receiver) = crossbeam_channel::unbounded::<u64>();
+    let (downstream_slot_sender, downstream_slot_receiver) =
+        bounded::<u64>(LoadBalancer::SLOT_QUEUE_CAPACITY);
     let health_manager = HealthManager::new(
         slot_receiver,
         downstream_slot_sender,
@@ -175,15 +171,8 @@ async fn main() {
     );
 
     // Create packet forwarding channel - broadcast so all validators get all packets
-    let (p3_packet_tx, p3_packet_rx) = unbounded();
+    let (p3_packet_tx, p3_packet_rx) = bounded(LoadBalancer::SLOT_QUEUE_CAPACITY);
 
-    // Setup exit signal
-    let exit = Arc::new(AtomicBool::new(false));
-
-    info!(
-        "Starting P3 QUIC servers on {} and {}",
-        args.p3_addr, args.p3_mev_addr
-    );
     let (p3_handle, _key_updaters) = p3_quic::P3Quic::spawn(
         exit.clone(),
         p3_packet_tx,
@@ -215,7 +204,7 @@ async fn main() {
     );
 
     let server_addr = args.grpc_bind_ip;
-    info!("starting BlockEngine server at: {:?}", server_addr);
+
     Server::builder()
         .add_service(BlockEngineValidatorServer::with_interceptor(
             block_engine_svc,
@@ -226,45 +215,18 @@ async fn main() {
         .await
         .expect("serve BlockEngine server");
 
-    // Create cancellation token
-    let cxl = tokio_util::sync::CancellationToken::new();
-    let cxl_child = cxl.clone();
-    let mut handle = tokio::spawn(async move { cxl_child.cancelled().await });
-
-    // Wait for server exit or SIGTERM/SIGINT.
-    let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate()).unwrap();
-    let mut sigint = tokio::signal::unix::signal(SignalKind::interrupt()).unwrap();
-    tokio::select! {
-        res = tokio::signal::ctrl_c() => {
-            res.expect("Failed to register SIGINT hook");
-
-            info!("SIGINT caught, stopping server");
-            cxl.cancel();
-
-            handle.await.unwrap();
-        }
-        _ = sigterm.recv() => info!("SIGTERM caught, stopping server"),
-        _ = sigint.recv() => info!("SIGINT caught, stopping server"),
-        res = &mut handle => {
-            res.unwrap();
-        }
-    }
-
-    exit.store(true, std::sync::atomic::Ordering::Relaxed);
-
-    // Wait for P3 QUIC server
     if let Err(e) = p3_handle.join() {
         error!("P3 QUIC server panicked: {:?}", e);
     }
 
-    // Wait for health manager thread
+    // Wait for health manager thread to finish
     if let Err(e) = health_manager.join() {
         error!("Health manager thread panicked: {:?}", e);
     }
 
-    // Wait for leader cache thread
+    // Wait for leader schedule cache thread to finish
     if let Err(e) = leader_cache.join() {
-        error!("Leader cache thread panicked: {:?}", e);
+        error!("Leader schedule cache thread panicked: {:?}", e);
     }
 }
 
