@@ -10,7 +10,10 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
-use crate::{convert::packet_batch_to_bundle, rpc::load_balancer::LoadBalancer};
+use crate::{
+    convert::{proto_packets_to_batch, proto_packets_to_bundle},
+    rpc::load_balancer::LoadBalancer,
+};
 use crossbeam_channel::{bounded, Receiver, RecvError, Sender};
 use histogram::Histogram;
 use jito_protos::proto::{
@@ -19,7 +22,6 @@ use jito_protos::proto::{
         BlockBuilderFeeInfoResponse, SubscribeBundlesRequest, SubscribeBundlesResponse,
         SubscribePacketsRequest, SubscribePacketsResponse,
     },
-    packet::PacketBatch as ProtoPacketBatch,
     shared::Header,
 };
 use log::*;
@@ -314,10 +316,8 @@ type BundleSubscriptions =
 
 pub struct BlockEngineImpl {
     subscription_sender: Sender<Subscription>,
-    threads: Vec<JoinHandle<()>>,
     health_state: Arc<RwLock<HealthState>>,
-    _packet_subscriptions: PacketSubscriptions,
-    _bundle_subscriptions: BundleSubscriptions,
+    identity_pubkey: Pubkey,
 }
 
 impl BlockEngineImpl {
@@ -328,8 +328,9 @@ impl BlockEngineImpl {
         slot_receiver: Receiver<Slot>,
         delay_packet_receiver: Receiver<PacketBatch>,
         health_state: Arc<RwLock<HealthState>>,
+        identity_pubkey: Pubkey,
         exit: Arc<AtomicBool>,
-    ) -> Self {
+    ) -> (Self, JoinHandle<()>) {
         // receiver tracked as block_engine_metrics.subscription_receiver_len
         let (subscription_sender, subscription_receiver) =
             bounded(LoadBalancer::SLOT_QUEUE_CAPACITY);
@@ -338,7 +339,6 @@ impl BlockEngineImpl {
         let bundle_subscriptions = Arc::new(RwLock::new(HashMap::default()));
 
         let thread = {
-            let health_state = health_state.clone();
             let packet_subscriptions = packet_subscriptions.clone();
             let bundle_subscriptions = bundle_subscriptions.clone();
             thread::Builder::new()
@@ -348,7 +348,6 @@ impl BlockEngineImpl {
                         slot_receiver,
                         subscription_receiver,
                         delay_packet_receiver,
-                        health_state,
                         exit,
                         &packet_subscriptions,
                         &bundle_subscriptions,
@@ -358,13 +357,14 @@ impl BlockEngineImpl {
                 .unwrap()
         };
 
-        Self {
-            subscription_sender,
-            threads: vec![thread],
-            health_state,
-            _packet_subscriptions: packet_subscriptions,
-            _bundle_subscriptions: bundle_subscriptions,
-        }
+        (
+            Self {
+                subscription_sender,
+                health_state,
+                identity_pubkey,
+            },
+            thread,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -372,14 +372,13 @@ impl BlockEngineImpl {
         slot_receiver: Receiver<Slot>,
         subscription_receiver: Receiver<Subscription>,
         delay_packet_receiver: Receiver<PacketBatch>,
-        _health_state: Arc<RwLock<HealthState>>,
         exit: Arc<AtomicBool>,
         packet_subscriptions: &PacketSubscriptions,
         bundle_subscriptions: &BundleSubscriptions,
     ) -> BlockEngineResult<()> {
         let metrics_tick = crossbeam_channel::tick(Duration::from_millis(1000));
 
-        let mut relayer_metrics = BlockEngineMetrics::new(
+        let mut block_engine_metrics = BlockEngineMetrics::new(
             slot_receiver.capacity().unwrap(),
             subscription_receiver.capacity().unwrap(),
             delay_packet_receiver.capacity().unwrap(),
@@ -389,29 +388,29 @@ impl BlockEngineImpl {
             crossbeam_channel::select! {
                 recv(delay_packet_receiver) -> maybe_packet_batches => {
                     let start = Instant::now();
-                    let failed_forwards = Self::forward_packets(maybe_packet_batches, packet_subscriptions, bundle_subscriptions, &mut relayer_metrics)?;
-                    Self::drop_connections(failed_forwards, packet_subscriptions, &mut relayer_metrics);
-                    let _ = relayer_metrics.crossbeam_delay_packet_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
+                    let failed_forwards = Self::forward_packets(maybe_packet_batches, packet_subscriptions, bundle_subscriptions, &mut block_engine_metrics)?;
+                    Self::drop_connections(failed_forwards, packet_subscriptions, &mut block_engine_metrics);
+                    let _ = block_engine_metrics.crossbeam_delay_packet_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
                 },
                 recv(subscription_receiver) -> maybe_subscription => {
                     let start = Instant::now();
-                    Self::handle_subscription(maybe_subscription, packet_subscriptions, bundle_subscriptions, &mut relayer_metrics)?;
-                    let _ = relayer_metrics.crossbeam_subscription_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
+                    Self::handle_subscription(maybe_subscription, packet_subscriptions, bundle_subscriptions, &mut block_engine_metrics)?;
+                    let _ = block_engine_metrics.crossbeam_subscription_receiver_processing_us.increment(start.elapsed().as_micros() as u64);
                 }
                 recv(metrics_tick) -> time_generated => {
                     let start = Instant::now();
                     let l_packet_subscriptions = packet_subscriptions.read().unwrap();
-                    relayer_metrics.num_current_connections = l_packet_subscriptions.len() as u64;
-                    relayer_metrics.update_packet_subscription_total_capacity(&l_packet_subscriptions);
+                    block_engine_metrics.num_current_connections = l_packet_subscriptions.len() as u64;
+                    block_engine_metrics.update_packet_subscription_total_capacity(&l_packet_subscriptions);
                     drop(l_packet_subscriptions);
 
                     if let Ok(time_generated) = time_generated {
-                        relayer_metrics.metrics_latency_us = time_generated.elapsed().as_micros() as u64;
+                        block_engine_metrics.metrics_latency_us = time_generated.elapsed().as_micros() as u64;
                     }
-                    let _ = relayer_metrics.crossbeam_metrics_tick_processing_us.increment(start.elapsed().as_micros() as u64);
+                    let _ = block_engine_metrics.crossbeam_metrics_tick_processing_us.increment(start.elapsed().as_micros() as u64);
 
-                    relayer_metrics.report();
-                    relayer_metrics = BlockEngineMetrics::new(
+                    block_engine_metrics.report();
+                    block_engine_metrics = BlockEngineMetrics::new(
                         slot_receiver.capacity().unwrap(),
                         subscription_receiver.capacity().unwrap(),
                         delay_packet_receiver.capacity().unwrap(),
@@ -419,7 +418,7 @@ impl BlockEngineImpl {
                 }
             }
 
-            relayer_metrics.update_max_len(
+            block_engine_metrics.update_max_len(
                 slot_receiver.len(),
                 subscription_receiver.len(),
                 delay_packet_receiver.len(),
@@ -431,9 +430,9 @@ impl BlockEngineImpl {
     fn drop_connections(
         disconnected_pubkeys: Vec<Pubkey>,
         subscriptions: &PacketSubscriptions,
-        relayer_metrics: &mut BlockEngineMetrics,
+        block_engine_metrics: &mut BlockEngineMetrics,
     ) {
-        relayer_metrics.num_removed_connections += disconnected_pubkeys.len() as u64;
+        block_engine_metrics.num_removed_connections += disconnected_pubkeys.len() as u64;
 
         let mut l_subscriptions = subscriptions.write().unwrap();
         for disconnected in disconnected_pubkeys {
@@ -447,165 +446,144 @@ impl BlockEngineImpl {
         }
     }
 
-    #[allow(dead_code)]
-    fn handle_heartbeat(
-        subscriptions: &PacketSubscriptions,
-        relayer_metrics: &mut BlockEngineMetrics,
-    ) -> Vec<Pubkey> {
-        let failed_pubkey_updates = subscriptions
-            .read()
-            .unwrap()
-            .iter()
-            .filter_map(|(pubkey, sender)| {
-                // For BlockEngine protocol, we send empty batches as heartbeats
-                match sender.try_send(Ok(SubscribePacketsResponse {
-                    header: Some(Header {
-                        ts: Some(Timestamp::from(SystemTime::now())),
-                    }),
-                    batch: None, // Empty batch for heartbeat
-                })) {
-                    Ok(_) => {}
-                    Err(TrySendError::Closed(_)) => return Some(*pubkey),
-                    Err(TrySendError::Full(_)) => {
-                        relayer_metrics.num_try_send_channel_full += 1;
-                        warn!("heartbeat channel is full for: {:?}", pubkey);
-                    }
-                }
-                None
-            })
-            .collect();
-
-        failed_pubkey_updates
-    }
-
     /// Returns pubkeys of subscribers that failed to send
     fn forward_packets(
         maybe_packet_batch: Result<PacketBatch, RecvError>,
         packet_subscriptions: &PacketSubscriptions,
         bundle_subscriptions: &BundleSubscriptions,
-        relayer_metrics: &mut BlockEngineMetrics,
+        metrics: &mut BlockEngineMetrics,
     ) -> BlockEngineResult<Vec<Pubkey>> {
-        let packet_batch = maybe_packet_batch?;
-        let packets: Vec<_> = packet_batch
-            .iter()
-            .filter_map(packet_to_proto_packet)
-            .collect();
-        let batch = ProtoPacketBatch { packets };
-        let num_packets = batch.packets.len() as u64;
-        let mut failed_forwards = Vec::new();
+        let batch = maybe_packet_batch?;
+        // Partition into two Vecs of proto packets
+        let (p3_pkts, mev_pkts) =
+            batch
+                .into_iter()
+                .fold((Vec::new(), Vec::new()), |(mut p3, mut mev), pkt| {
+                    let proto = packet_to_proto_packet(&pkt);
+                    if pkt.meta().is_p3() {
+                        p3.extend(proto.clone())
+                    }
+                    if pkt.meta().is_mev() {
+                        mev.extend(proto)
+                    }
+                    (p3, mev)
+                });
 
-        fn broadcast<T: Clone>(
-            entries: Vec<(&Pubkey, &TokioSender<Result<T, Status>>)>,
-            make_resp: impl Fn(&Pubkey) -> T,
+        let now_ts = Timestamp::from(SystemTime::now());
+        let p3_count = p3_pkts.len() as u64;
+        let mev_count = mev_pkts.len() as u64;
+        let batch = proto_packets_to_batch(p3_pkts).unwrap_or_default();
+        let packet_resp = {
+            let batch = batch.clone();
+            let ts = now_ts.clone();
+            move |_: &Pubkey| SubscribePacketsResponse {
+                header: Some(Header {
+                    ts: Some(ts.clone()),
+                }),
+                batch: Some(batch.clone()),
+            }
+        };
+        let bundle = proto_packets_to_bundle(mev_pkts, now_ts, String::new()).unwrap_or_default();
+        let bundle_resp = move |_: &Pubkey| SubscribeBundlesResponse {
+            bundles: vec![bundle.clone()],
+        };
+
+        // Generic broadcaster
+        fn broadcast<T, F>(
+            senders: Vec<(&Pubkey, &TokioSender<Result<T, Status>>)>,
+            make: F,
             metrics: &mut BlockEngineMetrics,
             count: u64,
-        ) -> Vec<Pubkey> {
+        ) -> Vec<Pubkey>
+        where
+            F: Fn(&Pubkey) -> T,
+        {
             let mut failed = Vec::new();
-            for (pubkey, sender) in entries {
-                let resp = make_resp(pubkey);
-                match sender.try_send(Ok(resp)) {
-                    Ok(_) => metrics.increment_packets_forwarded(pubkey, count),
-                    Err(TrySendError::Full(_)) => metrics.increment_packets_dropped(pubkey, count),
-                    Err(TrySendError::Closed(_)) => failed.push(*pubkey),
+            for (pk, tx) in senders {
+                match tx.try_send(Ok(make(pk))) {
+                    Ok(_) => metrics.increment_packets_forwarded(pk, count),
+                    Err(TrySendError::Full(_)) => metrics.increment_packets_dropped(pk, count),
+                    Err(TrySendError::Closed(_)) => failed.push(*pk),
                 }
             }
             failed
         }
 
-        // send packets to packet_subscriptions
+        let mut failed = Vec::new();
+
         let l_senders = packet_subscriptions.read().unwrap();
-        let packet_senders = l_senders.iter().collect::<Vec<_>>();
-        failed_forwards.extend(broadcast(
-            packet_senders,
-            |_pubkey| SubscribePacketsResponse {
-                header: Some(Header {
-                    ts: Some(Timestamp::from(SystemTime::now())),
-                }),
-                batch: Some(batch.clone()),
-            },
-            relayer_metrics,
-            num_packets,
-        ));
+        let senders = l_senders.iter().collect::<Vec<_>>();
+        failed.extend(broadcast(senders, packet_resp, metrics, p3_count));
 
-        // build and send bundles to bundle_subscriptions
-        let bundle = packet_batch_to_bundle(&packet_batch, SystemTime::now(), String::default())
-            .unwrap_or_default();
         let l_senders = bundle_subscriptions.read().unwrap();
-        let bundle_senders = l_senders.iter().collect::<Vec<_>>();
-        failed_forwards.extend(broadcast(
-            bundle_senders,
-            |_| SubscribeBundlesResponse {
-                bundles: vec![bundle.clone()],
-            },
-            relayer_metrics,
-            num_packets,
-        ));
+        let senders = l_senders.iter().collect::<Vec<_>>();
+        failed.extend(broadcast(senders, bundle_resp, metrics, mev_count));
 
-        Ok(failed_forwards)
+        Ok(failed)
     }
 
     fn handle_subscription(
         maybe_subscription: Result<Subscription, RecvError>,
         packet_subscriptions: &PacketSubscriptions,
         bundle_subscriptions: &BundleSubscriptions,
-        relayer_metrics: &mut BlockEngineMetrics,
+        block_engine_metrics: &mut BlockEngineMetrics,
     ) -> BlockEngineResult<()> {
-        match maybe_subscription? {
-            Subscription::BlockEnginePacketSubscription { pubkey, sender } => {
-                match packet_subscriptions.write().unwrap().entry(pubkey) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(sender);
+        let subscription = maybe_subscription?;
 
-                        relayer_metrics.num_added_connections += 1;
-                        datapoint_info!(
-                            "block_engine_new_subscription",
-                            ("pubkey", pubkey.to_string(), String)
-                        );
-                    }
-                    Entry::Occupied(mut entry) => {
-                        datapoint_info!(
-                            "block_engine_duplicate_subscription",
-                            ("pubkey", pubkey.to_string(), String)
-                        );
-                        error!("already connected, dropping old connection: {pubkey:?}");
-                        entry.insert(sender);
-                    }
+        fn insert_subscription<T>(
+            subscriptions: &Arc<RwLock<HashMap<Pubkey, TokioSender<Result<T, Status>>>>>,
+            metrics: &mut BlockEngineMetrics,
+            new_event: &'static str,
+            dup_event: &'static str,
+            err_msg: &str,
+            key: Pubkey,
+            sender: TokioSender<Result<T, Status>>,
+        ) {
+            let mut map = subscriptions.write().unwrap();
+            match map.entry(key) {
+                Entry::Vacant(e) => {
+                    e.insert(sender);
+                    metrics.num_added_connections += 1;
+                    datapoint_info!(new_event, ("pubkey", key.to_string(), String));
                 }
-            }
-            Subscription::BlockEngineBundleSubscription { pubkey, sender } => {
-                match bundle_subscriptions.write().unwrap().entry(pubkey) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(sender);
-
-                        relayer_metrics.num_added_connections += 1;
-                        datapoint_info!(
-                            "block_engine_new_bundle_subscription",
-                            ("pubkey", pubkey.to_string(), String)
-                        );
-                    }
-                    Entry::Occupied(mut entry) => {
-                        datapoint_info!(
-                            "block_engine_duplicate_bundle_subscription",
-                            ("pubkey", pubkey.to_string(), String)
-                        );
-                        error!(
-                            "already connected for bundles, dropping old connection: {pubkey:?}"
-                        );
-                        entry.insert(sender);
-                    }
+                Entry::Occupied(mut e) => {
+                    datapoint_info!(dup_event, ("pubkey", key.to_string(), String));
+                    error!("{}", err_msg);
+                    e.insert(sender);
                 }
             }
         }
-        Ok(())
-    }
 
-    #[allow(dead_code)]
-    fn update_highest_slot(
-        maybe_slot: Result<u64, RecvError>,
-        highest_slot: &mut Slot,
-    ) -> BlockEngineResult<()> {
-        *highest_slot = maybe_slot?;
-        datapoint_info!("relayer-highest_slot", ("slot", *highest_slot as i64, i64));
+        match subscription {
+            Subscription::BlockEnginePacketSubscription { pubkey, sender } => {
+                let err = format!("already connected, dropping old connection: {:?}", pubkey);
+                insert_subscription(
+                    packet_subscriptions,
+                    block_engine_metrics,
+                    "block_engine_new_packet_subscription",
+                    "block_engine_duplicate_packet_subscription",
+                    &err,
+                    pubkey,
+                    sender,
+                );
+            }
+            Subscription::BlockEngineBundleSubscription { pubkey, sender } => {
+                let err = format!(
+                    "already connected for bundles, dropping old connection: {:?}",
+                    pubkey
+                );
+                insert_subscription(
+                    bundle_subscriptions,
+                    block_engine_metrics,
+                    "block_engine_new_bundle_subscription",
+                    "block_engine_duplicate_bundle_subscription",
+                    &err,
+                    pubkey,
+                    sender,
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -616,14 +594,6 @@ impl BlockEngineImpl {
         } else {
             Ok(())
         }
-    }
-
-    #[allow(dead_code)]
-    pub fn join(self) -> thread::Result<()> {
-        for t in self.threads {
-            t.join()?;
-        }
-        Ok(())
     }
 }
 
@@ -684,11 +654,10 @@ impl BlockEngineValidator for BlockEngineImpl {
     ) -> Result<Response<BlockBuilderFeeInfoResponse>, Status> {
         Self::check_health(&self.health_state)?;
 
-        // Return a simple fee structure
-        // In a real implementation, this would come from configuration
+        // Return the identity pubkey as the fee publisher
         Ok(Response::new(BlockBuilderFeeInfoResponse {
-            pubkey: "11111111111111111111111111111111".to_string(), // System program
-            commission: 5,                                          // 5% commission
+            pubkey: self.identity_pubkey.to_string(),
+            commission: 0,
         }))
     }
 }

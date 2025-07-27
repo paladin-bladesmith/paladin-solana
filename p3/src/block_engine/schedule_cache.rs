@@ -28,6 +28,7 @@ pub struct LeaderScheduleCacheUpdater {
 
 #[derive(Clone)]
 pub struct LeaderScheduleUpdatingHandle {
+    #[allow(dead_code)]
     schedule: Arc<RwLock<HashMap<Slot, Pubkey>>>,
 }
 
@@ -37,6 +38,7 @@ impl LeaderScheduleUpdatingHandle {
         LeaderScheduleUpdatingHandle { schedule }
     }
 
+    #[allow(dead_code)]
     pub fn is_scheduled_validator(&self, pubkey: &Pubkey) -> bool {
         self.schedule
             .read()

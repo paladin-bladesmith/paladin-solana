@@ -187,10 +187,11 @@ async fn main() {
     );
 
     // Create BlockEngine service
-    let block_engine_svc = BlockEngineImpl::new(
+    let (block_engine_svc, block_engine_handle) = BlockEngineImpl::new(
         downstream_slot_receiver,
         p3_packet_rx,
         health_manager.handle(),
+        keypair.pubkey(),
         exit.clone(),
     );
 
@@ -224,14 +225,18 @@ async fn main() {
         error!("P3 QUIC server panicked: {:?}", e);
     }
 
-    // Wait for health manager thread to finish
-    if let Err(e) = health_manager.join() {
-        error!("Health manager thread panicked: {:?}", e);
+    if let Err(e) = block_engine_handle.join() {
+        error!("Block engine thread panicked: {:?}", e);
     }
 
     // Wait for leader schedule cache thread to finish
     if let Err(e) = leader_cache.join() {
         error!("Leader schedule cache thread panicked: {:?}", e);
+    }
+
+    // Wait for health manager thread to finish
+    if let Err(e) = health_manager.join() {
+        error!("Health manager thread panicked: {:?}", e);
     }
 }
 
