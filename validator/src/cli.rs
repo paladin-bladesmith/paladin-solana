@@ -2843,6 +2843,18 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                      already exists then this parameter is silently ignored",
                 ),
         )
+        .arg(
+            Arg::with_name("block_engine_url")
+                .long("block-engine-url")
+                .help("Block engine url.  Set to empty string to disable block engine connection.")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("relayer_url")
+                .long("relayer-url")
+                .help("Relayer url. Set to empty string to disable relayer connection.")
+                .takes_value(true),
+        )
 }
 
 pub struct DefaultTestArgs {
