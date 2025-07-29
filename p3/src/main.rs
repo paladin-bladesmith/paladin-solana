@@ -4,34 +4,38 @@ mod convert;
 mod p3_quic;
 mod rpc;
 
-use crate::block_engine::LeaderScheduleCacheUpdater;
-use args::Args;
-use block_engine::health_manager::HealthManager;
-use block_engine::{
-    auth_interceptor::AuthInterceptor,
-    auth_service::{AuthServiceImpl, ValidatorAuther},
-    block_engine::BlockEngineImpl,
-    schedule_cache::LeaderScheduleUpdatingHandle,
+use {
+    crate::block_engine::LeaderScheduleCacheUpdater,
+    args::Args,
+    block_engine::{
+        auth_interceptor::AuthInterceptor,
+        auth_service::{AuthServiceImpl, ValidatorAuther},
+        block_engine::BlockEngineImpl,
+        health_manager::HealthManager,
+        schedule_cache::LeaderScheduleUpdatingHandle,
+    },
+    clap::{CommandFactory, Parser},
+    crossbeam_channel::bounded,
+    jito_protos::proto::{
+        auth::auth_service_server::AuthServiceServer,
+        block_engine::block_engine_validator_server::BlockEngineValidatorServer,
+    },
+    jwt::{AlgorithmType, PKeyWithDigest},
+    openssl::{hash::MessageDigest, pkey::PKey, rsa::Rsa},
+    rpc::load_balancer::LoadBalancer,
+    solana_sdk::{
+        pubkey::Pubkey,
+        signature::{read_keypair_file, Keypair},
+        signer::Signer,
+    },
+    std::{
+        collections::HashSet,
+        sync::{atomic::AtomicBool, Arc},
+        time::Duration,
+    },
+    tonic::transport::Server,
+    tracing::{error, info, warn},
 };
-use clap::{CommandFactory, Parser};
-use crossbeam_channel::bounded;
-use jito_protos::{
-    proto::auth::auth_service_server::AuthServiceServer,
-    proto::block_engine::block_engine_validator_server::BlockEngineValidatorServer,
-};
-use jwt::{AlgorithmType, PKeyWithDigest};
-use openssl::{hash::MessageDigest, pkey::PKey};
-use rpc::load_balancer::LoadBalancer;
-use solana_sdk::pubkey::Pubkey;
-use solana_sdk::{
-    signature::{read_keypair_file, Keypair},
-    signer::Signer,
-};
-use std::sync::{atomic::AtomicBool, Arc};
-use std::time::Duration;
-use std::{collections::HashSet, fs};
-use tonic::transport::Server;
-use tracing::{error, info, warn};
 
 enum ValidatorStore {
     #[allow(dead_code)]
@@ -119,32 +123,6 @@ async fn main() {
         keypair.pubkey()
     ));
 
-    // Read auth keys if provided
-    let signing_key_path = args
-        .signing_key_pem_path
-        .expect("signing_key_pem_path is required but not provided");
-    let verifying_key_path = args
-        .verifying_key_pem_path
-        .expect("verifying_key_pem_path is required but not provided");
-
-    let priv_key = fs::read(&signing_key_path)
-        .unwrap_or_else(|_| panic!("Failed to read signing key file: {:?}", signing_key_path));
-    let signing_key = PKeyWithDigest {
-        digest: MessageDigest::sha256(),
-        key: PKey::private_key_from_pem(&priv_key).unwrap(),
-    };
-
-    let key = fs::read(&verifying_key_path).unwrap_or_else(|_| {
-        panic!(
-            "Failed to read verifying key file: {:?}",
-            verifying_key_path
-        )
-    });
-    let verifying_key = Arc::new(PKeyWithDigest {
-        digest: MessageDigest::sha256(),
-        key: PKey::public_key_from_pem(&key).unwrap(),
-    });
-
     // Setup RPC load balancer for slot updates
     let servers = args
         .rpc_servers
@@ -185,6 +163,18 @@ async fn main() {
         &keypair,
         (args.p3_addr, args.p3_mev_addr),
     );
+
+    // Generate server keypairs.
+    let private_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let public_key = PKey::public_key_from_der(&private_key.public_key_to_der().unwrap()).unwrap();
+    let signing_key = PKeyWithDigest {
+        digest: MessageDigest::sha256(),
+        key: private_key,
+    };
+    let verifying_key = Arc::new(PKeyWithDigest {
+        digest: MessageDigest::sha256(),
+        key: public_key,
+    });
 
     // Create BlockEngine service
     let (block_engine_svc, block_engine_handle) = BlockEngineImpl::new(
