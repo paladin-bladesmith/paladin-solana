@@ -5,13 +5,11 @@ mod p3_quic;
 mod rpc;
 
 use {
-    crate::block_engine::LeaderScheduleCacheUpdater,
     args::Args,
     block_engine::{
         auth_interceptor::AuthInterceptor,
         auth_service::{AuthServiceImpl, ValidatorAuther},
         block_engine::BlockEngineImpl,
-        schedule_cache::LeaderScheduleUpdatingHandle,
     },
     clap::{CommandFactory, Parser},
     crossbeam_channel::bounded,
@@ -28,7 +26,6 @@ use {
         signer::Signer,
     },
     std::{
-        collections::HashSet,
         sync::{atomic::AtomicBool, Arc},
         time::Duration,
     },
@@ -36,25 +33,8 @@ use {
     tracing::{error, info, warn},
 };
 
-enum ValidatorStore {
-    #[allow(dead_code)]
-    LeaderSchedule(LeaderScheduleUpdatingHandle),
-    #[allow(dead_code)]
-    UserDefined(HashSet<Pubkey>),
-}
-
-struct ValidatorAutherImpl {
-    #[allow(dead_code)]
-    store: ValidatorStore,
-}
-
-impl ValidatorAuther for ValidatorAutherImpl {
+impl ValidatorAuther for () {
     fn is_authorized(&self, _pubkey: &Pubkey) -> bool {
-        // match &self.store {
-        //     ValidatorStore::LeaderSchedule(cache) => cache.is_scheduled_validator(pubkey),
-        //     ValidatorStore::UserDefined(pubkeys) => pubkeys.contains(pubkey),
-        // }
-        // Allow everyone as the grpc server is private and will run locally behind a firewall
         true
     }
 }
@@ -135,13 +115,6 @@ async fn main() {
 
     let rpc_load_balancer = Arc::new(rpc_load_balancer);
 
-    let leader_cache = LeaderScheduleCacheUpdater::new(&rpc_load_balancer.clone(), &exit);
-
-    let validator_store = match args.allowed_validators {
-        Some(pubkeys) => ValidatorStore::UserDefined(HashSet::from_iter(pubkeys)),
-        None => ValidatorStore::LeaderSchedule(leader_cache.handle()),
-    };
-
     // Create packet forwarding channel - broadcast so all validators get all packets
     let (p3_packet_tx, p3_packet_rx) = bounded(LoadBalancer::SLOT_QUEUE_CAPACITY);
 
@@ -170,9 +143,7 @@ async fn main() {
         BlockEngineImpl::new(p3_packet_rx, keypair.pubkey(), exit.clone());
 
     let auth_svc = AuthServiceImpl::new(
-        ValidatorAutherImpl {
-            store: validator_store,
-        },
+        (),
         signing_key,
         verifying_key.clone(),
         Duration::from_secs(args.access_token_ttl_secs),
@@ -200,11 +171,6 @@ async fn main() {
 
     if let Err(e) = block_engine_handle.join() {
         error!("Block engine thread panicked: {:?}", e);
-    }
-
-    // Wait for leader schedule cache thread to finish
-    if let Err(e) = leader_cache.join() {
-        error!("Leader schedule cache thread panicked: {:?}", e);
     }
 }
 

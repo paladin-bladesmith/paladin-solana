@@ -1,5 +1,4 @@
 use clap::{Parser, ValueHint};
-use solana_sdk::pubkey::Pubkey;
 use std::{net::SocketAddr, path::PathBuf};
 
 #[derive(Debug, Parser)]
@@ -28,23 +27,6 @@ pub(crate) struct Args {
     /// Block engine Grpc server address
     #[arg(long, default_value = "127.0.0.1:5999")]
     pub(crate) grpc_bind_ip: SocketAddr,
-
-    /// How long it takes to miss a slot for the system to be considered unhealthy
-    #[arg(long, default_value_t = 10)]
-    pub(crate) missing_slot_unhealthy_secs: u64,
-
-    /// Validators allowed to authenticate and connect to the relayer, comma separated.
-    /// If null then all validators on the leader schedule shall be permitted.
-    #[arg(long, value_delimiter = ',')]
-    pub(crate) allowed_validators: Option<Vec<Pubkey>>,
-
-    /// The private key used to sign tokens by this server.
-    #[arg(long)]
-    pub(crate) signing_key_pem_path: Option<PathBuf>,
-
-    /// The public key used to verify tokens by this and other services.
-    #[arg(long)]
-    pub(crate) verifying_key_pem_path: Option<PathBuf>,
 
     /// Specifies how long access_tokens are valid for, expressed in seconds.
     #[arg(long, default_value_t = 1_800)]
