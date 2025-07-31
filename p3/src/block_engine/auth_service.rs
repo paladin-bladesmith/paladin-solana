@@ -2,7 +2,6 @@ use {
     crate::block_engine::{
         auth_challenges::{AuthChallenge, AuthChallenges},
         auth_interceptor::{Claims, DeSerClaims},
-        health_manager::HealthState,
     },
     chrono::{Duration, Utc},
     ed25519_dalek::{ed25519::signature::Signature, PublicKey, Verifier},
@@ -23,7 +22,7 @@ use {
         ops::Add,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc,
         },
         time::Duration as StdDuration,
     },
@@ -61,8 +60,6 @@ pub struct AuthServiceImpl<V: ValidatorAuther> {
 
     /// How long challenges are valid for DOS mitigation purposes.
     challenge_ttl: Duration,
-
-    health_state: Arc<RwLock<HealthState>>,
 }
 
 // The capacity of the auth_challenges map.
@@ -79,7 +76,6 @@ impl<V: ValidatorAuther> AuthServiceImpl<V> {
         challenge_ttl: StdDuration,
         challenge_expiration_sleep_interval: StdDuration,
         exit: &Arc<AtomicBool>,
-        health_state: Arc<RwLock<HealthState>>,
     ) -> Self {
         let auth_challenges = AuthChallenges::default();
         let _t_hdl = Self::start_challenge_expiration_task(
@@ -97,7 +93,6 @@ impl<V: ValidatorAuther> AuthServiceImpl<V> {
             access_token_ttl: Duration::from_std(access_token_ttl).unwrap(),
             refresh_token_ttl: Duration::from_std(refresh_token_ttl).unwrap(),
             challenge_ttl: Duration::from_std(challenge_ttl).unwrap(),
-            health_state,
         }
     }
 
@@ -132,15 +127,6 @@ impl<V: ValidatorAuther> AuthServiceImpl<V> {
             .map(char::from)
             .collect()
     }
-
-    /// Prevent validators from authenticating if the relayer is unhealthy
-    fn check_health(health_state: &Arc<RwLock<HealthState>>) -> Result<(), Status> {
-        if *health_state.read().unwrap() != HealthState::Healthy {
-            Err(Status::internal("relayer is unhealthy"))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 #[tonic::async_trait]
@@ -149,7 +135,6 @@ impl<V: ValidatorAuther> AuthService for AuthServiceImpl<V> {
         &self,
         req: Request<GenerateAuthChallengeRequest>,
     ) -> Result<Response<GenerateAuthChallengeResponse>, Status> {
-        Self::check_health(&self.health_state)?;
         let auth_challenges = &self.auth_challenges;
 
         if auth_challenges.len().await >= AUTH_CHALLENGES_CAPACITY {
@@ -214,7 +199,6 @@ impl<V: ValidatorAuther> AuthService for AuthServiceImpl<V> {
         &self,
         req: Request<GenerateAuthTokensRequest>,
     ) -> Result<Response<GenerateAuthTokensResponse>, Status> {
-        Self::check_health(&self.health_state)?;
         let auth_challenges = &self.auth_challenges;
 
         let client_ip = Self::client_ip(&req)?;
@@ -224,8 +208,7 @@ impl<V: ValidatorAuther> AuthService for AuthServiceImpl<V> {
             warn!("Failed to create pubkey from string: {}", e);
             Status::invalid_argument("Invalid pubkey supplied.")
         })?;
-        let solana_pubkey = Pubkey::try_from(client_pubkey.to_bytes())
-            .map_err(|_| Status::invalid_argument("Invalid pubkey supplied."))?;
+        let solana_pubkey = Pubkey::from(client_pubkey.to_bytes());
 
         let auth_challenge = if let Some(challenge) = auth_challenges.get_priority(&client_ip).await
         {
@@ -333,8 +316,6 @@ impl<V: ValidatorAuther> AuthService for AuthServiceImpl<V> {
         &self,
         req: Request<RefreshAccessTokenRequest>,
     ) -> Result<Response<RefreshAccessTokenResponse>, Status> {
-        Self::check_health(&self.health_state)?;
-
         let inner_req = req.into_inner();
 
         let refresh_token: &str = inner_req.refresh_token.as_str();

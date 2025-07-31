@@ -11,7 +11,6 @@ use {
         auth_interceptor::AuthInterceptor,
         auth_service::{AuthServiceImpl, ValidatorAuther},
         block_engine::BlockEngineImpl,
-        health_manager::HealthManager,
         schedule_cache::LeaderScheduleUpdatingHandle,
     },
     clap::{CommandFactory, Parser},
@@ -132,7 +131,7 @@ async fn main() {
 
     let exit = Arc::new(AtomicBool::new(false));
 
-    let (rpc_load_balancer, slot_receiver) = LoadBalancer::new(&servers, &exit);
+    let rpc_load_balancer = LoadBalancer::new(&servers, &exit);
 
     let rpc_load_balancer = Arc::new(rpc_load_balancer);
 
@@ -142,16 +141,6 @@ async fn main() {
         Some(pubkeys) => ValidatorStore::UserDefined(HashSet::from_iter(pubkeys)),
         None => ValidatorStore::LeaderSchedule(leader_cache.handle()),
     };
-
-    // Setup health manager
-    let (downstream_slot_sender, downstream_slot_receiver) =
-        bounded::<u64>(LoadBalancer::SLOT_QUEUE_CAPACITY);
-    let health_manager = HealthManager::new(
-        slot_receiver,
-        downstream_slot_sender,
-        Duration::from_secs(args.missing_slot_unhealthy_secs),
-        exit.clone(),
-    );
 
     // Create packet forwarding channel - broadcast so all validators get all packets
     let (p3_packet_tx, p3_packet_rx) = bounded(LoadBalancer::SLOT_QUEUE_CAPACITY);
@@ -177,13 +166,8 @@ async fn main() {
     });
 
     // Create BlockEngine service
-    let (block_engine_svc, block_engine_handle) = BlockEngineImpl::new(
-        downstream_slot_receiver,
-        p3_packet_rx,
-        health_manager.handle(),
-        keypair.pubkey(),
-        exit.clone(),
-    );
+    let (block_engine_svc, block_engine_handle) =
+        BlockEngineImpl::new(p3_packet_rx, keypair.pubkey(), exit.clone());
 
     let auth_svc = AuthServiceImpl::new(
         ValidatorAutherImpl {
@@ -196,7 +180,6 @@ async fn main() {
         Duration::from_secs(args.challenge_ttl_secs),
         Duration::from_secs(args.challenge_expiration_sleep_interval_secs),
         &exit,
-        health_manager.handle(),
     );
 
     let server_addr = args.grpc_bind_ip;
@@ -222,11 +205,6 @@ async fn main() {
     // Wait for leader schedule cache thread to finish
     if let Err(e) = leader_cache.join() {
         error!("Leader schedule cache thread panicked: {:?}", e);
-    }
-
-    // Wait for health manager thread to finish
-    if let Err(e) = health_manager.join() {
-        error!("Health manager thread panicked: {:?}", e);
     }
 }
 

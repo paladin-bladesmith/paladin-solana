@@ -1,21 +1,21 @@
-use std::{
-    sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc,
+use {
+    crossbeam_channel::RecvTimeoutError,
+    dashmap::DashMap,
+    log::{error, info},
+    solana_client::{pubsub_client::PubsubClient, rpc_client::RpcClient},
+    solana_metrics::{datapoint_error, datapoint_info},
+    solana_sdk::{
+        clock::Slot,
+        commitment_config::{CommitmentConfig, CommitmentLevel},
     },
-    thread,
-    thread::{sleep, Builder, JoinHandle},
-    time::{Duration, Instant},
-};
-
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
-use dashmap::DashMap;
-use log::{error, info};
-use solana_client::{pubsub_client::PubsubClient, rpc_client::RpcClient};
-use solana_metrics::{datapoint_error, datapoint_info};
-use solana_sdk::{
-    clock::Slot,
-    commitment_config::{CommitmentConfig, CommitmentLevel},
+    std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        thread::{self, sleep, Builder, JoinHandle},
+        time::{Duration, Instant},
+    },
 };
 
 pub struct LoadBalancer {
@@ -33,7 +33,7 @@ impl LoadBalancer {
     pub fn new(
         servers: &[(String, String)], /* http rpc url, ws url */
         exit: &Arc<AtomicBool>,
-    ) -> (LoadBalancer, Receiver<Slot>) {
+    ) -> LoadBalancer {
         let server_to_slot = Arc::new(DashMap::from_iter(
             servers.iter().map(|(_, ws)| (ws.clone(), 0)),
         ));
@@ -55,27 +55,21 @@ impl LoadBalancer {
         }));
 
         // sender tracked as health_manager-channel_stats.slot_sender_len
-        let (slot_sender, slot_receiver) = crossbeam_channel::bounded(Self::SLOT_QUEUE_CAPACITY);
         let subscription_threads =
-            Self::start_subscription_threads(servers, server_to_slot.clone(), slot_sender, exit);
-        (
-            LoadBalancer {
-                server_to_slot,
-                server_to_rpc_client,
-                subscription_threads,
-            },
-            slot_receiver,
-        )
+            Self::start_subscription_threads(servers, server_to_slot.clone(), exit);
+
+        LoadBalancer {
+            server_to_slot,
+            server_to_rpc_client,
+            subscription_threads,
+        }
     }
 
     fn start_subscription_threads(
         servers: &[(String, String)],
         server_to_slot: Arc<DashMap<String, Slot>>,
-        slot_sender: Sender<Slot>,
         exit: &Arc<AtomicBool>,
     ) -> Vec<JoinHandle<()>> {
-        let highest_slot = Arc::new(AtomicU64::default());
-
         servers
             .iter()
             .map(|(_, websocket_url)| {
@@ -87,8 +81,6 @@ impl LoadBalancer {
                 let exit = exit.clone();
                 let websocket_url = websocket_url.clone();
                 let server_to_slot = server_to_slot.clone();
-                let slot_sender = slot_sender.clone();
-                let highest_slot = highest_slot.clone();
 
                 Builder::new()
                     .name(format!("load_balancer_subscription_thread-{ws_url_no_token}"))
@@ -112,17 +104,6 @@ impl LoadBalancer {
                                                         "url" => ws_url_no_token,
                                                         ("slot", slot.slot, i64)
                                                 );
-
-                                                {
-                                                    let old_slot = highest_slot.fetch_max(slot.slot, Ordering::Relaxed);
-                                                    if slot.slot > old_slot {
-                                                        if let Err(e) = slot_sender.send(slot.slot)
-                                                        {
-                                                            error!("error sending slot: {e}");
-                                                            break;
-                                                        }
-                                                    }
-                                                }
                                             }
                                             Err(RecvTimeoutError::Timeout) => {
                                                 // RPC servers occasionally stop sending slot updates and never recover.
