@@ -4985,6 +4985,7 @@ dependencies = [
  "crossbeam-channel",
  "log",
  "paladin-lockup-program",
+ "solana-client",
  "solana-metrics",
  "solana-perf",
  "solana-poh",

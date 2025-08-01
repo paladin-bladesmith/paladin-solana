@@ -48,7 +48,7 @@ spl-discriminator = { workspace = true }
 thiserror = { workspace = true }
 tokio-stream = { workspace = true }
 tonic = { workspace = true }
-p3-quic = { workspace = true }
+p3-quic = { workspace = true, features = ["solana-client"] }
 
 [build-dependencies]
 vergen-git2 = { version = "1.0.7", features = ["rustc", "cargo"] }

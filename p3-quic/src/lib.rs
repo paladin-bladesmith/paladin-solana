@@ -6,7 +6,10 @@ use {
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
     solana_sdk::{
-        account::ReadableAccount, pubkey::Pubkey, saturating_add_assign, signature::Keypair,
+        account::{AccountSharedData, ReadableAccount},
+        pubkey::Pubkey,
+        saturating_add_assign,
+        signature::Keypair,
     },
     solana_streamer::{
         nonblocking::quic::{ConnectionPeerType, ConnectionTable},
@@ -30,14 +33,14 @@ const MAX_STAKED_CONNECTIONS: usize = 256;
 const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(900); // 15 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
 
-pub struct P3Quic {
+pub struct P3Quic<T = Arc<RwLock<PohRecorder>>> {
     exit: Arc<AtomicBool>,
     quic_server_regular: std::thread::JoinHandle<()>,
     quic_server_mev: std::thread::JoinHandle<()>,
 
     staked_nodes: Arc<RwLock<StakedNodes>>,
     staked_nodes_last_update: Instant,
-    poh_recorder: Arc<RwLock<PohRecorder>>,
+    accounts: T,
     staked_connection_table: Arc<Mutex<ConnectionTable>>,
     reg_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
@@ -47,11 +50,14 @@ pub struct P3Quic {
     metrics_creation: Instant,
 }
 
-impl P3Quic {
+impl<T> P3Quic<T>
+where
+    T: AccountFetch + Send + 'static,
+{
     pub fn spawn(
         exit: Arc<AtomicBool>,
         packet_tx: crossbeam_channel::Sender<PacketBatch>,
-        poh_recorder: Arc<RwLock<PohRecorder>>,
+        poh_recorder: T,
         keypair: &Keypair,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
     ) -> (std::thread::JoinHandle<()>, [Arc<EndpointKeyUpdater>; 2]) {
@@ -130,7 +136,7 @@ impl P3Quic {
 
             staked_nodes,
             staked_nodes_last_update: Instant::now(),
-            poh_recorder,
+            accounts: poh_recorder,
             staked_connection_table,
             reg_packet_rx,
             mev_packet_rx,
@@ -236,11 +242,8 @@ impl P3Quic {
     }
 
     fn update_staked_nodes(&mut self) {
-        let bank = self.poh_recorder.read().unwrap().get_poh_recorder_bank();
-        let bank = bank.bank();
-
         // Load the lockup pool account.
-        let Some(pool) = bank.get_account(&POOL_KEY) else {
+        let Some(pool) = self.accounts.get_account(&POOL_KEY) else {
             warn!("Lockup pool does not exist; pool={POOL_KEY}");
 
             return;
@@ -313,6 +316,32 @@ impl P3Quic {
         }
 
         bytemuck::try_from_bytes::<LockupPool>(data).ok()
+    }
+}
+
+pub trait AccountFetch {
+    fn get_account(&self, key: &Pubkey) -> Option<AccountSharedData>;
+}
+
+impl AccountFetch for Arc<RwLock<PohRecorder>> {
+    fn get_account(&self, key: &Pubkey) -> Option<AccountSharedData> {
+        self.read()
+            .unwrap()
+            .get_poh_recorder_bank()
+            .bank()
+            .get_account(key)
+    }
+}
+
+#[cfg(feature = "solana-client")]
+impl AccountFetch for Arc<solana_client::rpc_client::RpcClient> {
+    fn get_account(&self, key: &Pubkey) -> Option<AccountSharedData> {
+        self.get_account_with_commitment(
+            key,
+            solana_sdk::commitment_config::CommitmentConfig::confirmed(),
+        )
+        .ok()
+        .and_then(|rep| rep.value.map(Into::into))
     }
 }
 
