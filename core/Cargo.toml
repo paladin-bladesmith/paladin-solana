@@ -70,6 +70,7 @@ log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
 num_enum = { workspace = true }
+p3-quic = { workspace = true }
 paladin-lockup-program = { workspace = true }
 prio-graph = { workspace = true }
 prost = { workspace = true }

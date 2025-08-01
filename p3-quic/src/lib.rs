@@ -1,10 +1,13 @@
-use ::{
-    crossbeam_channel::Sender,
+use {
+    crossbeam_channel::{RecvError, TrySendError},
+    log::{debug, info, trace, warn},
     paladin_lockup_program::state::LockupPool,
-    solana_client::rpc_client::RpcClient,
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
-    solana_sdk::{pubkey::Pubkey, saturating_add_assign, signature::Keypair},
+    solana_poh::poh_recorder::PohRecorder,
+    solana_sdk::{
+        account::ReadableAccount, pubkey::Pubkey, saturating_add_assign, signature::Keypair,
+    },
     solana_streamer::{
         nonblocking::quic::{ConnectionPeerType, ConnectionTable},
         quic::{EndpointKeyUpdater, QuicServerParams, QuicVariant, SpawnServerResult},
@@ -20,7 +23,6 @@ use ::{
         },
         time::{Duration, Instant},
     },
-    tracing::{debug, info, trace, warn},
 };
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
@@ -28,28 +30,28 @@ const MAX_STAKED_CONNECTIONS: usize = 256;
 const STAKED_NODES_UPDATE_INTERVAL: Duration = Duration::from_secs(900); // 15 minutes
 const POOL_KEY: Pubkey = solana_sdk::pubkey!("EJi4Rj2u1VXiLpKtaqeQh3w4XxAGLFqnAG1jCorSvVmg");
 
-pub(crate) struct P3Quic {
+pub struct P3Quic {
     exit: Arc<AtomicBool>,
     quic_server_regular: std::thread::JoinHandle<()>,
     quic_server_mev: std::thread::JoinHandle<()>,
 
     staked_nodes: Arc<RwLock<StakedNodes>>,
     staked_nodes_last_update: Instant,
-    rpc_client: Arc<RpcClient>,
+    poh_recorder: Arc<RwLock<PohRecorder>>,
     staked_connection_table: Arc<Mutex<ConnectionTable>>,
     reg_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
-    packet_tx: Sender<PacketBatch>,
+    packet_tx: crossbeam_channel::Sender<PacketBatch>,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
 }
 
 impl P3Quic {
-    pub(crate) fn spawn(
+    pub fn spawn(
         exit: Arc<AtomicBool>,
-        packet_tx: Sender<PacketBatch>,
-        rpc_client: Arc<RpcClient>,
+        packet_tx: crossbeam_channel::Sender<PacketBatch>,
+        poh_recorder: Arc<RwLock<PohRecorder>>,
         keypair: &Keypair,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
     ) -> (std::thread::JoinHandle<()>, [Arc<EndpointKeyUpdater>; 2]) {
@@ -128,7 +130,7 @@ impl P3Quic {
 
             staked_nodes,
             staked_nodes_last_update: Instant::now(),
-            rpc_client,
+            poh_recorder,
             staked_connection_table,
             reg_packet_rx,
             mev_packet_rx,
@@ -162,11 +164,11 @@ impl P3Quic {
             crossbeam_channel::select_biased! {
                 recv(self.mev_packet_rx) -> res => match res {
                     Ok(packets) => self.on_mev_packets(packets),
-                    Err(_) => break,
+                    Err(RecvError) => break,
                 },
                 recv(self.reg_packet_rx) -> res => match res {
                     Ok(packets) => self.on_regular_packets(packets),
-                    Err(_) => break,
+                    Err(RecvError) => break,
                 }
             }
 
@@ -211,7 +213,7 @@ impl P3Quic {
         }
 
         // Forward for verification & inclusion.
-        if let Err(_) = self.packet_tx.try_send(packets) {
+        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
             saturating_add_assign!(self.metrics.p3_dropped, len)
         }
     }
@@ -228,23 +230,24 @@ impl P3Quic {
         }
 
         // Forward for verification & inclusion.
-        if let Err(_) = self.packet_tx.try_send(packets) {
+        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
             saturating_add_assign!(self.metrics.mev_dropped, len)
         }
     }
 
     fn update_staked_nodes(&mut self) {
-        let client = self.rpc_client.clone();
+        let bank = self.poh_recorder.read().unwrap().get_poh_recorder_bank();
+        let bank = bank.bank();
 
         // Load the lockup pool account.
-        let Ok(pool) = client.get_account_data(&POOL_KEY) else {
+        let Some(pool) = bank.get_account(&POOL_KEY) else {
             warn!("Lockup pool does not exist; pool={POOL_KEY}");
 
             return;
         };
 
         // Try to deserialize the pool.
-        let Some(pool) = Self::try_deserialize_lockup_pool(&pool) else {
+        let Some(pool) = Self::try_deserialize_lockup_pool(pool.data()) else {
             warn!("Failed to deserialize lockup pool; pool={POOL_KEY}");
 
             return;

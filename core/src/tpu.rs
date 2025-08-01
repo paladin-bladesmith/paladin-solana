@@ -18,7 +18,6 @@ use {
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
-        p3_quic::P3Quic,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -33,6 +32,7 @@ use {
     },
     bytes::Bytes,
     crossbeam_channel::{unbounded, Receiver},
+    p3_quic::P3Quic,
     solana_client::connection_cache::ConnectionCache,
     solana_gossip::cluster_info::ClusterInfo,
     solana_ledger::{

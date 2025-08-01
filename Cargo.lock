@@ -4954,6 +4954,7 @@ dependencies = [
  "keyed_priority_queue",
  "log",
  "openssl",
+ "p3-quic",
  "paladin-lockup-program",
  "prost",
  "prost-types",
@@ -4974,6 +4975,22 @@ dependencies = [
  "toolbox",
  "tracing",
  "vergen-git2",
+]
+
+[[package]]
+name = "p3-quic"
+version = "2.2.19"
+dependencies = [
+ "bytemuck",
+ "crossbeam-channel",
+ "log",
+ "paladin-lockup-program",
+ "solana-metrics",
+ "solana-perf",
+ "solana-poh",
+ "solana-sdk",
+ "solana-streamer",
+ "spl-discriminator",
 ]
 
 [[package]]
@@ -7986,6 +8003,7 @@ dependencies = [
  "lru",
  "min-max-heap",
  "num_enum",
+ "p3-quic",
  "paladin-lockup-program",
  "prio-graph",
  "prost",

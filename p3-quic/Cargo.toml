@@ -1,0 +1,21 @@
+[package]
+name = "p3-quic"
+version = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+edition = { workspace = true }
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+bytemuck = { workspace = true }
+crossbeam-channel = { workspace = true }
+log = { workspace = true }
+paladin-lockup-program = { workspace = true }
+solana-metrics = { workspace = true }
+solana-poh = { workspace = true }
+solana-perf = { workspace = true }
+solana-sdk = { workspace = true }
+solana-streamer = { workspace = true }
+spl-discriminator = { workspace = true }
