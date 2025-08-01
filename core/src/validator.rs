@@ -304,6 +304,7 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub secondary_block_engine_urls: Vec<String>,
     pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
@@ -388,6 +389,7 @@ impl Default for ValidatorConfig {
             retransmit_xdp: None,
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            secondary_block_engine_urls: vec![],
             shred_receiver_address: Arc::new(RwLock::new(None)),
             shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
             tip_manager_config: TipManagerConfig::default(),
@@ -1692,6 +1694,7 @@ impl Validator {
             config.generator_config.clone(),
             key_notifiers.clone(),
             config.block_engine_config.clone(),
+            config.secondary_block_engine_urls.clone(),
             config.relayer_config.clone(),
             leader_schedule_cache.clone(),
             config.tip_manager_config.clone(),

@@ -24,7 +24,6 @@ use {
         forwarding_stage::{
             spawn_forwarding_stage, ForwardAddressGetter, SpawnForwardingStageResult,
         },
-        p3_quic::P3Quic,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -39,6 +38,7 @@ use {
     },
     bytes::Bytes,
     crossbeam_channel::{bounded, unbounded, Receiver},
+    p3_quic::P3Quic,
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -170,6 +170,7 @@ impl Tpu {
         _generator_config: Option<GeneratorConfig>, /* vestigial code for replay invalidator */
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+        secondary_block_engine_urls: Vec<String>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,
@@ -323,6 +324,7 @@ impl Tpu {
         let (bundle_sender, bundle_receiver) = unbounded();
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
+            secondary_block_engine_urls,
             bundle_sender,
             cluster_info.clone(),
             sigverify_stage_sender.clone(),
@@ -478,9 +480,9 @@ impl Tpu {
         key_notifiers.add(KeyUpdaterType::TpuForwards, forwards_key_updater);
         key_notifiers.add(KeyUpdaterType::TpuVote, vote_streamer_key_updater);
         key_notifiers.add(KeyUpdaterType::Forward, client_updater);
-        for (key, updater) in p3_quic_key_updaters {
-            key_notifiers.add(key, updater);
-        }
+        let [p3_regular, p3_mev] = p3_quic_key_updaters;
+        key_notifiers.add(KeyUpdaterType::P3Regular, p3_regular);
+        key_notifiers.add(KeyUpdaterType::P3Mev, p3_mev);
 
         Self {
             fetch_stage,
