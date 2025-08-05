@@ -5190,7 +5190,7 @@ checksum = "c1b04fb49957986fdce4d6ee7a65027d55d4b6d2265e5848bbb507b58ccfdb6f"
 
 [[package]]
 name = "p3"
-version = "2.3.6"
+version = "0.1.0"
 dependencies = [
  "bytemuck",
  "bytes",
@@ -5221,8 +5221,8 @@ dependencies = [
  "solana-perf",
  "solana-sdk",
  "solana-streamer",
- "spl-discriminator",
- "thiserror 2.0.12",
+ "spl-discriminator 0.2.3",
+ "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
  "tokio-util 0.7.15",
@@ -5249,7 +5249,7 @@ dependencies = [
  "solana-pubkey",
  "solana-sdk",
  "solana-streamer",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
 ]
 
 [[package]]
@@ -5265,7 +5265,7 @@ dependencies = [
  "solana-program-test",
  "solana-sdk",
  "spl-associated-token-account",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-token-2022",
  "test-case",
  "thiserror 2.0.12",
@@ -8538,7 +8538,7 @@ dependencies = [
  "solana-vote",
  "solana-vote-program",
  "solana-wen-restart",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-memo",
  "static_assertions",
  "strum",
@@ -12693,6 +12693,17 @@ dependencies = [
 
 [[package]]
 name = "spl-discriminator"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6ee7cc93db126e110a546383dcffc116f22129fae457c5531cf5032dd50840e"
+dependencies = [
+ "bytemuck",
+ "solana-program",
+ "spl-discriminator-derive",
+]
+
+[[package]]
+name = "spl-discriminator"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7398da23554a31660f17718164e31d31900956054f54f52d5ec1be51cb4f4b3"
@@ -12851,7 +12862,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-pod",
  "spl-program-error",
  "spl-type-length-value",
@@ -12987,7 +12998,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-pod",
  "thiserror 2.0.12",
 ]
@@ -13007,7 +13018,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-pod",
  "spl-type-length-value",
  "thiserror 2.0.12",
@@ -13030,7 +13041,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-pod",
  "spl-program-error",
  "spl-tlv-account-resolution",
@@ -13051,7 +13062,7 @@ dependencies = [
  "solana-decode-error",
  "solana-msg",
  "solana-program-error",
- "spl-discriminator",
+ "spl-discriminator 0.4.1",
  "spl-pod",
  "thiserror 2.0.12",
 ]
