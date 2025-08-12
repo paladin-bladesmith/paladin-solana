@@ -13,3 +13,6 @@
 [submodule "paladin-programs/funnel"]
 	path = paladin-programs/funnel
 	url = https://github.com/paladin-bladesmith/funnel.git
+[submodule "p3-standalone"]
+	path = p3-standalone
+	url = https://github.com/paladin-bladesmith/p3-standalone.git
