@@ -396,8 +396,6 @@ impl BundleStorage {
             .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
             .sum();
 
-        println!("reward_from_tips: {}", reward_from_tips);
-
         let total_reward = reward_from_tx.saturating_add(reward_from_tips);
         const MULTIPLIER: u64 = 1_000_000;
         let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
