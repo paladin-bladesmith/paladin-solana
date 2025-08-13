@@ -121,7 +121,7 @@ impl BundleStorage {
 
         let to_insert = deserialized_bundles.into_iter().take(num_bundles_inserted);
         if push_back {
-            deque.extend(to_insert)
+            deque.extend(to_insert);
         } else {
             to_insert.for_each(|b| deque.push_front(b));
         }
@@ -200,8 +200,8 @@ impl BundleStorage {
         sanitized_bundles
             .into_iter()
             .zip(bundle_execution_results)
-            .for_each(
-                |((deserialized_bundle, sanitized_bundle), result)| match result {
+            .for_each(|((deserialized_bundle, sanitized_bundle), result)| {
+                match result {
                     Ok(_) => {
                         debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
                         // yippee
@@ -258,8 +258,8 @@ impl BundleStorage {
                     }
                     // NB: Tip cutoff is static & front-runs will never succeed.
                     Err(BundleExecutionError::FrontRun) => {}
-                },
-            );
+                }
+            });
 
         // rebuffered bundles are pushed onto deque in reverse order so the first bundle is at the front
         for bundle in rebuffered_bundles.into_iter().rev() {
@@ -378,6 +378,8 @@ impl BundleStorage {
             .map(|tx| CostModel::calculate_cost(tx, &bank.feature_set).sum())
             .sum();
 
+        println!("total_cu_cost: {}", total_cu_cost);
+
         let reward_from_tx: u64 = sanitized_bundle
             .transactions
             .iter()
@@ -390,16 +392,21 @@ impl BundleStorage {
             })
             .sum();
 
+        println!("reward_from_tx: {}", reward_from_tx);
+
         let reward_from_tips: u64 = immutable_bundle
             .packets()
             .iter()
             .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
             .sum();
 
+        println!("reward_from_tips: {}", reward_from_tips);
+
         let total_reward = reward_from_tx.saturating_add(reward_from_tips);
         const MULTIPLIER: u64 = 1_000_000;
         let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
         *priority_counter = priority_counter.wrapping_add(1);
+        println!("priority_score: {}", priority);
 
         (std::cmp::Reverse(priority), *priority_counter)
     }
@@ -495,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bundle_priority_calculation() {
+    fn test_bundle_priority_calculation_with_cu_limits() {
         let GenesisConfigInfo {
             mut genesis_config, ..
         } = create_genesis_config(1_000_000_000);
@@ -568,29 +575,23 @@ mod tests {
                 .unwrap()
             };
 
-        // Bundle 1: 1 transaction with low priority fee
-        let bundle1_txs = vec![create_tx_with_priority_fee(
-            &payer1,
-            &dest1.pubkey(),
-            1_000,
-            100,
-            50_000,
-        )];
+        // Bundle 1: 1 instruction with medium prio fee and one zero prio fee limit
+        // the prio calculation would be (10_000*10_000)/1e6 = 100 for the first
+        let bundle1_txs = vec![
+            create_tx_with_priority_fee(&payer1, &dest1.pubkey(), 1_000, 10_000, 10_000),
+            create_tx_with_priority_fee(&payer1, &dest2.pubkey(), 1_000, 10_000, 0),
+        ];
 
-        // Bundle 2: 1 transaction with high priority fee
-        let bundle2_txs = vec![create_tx_with_priority_fee(
-            &payer2,
-            &dest2.pubkey(),
-            2_000,
-            5000,
-            40_000,
-        )];
+        // Bundle 2: 2 transaction with low prio fee, one with cu limit and the other without one
+        let bundle2_txs = vec![
+            create_tx_with_priority_fee(&payer2, &dest2.pubkey(), 1_000, 5_000, 10_000),
+            create_tx_with_priority_fee(&payer2, &dest3.pubkey(), 1_000, 5_000, 0),
+        ];
 
-        // Bundle 3: 3 transactions with medium priority fees + one tip transaction
+        // Bundle 3: 1 transaction with high prio fee, and 1 without prio fee or limit
         let bundle3_txs = vec![
-            create_tx_with_priority_fee(&payer1, &dest3.pubkey(), 500, 1000, 30_000),
-            solana_system_transaction::transfer(&payer2, &tip_account.pubkey(), 50_000, blockhash),
-            create_tx_with_priority_fee(&payer3, &dest4.pubkey(), 1_500, 1200, 35_000),
+            create_tx_with_priority_fee(&payer1, &dest3.pubkey(), 1_000, 100_000, 20_000),
+            create_tx_with_priority_fee(&payer3, &dest4.pubkey(), 1_000, 0, 0),
         ];
 
         // Create immutable bundles
@@ -647,7 +648,416 @@ mod tests {
         bundles_with_priority.sort_by_key(|(priority_key, _)| *priority_key);
 
         assert_eq!(bundles_with_priority[0].1, "Bundle 3");
-        assert_eq!(bundles_with_priority[1].1, "Bundle 2");
-        assert_eq!(bundles_with_priority[2].1, "Bundle 1");
+        assert_eq!(bundles_with_priority[1].1, "Bundle 1");
+        assert_eq!(bundles_with_priority[2].1, "Bundle 2");
+    }
+
+    #[test]
+    fn test_nonzero_cu_price_beats_zero_price_with_limit() {
+        // Setup bank with known fees and all features enabled
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(1_000_000_000);
+        genesis_config.fee_rate_governor.lamports_per_signature = 5000;
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.feature_set = Arc::new(FeatureSet::all_enabled());
+        let (bank, _bf) = bank.wrap_with_bank_forks_for_tests();
+        assert!(bank
+            .feature_set
+            .is_active(&agave_feature_set::reward_full_priority_fee::id()));
+
+        let blockhash = bank.last_blockhash();
+        let payer_a = Keypair::new();
+        let payer_b = Keypair::new();
+        let dest_x = Keypair::new();
+        let dest_y = Keypair::new();
+
+        let tip_accounts: HashSet<Pubkey> = HashSet::new();
+
+        let make_tx = |payer: &Keypair, dest: &Pubkey, lamports: u64, price: u64, limit: u32| {
+            let ixs = vec![
+                ComputeBudgetInstruction::set_compute_unit_limit(limit),
+                ComputeBudgetInstruction::set_compute_unit_price(price),
+                solana_system_interface::instruction::transfer(&payer.pubkey(), dest, lamports),
+            ];
+            let msg = Message::new(&ixs, Some(&payer.pubkey()));
+            Transaction::new(&[payer], msg, blockhash)
+        };
+
+        // Use the same compute unit limit for both transactions to isolate price effect on reward density.
+        let common_limit: u32 = 10_000;
+        // Bundle A: zero price (explicit price instruction with 0)
+        let tx_zero = make_tx(&payer_a, &dest_x.pubkey(), 1_000, 0, common_limit);
+        // Bundle B: non-zero price with same limit
+        let tx_priced = make_tx(&payer_b, &dest_y.pubkey(), 1_000, 10_000, common_limit);
+
+        let bundle_from = |txs: &[Transaction]| -> ImmutableDeserializedBundle {
+            ImmutableDeserializedBundle::new(
+                &mut PacketBundle {
+                    batch: PacketBatch::Pinned(PinnedPacketBatch::new(
+                        txs.iter()
+                            .map(|t| Packet::from_data(None, t).unwrap())
+                            .collect(),
+                    )),
+                    bundle_id: format!("test_bundle_{}", rand::random::<u32>()),
+                },
+                None,
+                &Ok,
+            )
+            .unwrap()
+        };
+
+        let imm_a = bundle_from(&[tx_zero]);
+        let imm_b = bundle_from(&[tx_priced]);
+
+        let mut errs = TransactionErrorMetrics::default();
+        let san_a = imm_a
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+        let san_b = imm_b
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+
+        let mut ctr = 0;
+        let key_a = BundleStorage::calculate_bundle_priority(
+            &imm_a,
+            &san_a,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+        let key_b = BundleStorage::calculate_bundle_priority(
+            &imm_b,
+            &san_b,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+
+        // Non-zero price should outrank zero price
+        assert!(
+            key_b < key_a,
+            "priced bundle should sort before zero-price bundle: {:?} vs {:?}",
+            key_b,
+            key_a
+        );
+    }
+
+    #[test]
+    fn test_zero_price_two_signers_can_outrank_low_price() {
+        // Setup bank
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(1_000_000_000);
+        genesis_config.fee_rate_governor.lamports_per_signature = 5000;
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.feature_set = Arc::new(FeatureSet::all_enabled());
+        let (bank, _bf) = bank.wrap_with_bank_forks_for_tests();
+        assert!(bank
+            .feature_set
+            .is_active(&agave_feature_set::reward_full_priority_fee::id()));
+
+        let blockhash = bank.last_blockhash();
+        let a1 = Keypair::new();
+        let a2 = Keypair::new();
+        let b1 = Keypair::new();
+        let to1 = Keypair::new();
+        let to2 = Keypair::new();
+
+        let tip_accounts: HashSet<Pubkey> = HashSet::new();
+
+        // Transaction ZP2: two transfers requiring two different signers in the same transaction (2 signatures), zero price
+        let ixs_zp2 = vec![
+            solana_system_interface::instruction::transfer(&a1.pubkey(), &to1.pubkey(), 1_000),
+            solana_system_interface::instruction::transfer(&a2.pubkey(), &to2.pubkey(), 1_000),
+        ];
+        let msg_zp2 = Message::new(&ixs_zp2, Some(&a1.pubkey()));
+        let tx_zp2 = Transaction::new(&[&a1, &a2], msg_zp2, blockhash);
+
+        // Transaction LP1: single signer with a tiny priority fee (adds CB overhead)
+        let ixs_lp1 = vec![
+            ComputeBudgetInstruction::set_compute_unit_limit(10_000),
+            ComputeBudgetInstruction::set_compute_unit_price(100), // 1 lamport with 10k limit
+            solana_system_interface::instruction::transfer(&b1.pubkey(), &to1.pubkey(), 1_000),
+        ];
+        let msg_lp1 = Message::new(&ixs_lp1, Some(&b1.pubkey()));
+        let tx_lp1 = Transaction::new(&[&b1], msg_lp1, blockhash);
+
+        let bundle_from = |txs: &[Transaction]| -> ImmutableDeserializedBundle {
+            ImmutableDeserializedBundle::new(
+                &mut PacketBundle {
+                    batch: PacketBatch::Pinned(PinnedPacketBatch::new(
+                        txs.iter()
+                            .map(|t| Packet::from_data(None, t).unwrap())
+                            .collect(),
+                    )),
+                    bundle_id: format!("test_bundle_{}", rand::random::<u32>()),
+                },
+                None,
+                &Ok,
+            )
+            .unwrap()
+        };
+
+        let imm_zp2 = bundle_from(&[tx_zp2]);
+        let imm_lp1 = bundle_from(&[tx_lp1]);
+
+        let mut errs = TransactionErrorMetrics::default();
+        let san_zp2 = imm_zp2
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+        let san_lp1 = imm_lp1
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+
+        let mut ctr = 0;
+        let key_zp2 = BundleStorage::calculate_bundle_priority(
+            &imm_zp2,
+            &san_zp2,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+        let key_lp1 = BundleStorage::calculate_bundle_priority(
+            &imm_lp1,
+            &san_lp1,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+
+        // Expect the zero-price 2-signer tx to outrank the low-priority-fee single-signer tx
+        assert!(
+            key_zp2 < key_lp1,
+            "2-signer zero-price should sort before 1-signer low-price: {:?} vs {:?}",
+            key_zp2,
+            key_lp1
+        );
+    }
+
+    #[test]
+    fn test_bundle_priority_calculation_with_tips() {
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(1_000_000_000);
+        genesis_config.fee_rate_governor.lamports_per_signature = 5000;
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.feature_set = Arc::new(FeatureSet::all_enabled());
+        let (bank, _bank_forks) = bank.wrap_with_bank_forks_for_tests();
+        assert!(bank
+            .feature_set
+            .is_active(&agave_feature_set::reward_full_priority_fee::id()));
+
+        let blockhash = bank.last_blockhash();
+
+        let payer1 = Keypair::new();
+        let payer2 = Keypair::new();
+        let dest1 = Keypair::new();
+        let dest2 = Keypair::new();
+        let tip_account = Keypair::new();
+
+        let tip_accounts = [tip_account.pubkey()]
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        let create_tx_with_priority_fee = |payer: &Keypair,
+                                           dest: &Pubkey,
+                                           transfer_amount: u64,
+                                           priority_fee_per_cu: u64,
+                                           compute_units: u32|
+         -> Transaction {
+            let instructions = vec![
+                ComputeBudgetInstruction::set_compute_unit_limit(compute_units),
+                ComputeBudgetInstruction::set_compute_unit_price(priority_fee_per_cu),
+                solana_system_interface::instruction::transfer(
+                    &payer.pubkey(),
+                    dest,
+                    transfer_amount,
+                ),
+            ];
+            let message = Message::new(&instructions, Some(&payer.pubkey()));
+            Transaction::new(&[payer], message, blockhash)
+        };
+
+        // Base tx (no tip)
+        let tx_base = create_tx_with_priority_fee(&payer1, &dest1.pubkey(), 1_000, 0, 10_000);
+        // Clone-like second base with different dest to avoid duplicate, will be part of tip bundle
+        let tx_base_for_tip_bundle =
+            create_tx_with_priority_fee(&payer1, &dest2.pubkey(), 1_000, 0, 10_000);
+        // Tip tx: separate transaction sending lamports to tip account (no priority fee)
+        let tip_tx =
+            solana_system_transaction::transfer(&payer2, &tip_account.pubkey(), 50_000, blockhash);
+
+        // Bundle without tip (1 tx)
+        let imm_no_tip = ImmutableDeserializedBundle::new(
+            &mut PacketBundle {
+                batch: PacketBatch::Pinned(PinnedPacketBatch::new(vec![Packet::from_data(
+                    None, &tx_base,
+                )
+                .unwrap()])),
+                bundle_id: "bundle_no_tip".to_string(),
+            },
+            None,
+            &Ok,
+        )
+        .unwrap();
+
+        // Bundle with tip (2 txs)
+        let imm_with_tip = ImmutableDeserializedBundle::new(
+            &mut PacketBundle {
+                batch: PacketBatch::Pinned(PinnedPacketBatch::new(vec![
+                    Packet::from_data(None, &tx_base_for_tip_bundle).unwrap(),
+                    Packet::from_data(None, &tip_tx).unwrap(),
+                ])),
+                bundle_id: "bundle_with_tip".to_string(),
+            },
+            None,
+            &Ok,
+        )
+        .unwrap();
+
+        let mut errs = TransactionErrorMetrics::default();
+        let san_no_tip = imm_no_tip
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+        let san_with_tip = imm_with_tip
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+
+        let mut ctr = 0;
+        let key_no_tip = BundleStorage::calculate_bundle_priority(
+            &imm_no_tip,
+            &san_no_tip,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+        let key_with_tip = BundleStorage::calculate_bundle_priority(
+            &imm_with_tip,
+            &san_with_tip,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+
+        assert!(
+            key_with_tip < key_no_tip,
+            "bundle with tip should outrank bundle without tip: {:?} vs {:?}",
+            key_with_tip,
+            key_no_tip
+        );
+    }
+
+    #[test]
+    fn test_tip_bundle_outranks_low_priority_fee_bundle() {
+        let GenesisConfigInfo {
+            mut genesis_config, ..
+        } = create_genesis_config(1_000_000_000);
+        genesis_config.fee_rate_governor.lamports_per_signature = 5000;
+        let mut bank = Bank::new_for_tests(&genesis_config);
+        bank.feature_set = Arc::new(FeatureSet::all_enabled());
+        let (bank, _bf) = bank.wrap_with_bank_forks_for_tests();
+        assert!(bank
+            .feature_set
+            .is_active(&agave_feature_set::reward_full_priority_fee::id()));
+
+        let blockhash = bank.last_blockhash();
+        let payer = Keypair::new();
+        let tip_funder = Keypair::new();
+        let dest_plain = Keypair::new();
+        let dest_tip = Keypair::new();
+        let tip_account = Keypair::new();
+
+        let tip_accounts = [tip_account.pubkey()]
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+
+        // Low priority fee bundle: single tx with tiny priority fee
+        let tx_low_prio = {
+            let ixs = vec![
+                ComputeBudgetInstruction::set_compute_unit_limit(10_000),
+                ComputeBudgetInstruction::set_compute_unit_price(100), // ~1 lamport fee
+                solana_system_interface::instruction::transfer(
+                    &payer.pubkey(),
+                    &dest_plain.pubkey(),
+                    1_000,
+                ),
+            ];
+            let msg = Message::new(&ixs, Some(&payer.pubkey()));
+            Transaction::new(&[&payer], msg, blockhash)
+        };
+
+        // Tip bundle: one base transfer + separate tip transaction (no priority fee instructions)
+        let tx_base_zero_price = {
+            let ixs = vec![
+                ComputeBudgetInstruction::set_compute_unit_limit(10_000),
+                ComputeBudgetInstruction::set_compute_unit_price(0),
+                solana_system_interface::instruction::transfer(
+                    &payer.pubkey(),
+                    &dest_tip.pubkey(),
+                    1_000,
+                ),
+            ];
+            let msg = Message::new(&ixs, Some(&payer.pubkey()));
+            Transaction::new(&[&payer], msg, blockhash)
+        };
+        let tx_tip = solana_system_transaction::transfer(
+            &tip_funder,
+            &tip_account.pubkey(),
+            50_000,
+            blockhash,
+        );
+
+        let bundle_from = |txs: &[Transaction], label: &str| -> ImmutableDeserializedBundle {
+            ImmutableDeserializedBundle::new(
+                &mut PacketBundle {
+                    batch: PacketBatch::Pinned(PinnedPacketBatch::new(
+                        txs.iter()
+                            .map(|t| Packet::from_data(None, t).unwrap())
+                            .collect(),
+                    )),
+                    bundle_id: label.to_string(),
+                },
+                None,
+                &Ok,
+            )
+            .unwrap()
+        };
+
+        let imm_low = bundle_from(&[tx_low_prio], "low_prio_bundle");
+        let imm_tip = bundle_from(&[tx_base_zero_price, tx_tip], "tip_bundle");
+
+        let mut errs = TransactionErrorMetrics::default();
+        let san_low = imm_low
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+        let san_tip = imm_tip
+            .build_sanitized_bundle(&bank, &HashSet::default(), &mut errs)
+            .unwrap();
+
+        let mut ctr = 0;
+        let key_low = BundleStorage::calculate_bundle_priority(
+            &imm_low,
+            &san_low,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+        let key_tip = BundleStorage::calculate_bundle_priority(
+            &imm_tip,
+            &san_tip,
+            &bank,
+            &mut ctr,
+            &tip_accounts,
+        );
+
+        assert!(
+            key_tip < key_low,
+            "tip bundle should outrank low priority fee bundle: {:?} vs {:?}",
+            key_tip,
+            key_low
+        );
     }
 }
