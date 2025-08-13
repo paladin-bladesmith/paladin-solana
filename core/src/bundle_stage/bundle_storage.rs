@@ -121,7 +121,7 @@ impl BundleStorage {
 
         let to_insert = deserialized_bundles.into_iter().take(num_bundles_inserted);
         if push_back {
-            deque.extend(to_insert);
+            deque.extend(to_insert)
         } else {
             to_insert.for_each(|b| deque.push_front(b));
         }
@@ -200,8 +200,8 @@ impl BundleStorage {
         sanitized_bundles
             .into_iter()
             .zip(bundle_execution_results)
-            .for_each(|((deserialized_bundle, sanitized_bundle), result)| {
-                match result {
+            .for_each(
+                |((deserialized_bundle, sanitized_bundle), result)| match result {
                     Ok(_) => {
                         debug!("bundle={} executed ok", sanitized_bundle.bundle_id);
                         // yippee
@@ -258,8 +258,8 @@ impl BundleStorage {
                     }
                     // NB: Tip cutoff is static & front-runs will never succeed.
                     Err(BundleExecutionError::FrontRun) => {}
-                }
-            });
+                },
+            );
 
         // rebuffered bundles are pushed onto deque in reverse order so the first bundle is at the front
         for bundle in rebuffered_bundles.into_iter().rev() {
@@ -378,8 +378,6 @@ impl BundleStorage {
             .map(|tx| CostModel::calculate_cost(tx, &bank.feature_set).sum())
             .sum();
 
-        println!("total_cu_cost: {}", total_cu_cost);
-
         let reward_from_tx: u64 = sanitized_bundle
             .transactions
             .iter()
@@ -391,8 +389,6 @@ impl BundleStorage {
                 bank.calculate_reward_for_transaction(tx, &FeeBudgetLimits::from(limits))
             })
             .sum();
-
-        println!("reward_from_tx: {}", reward_from_tx);
 
         let reward_from_tips: u64 = immutable_bundle
             .packets()
@@ -406,7 +402,6 @@ impl BundleStorage {
         const MULTIPLIER: u64 = 1_000_000;
         let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
         *priority_counter = priority_counter.wrapping_add(1);
-        println!("priority_score: {}", priority);
 
         (std::cmp::Reverse(priority), *priority_counter)
     }
