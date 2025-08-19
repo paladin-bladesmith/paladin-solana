@@ -12,18 +12,29 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError},
     std::{
         num::Saturating,
-        ops::AddAssign,
+        ops::{Add, AddAssign},
         time::{Duration, Instant},
     },
 };
 
 /// Results from deserializing packet batches.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct ReceiveBundleResults {
     /// Deserialized bundles from all received bundle packets
     pub deserialized_bundles: Vec<ImmutableDeserializedBundle>,
     /// Number of dropped bundles
     pub num_dropped_bundles: Saturating<usize>,
+}
+
+impl ReceiveBundleResults {
+    pub fn extend(&mut self, other: ReceiveBundleResults) {
+        self.deserialized_bundles.extend(other.deserialized_bundles);
+        self.num_dropped_bundles = self.num_dropped_bundles.add(other.num_dropped_bundles);
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.deserialized_bundles.is_empty() && self.num_dropped_bundles.0 == 0
+    }
 }
 
 pub struct BundlePacketDeserializer {
