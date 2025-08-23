@@ -366,15 +366,6 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             match self.receiver.recv_timeout(self.get_timeout()) {
                 Ok(packet_batch_message) => {
                     self.batch_packets(packet_batch_message);
-                    // num_received += self.handle_packet_batch_message(
-                    //     container,
-                    //     timing_metrics,
-                    //     count_metrics,
-                    //     decision,
-                    //     &root_bank,
-                    //     &working_bank,
-                    //     packet_batch_message,
-                    // );
                 }
                 Err(RecvTimeoutError::Timeout) => (),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -387,15 +378,6 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             match self.receiver.try_recv() {
                 Ok(packet_batch_message) => {
                     self.batch_packets(packet_batch_message);
-                    // num_received += self.handle_packet_batch_message(
-                    //     container,
-                    //     timing_metrics,
-                    //     count_metrics,
-                    //     decision,
-                    //     &root_bank,
-                    //     &working_bank,
-                    //     packet_batch_message,
-                    // );
                 }
                 Err(TryRecvError::Empty) => (),
                 Err(TryRecvError::Disconnected) => {
@@ -558,7 +540,7 @@ impl TransactionViewReceiveAndBuffer {
                 );
             };
 
-        for pck_batch in packet_batch_message.into_iter() {
+        for pck_batch in packet_batch_message.iter() {
             for packet_batch in pck_batch.iter() {
                 for packet in packet_batch.iter() {
                     let Some(packet_data) = packet.data(..) else {
@@ -781,7 +763,7 @@ fn calculate_max_age(
 #[cfg(test)]
 mod tests {
     use {
-        super::*, crate::banking_stage::tests::create_slow_genesis_config, crossbeam_channel::{unbounded, Receiver}, solana_hash::Hash, solana_keypair::Keypair, solana_ledger::genesis_utils::GenesisConfigInfo, solana_message::{v0, AddressLookupTableAccount, VersionedMessage}, solana_packet::{Meta, PACKET_DATA_SIZE}, solana_perf::packet::{to_packet_batches, Packet, PacketBatch, PinnedPacketBatch}, solana_pubkey::Pubkey, solana_signer::Signer, solana_system_interface::instruction as system_instruction, solana_system_transaction::transfer, solana_transaction::versioned::VersionedTransaction, test_case::test_case
+        super::*, crate::banking_stage::tests::create_slow_genesis_config, crossbeam_channel::{unbounded, Receiver}, solana_hash::Hash, solana_keypair::Keypair, solana_ledger::genesis_utils::GenesisConfigInfo, solana_message::{v0, AddressLookupTableAccount, VersionedMessage}, solana_packet::{Meta, PACKET_DATA_SIZE}, solana_perf::packet::{to_packet_batches, Packet, PacketBatch, PinnedPacketBatch}, solana_pubkey::Pubkey, solana_signer::Signer, solana_system_interface::instruction as system_instruction, solana_system_transaction::transfer, solana_transaction::versioned::VersionedTransaction, std::thread::sleep, test_case::test_case
     };
 
     fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
@@ -796,6 +778,7 @@ mod tests {
     }
 
     const TEST_CONTAINER_CAPACITY: usize = 100;
+    const BATCH_PERIOD: Duration = Duration::from_millis(10);
 
     fn setup_sanitized_transaction_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
@@ -818,6 +801,27 @@ mod tests {
         (receive_and_buffer, container)
     }
 
+    fn setup_sanitized_transaction_receive_and_buffer_with_batching(
+        receiver: Receiver<BankingPacketBatch>,
+        bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+    ) -> (
+        SanitizedTransactionReceiveAndBuffer,
+        TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+    ) {
+        let receive_and_buffer = SanitizedTransactionReceiveAndBuffer {
+            packet_receiver: PacketDeserializer::new(receiver),
+            bank_forks,
+            blacklisted_accounts,
+
+            batch: Vec::default(),
+            batch_start: Instant::now(),
+            batch_interval: BATCH_PERIOD,
+        };
+        let container = TransactionStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
+        (receive_and_buffer, container)
+    }
+
     fn setup_transaction_view_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
         bank_forks: Arc<RwLock<BankForks>>,
@@ -833,7 +837,28 @@ mod tests {
 
             batch: Vec::default(),
             batch_start: Instant::now(),
-            batch_interval: Duration::from_millis(10),
+            batch_interval: Duration::ZERO,
+        };
+        let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
+        (receive_and_buffer, container)
+    }
+
+    fn setup_transaction_view_receive_and_buffer_with_batching(
+        receiver: Receiver<BankingPacketBatch>,
+        bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+    ) -> (
+        TransactionViewReceiveAndBuffer,
+        TransactionViewStateContainer,
+    ) {
+        let receive_and_buffer = TransactionViewReceiveAndBuffer {
+            receiver,
+            bank_forks,
+            blacklisted_accounts,
+
+            batch: Vec::default(),
+            batch_start: Instant::now(),
+            batch_interval: BATCH_PERIOD,
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -1164,7 +1189,7 @@ mod tests {
         //         &BufferedPacketsDecision::Hold,
         //     )
         //     .unwrap();
-        
+
         // assert_eq!(num_received, 1);
         verify_container(&mut container, 0);
     }
@@ -1204,6 +1229,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(num_received, 1);
+
+        // We need to queue the batch
+        receive_and_buffer.maybe_queue_batch(
+            &mut container,
+            &mut timing_metrics,
+            &mut count_metrics,
+        );
         verify_container(&mut container, 1);
     }
 
@@ -1246,6 +1278,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(num_received, num_transactions);
+
+        // We need to queue the batch
+        receive_and_buffer.maybe_queue_batch(
+            &mut container,
+            &mut timing_metrics,
+            &mut count_metrics,
+        );
         verify_container(&mut container, TEST_CONTAINER_CAPACITY);
     }
 
@@ -1296,6 +1335,98 @@ mod tests {
             .unwrap();
 
         assert_eq!(num_received, 2);
+
+        // We need to queue the batch
+        receive_and_buffer.maybe_queue_batch(
+            &mut container,
+            &mut timing_metrics,
+            &mut count_metrics,
+        );
         verify_container(&mut container, 1);
+    }
+
+    #[test_case(setup_sanitized_transaction_receive_and_buffer_with_batching, 1, 0; "testcase-sdk")]
+    #[test_case(setup_transaction_view_receive_and_buffer_with_batching, 0, 2; "testcase-view")]
+    fn test_receive_and_buffer_batching<R: ReceiveAndBuffer>(
+        setup_receive_and_buffer: impl FnOnce(
+            Receiver<BankingPacketBatch>,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> (R, R::Container),
+        expected_received: usize,
+        expected_received_after_buffer: usize,
+    ) {
+        let (sender, receiver) = unbounded();
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let (mut receive_and_buffer, mut container) =
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
+        let mut timing_metrics = SchedulerTimingMetrics::default();
+        let mut count_metrics = SchedulerCountMetrics::default();
+
+        let transaction = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
+        sender.send(packet_batches).unwrap();
+
+        let num_received = receive_and_buffer
+            .receive_and_buffer_packets(
+                &mut container,
+                &mut timing_metrics,
+                &mut count_metrics,
+                &BufferedPacketsDecision::Hold,
+            )
+            .unwrap();
+        assert_eq!(num_received, expected_received);
+
+        // Do another transfer after 2 ms
+        sleep(Duration::from_millis(2)); 
+        let transaction = transfer(
+            &mint_keypair,
+            &Pubkey::new_unique(),
+            1,
+            bank_forks.read().unwrap().root_bank().last_blockhash(),
+        );
+        let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
+        sender.send(packet_batches).unwrap();
+
+        let num_received = receive_and_buffer
+            .receive_and_buffer_packets(
+                &mut container,
+                &mut timing_metrics,
+                &mut count_metrics,
+                &BufferedPacketsDecision::Hold,
+            )
+            .unwrap();
+        assert_eq!(num_received, expected_received);
+
+        // Sleep the btaching time and do receive as well as maybe queue
+        sleep(BATCH_PERIOD);
+        let num_received = receive_and_buffer
+            .receive_and_buffer_packets(
+                &mut container,
+                &mut timing_metrics,
+                &mut count_metrics,
+                &BufferedPacketsDecision::Hold,
+            )
+            .unwrap();
+        // In sdk, we receive 0 because it is counted as received when receive_and_buffer_packets is called 
+        // This is why the 2 previous calls returned 1 each
+        // In view, we receive 2 because they are counted as received only when they are queued
+        // This is also why the expected_received in previous calls is 0
+        assert_eq!(num_received, expected_received_after_buffer);
+
+        // We need to queue the batch for sdk
+        receive_and_buffer.maybe_queue_batch(
+            &mut container,
+            &mut timing_metrics,
+            &mut count_metrics,
+        );
+
+        // After both received and buffered, the result should be the same, the container should have 2 transactions
+        verify_container(&mut container, 2);
     }
 }
