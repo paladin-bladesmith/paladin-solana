@@ -563,9 +563,9 @@ impl TransactionViewReceiveAndBuffer {
                 );
             };
 
-        let flatted_messages: Vec<PacketBatch> = packet_batch_messages
-            .into_iter()
-            .flat_map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
+        let flatted_messages: Vec<&PacketBatch> = packet_batch_messages
+            .iter()
+            .flat_map(|arc| arc.iter())
             .collect();
         for packet_batch in flatted_messages {
             for packet in packet_batch.iter() {
