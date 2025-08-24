@@ -1,3 +1,4 @@
+use crossbeam_channel::TryRecvError;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -23,7 +24,7 @@ use {
     },
     arrayvec::ArrayVec,
     core::time::Duration,
-    crossbeam_channel::{RecvTimeoutError, TryRecvError},
+    crossbeam_channel::RecvTimeoutError,
     solana_accounts_db::account_locks::validate_account_locks,
     solana_address_lookup_table_interface::state::estimate_last_valid_slot,
     solana_clock::{Epoch, Slot, MAX_PROCESSING_AGE},
@@ -339,16 +340,13 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
     fn receive_and_buffer_packets(
         &mut self,
         container: &mut Self::Container,
-        timing_metrics: &mut SchedulerTimingMetrics,
-        count_metrics: &mut SchedulerCountMetrics,
+        _timing_metrics: &mut SchedulerTimingMetrics,
+        _count_metrics: &mut SchedulerCountMetrics,
         decision: &BufferedPacketsDecision,
     ) -> Result<usize, DisconnectedError> {
-        let (root_bank, working_bank) = {
-            let bank_forks = self.bank_forks.read().unwrap();
-            let root_bank = bank_forks.root_bank();
-            let working_bank = bank_forks.working_bank();
-            (root_bank, working_bank)
-        };
+        let start = Instant::now();
+        let timeout = self.get_timeout();
+        let mut num_received = 0;
 
         // If not leader/unknown, do a blocking-receive initially. This lets
         // the thread sleep until a message is received, or until the timeout.
@@ -363,53 +361,58 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             //       overhead for wakers? But then risk not waking up when message
             //       received - as long as sleep is somewhat short, this should be
             //       fine.
-            match self.receiver.recv_timeout(self.get_timeout()) {
+            match self.receiver.recv_timeout(timeout) {
                 Ok(packet_batch_message) => {
-                    self.batch_packets(packet_batch_message);
+                    num_received += self.batch_packets(packet_batch_message, decision);
                 }
-                Err(RecvTimeoutError::Timeout) => (),
+                Err(RecvTimeoutError::Timeout) => return Ok(num_received),
                 Err(RecvTimeoutError::Disconnected) => {
                     return (!self.batch.is_empty())
-                        .then_some(self.batch.len())
-                        .ok_or(DisconnectedError);
-                }
-            }
-        } else {
-            match self.receiver.try_recv() {
-                Ok(packet_batch_message) => {
-                    self.batch_packets(packet_batch_message);
-                }
-                Err(TryRecvError::Empty) => (),
-                Err(TryRecvError::Disconnected) => {
-                    return (!self.batch.is_empty())
-                        .then_some(self.batch.len())
+                        .then_some(num_received)
                         .ok_or(DisconnectedError);
                 }
             }
         }
 
-        // We need to return the received count which only available when handling.
-        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
-            let num_received = self.handle_packet_batch_message(
-                container,
-                timing_metrics,
-                count_metrics,
-                decision,
-                &root_bank,
-                &working_bank,
-            );
-            Ok(num_received)
-        } else {
-            Ok(0)
+        while start.elapsed() < timeout {
+            match self.receiver.try_recv() {
+                Ok(packet_batch_message) => {
+                    num_received += self.batch_packets(packet_batch_message, decision);
+                }
+                Err(TryRecvError::Empty) => return Ok(num_received),
+                Err(TryRecvError::Disconnected) => {
+                    return (!self.batch.is_empty())
+                        .then_some(num_received)
+                        .ok_or(DisconnectedError);
+                }
+            }
         }
+
+        Ok(num_received)
     }
 
     fn maybe_queue_batch(
         &mut self,
-        _container: &mut Self::Container,
-        _timing_metrics: &mut SchedulerTimingMetrics,
-        _count_metrics: &mut SchedulerCountMetrics,
+        container: &mut Self::Container,
+        timing_metrics: &mut SchedulerTimingMetrics,
+        count_metrics: &mut SchedulerCountMetrics,
     ) {
+        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
+            let (root_bank, working_bank) = {
+                let bank_forks = self.bank_forks.read().unwrap();
+                let root_bank = bank_forks.root_bank();
+                let working_bank = bank_forks.working_bank();
+                (root_bank, working_bank)
+            };
+
+            self.handle_packet_batch_message(
+                container,
+                timing_metrics,
+                count_metrics,
+                &root_bank,
+                &working_bank,
+            );
+        }
     }
 }
 
@@ -428,8 +431,11 @@ impl TransactionViewReceiveAndBuffer {
             batch_interval: Duration::from_millis(10),
         }
     }
-    /// If batchis not empty, and time has elapsed, return zero timeout
+
+    /// If batch is not empty, and time has elapsed, return zero timeout
+    ///
     /// If batch is not empty, but time has not elapsed, return remaining time
+    ///
     /// If batch is empty, return default timeout
     fn get_timeout(&self) -> Duration {
         if !self.batch.is_empty() {
@@ -443,14 +449,36 @@ impl TransactionViewReceiveAndBuffer {
         }
     }
 
-    fn batch_packets(&mut self, packet_batch_message: BankingPacketBatch) {
+    /// Filter and batch the TXs
+    fn batch_packets(
+        &mut self,
+        packet_batch_message: BankingPacketBatch,
+        decision: &BufferedPacketsDecision,
+    ) -> usize {
+        // If not holding packets, just drop them immediately without parsing.
+        if matches!(decision, BufferedPacketsDecision::Forward) {
+            return 0;
+        }
+
         // If this is the first packet in the batch, set the start timestamp for
         // the batch.
         if self.batch.is_empty() {
             self.batch_start = Instant::now();
         }
 
+        // Count len of packets without discarded
+        let received = packet_batch_message
+            .iter()
+            .map(|b| {
+                b.iter()
+                    .map(|p| if p.meta().discard() { 0 } else { 1 })
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+
         self.batch.push(packet_batch_message);
+
+        received
     }
 
     /// Return number of received packets.
@@ -459,15 +487,10 @@ impl TransactionViewReceiveAndBuffer {
         container: &mut TransactionViewStateContainer,
         timing_metrics: &mut SchedulerTimingMetrics,
         count_metrics: &mut SchedulerCountMetrics,
-        decision: &BufferedPacketsDecision,
         root_bank: &Bank,
         working_bank: &Bank,
     ) -> usize {
-        // If not holding packets, just drop them immediately without parsing.
-        if matches!(decision, BufferedPacketsDecision::Forward) {
-            return 0;
-        }
-        let packet_batch_message: Vec<BankingPacketBatch> = self.batch.drain(..).collect();
+        let packet_batch_messages: Vec<BankingPacketBatch> = self.batch.drain(..).collect();
 
         let start = Instant::now();
         // Sanitize packets, generate IDs, and insert into the container.
@@ -540,8 +563,8 @@ impl TransactionViewReceiveAndBuffer {
                 );
             };
 
-        for pck_batch in packet_batch_message.iter() {
-            for packet_batch in pck_batch.iter() {
+        for packet_batch_message in packet_batch_messages.iter() {
+            for packet_batch in packet_batch_message.iter() {
                 for packet in packet_batch.iter() {
                     let Some(packet_data) = packet.data(..) else {
                         continue;
@@ -763,7 +786,22 @@ fn calculate_max_age(
 #[cfg(test)]
 mod tests {
     use {
-        super::*, crate::banking_stage::tests::create_slow_genesis_config, crossbeam_channel::{unbounded, Receiver}, solana_hash::Hash, solana_keypair::Keypair, solana_ledger::genesis_utils::GenesisConfigInfo, solana_message::{v0, AddressLookupTableAccount, VersionedMessage}, solana_packet::{Meta, PACKET_DATA_SIZE}, solana_perf::packet::{to_packet_batches, Packet, PacketBatch, PinnedPacketBatch}, solana_pubkey::Pubkey, solana_signer::Signer, solana_system_interface::instruction as system_instruction, solana_system_transaction::transfer, solana_transaction::versioned::VersionedTransaction, std::thread::sleep, test_case::test_case
+        super::*,
+        crate::banking_stage::tests::create_slow_genesis_config,
+        crossbeam_channel::{unbounded, Receiver},
+        solana_hash::Hash,
+        solana_keypair::Keypair,
+        solana_ledger::genesis_utils::GenesisConfigInfo,
+        solana_message::{v0, AddressLookupTableAccount, VersionedMessage},
+        solana_packet::{Meta, PACKET_DATA_SIZE},
+        solana_perf::packet::{to_packet_batches, Packet, PacketBatch, PinnedPacketBatch},
+        solana_pubkey::Pubkey,
+        solana_signer::Signer,
+        solana_system_interface::instruction as system_instruction,
+        solana_system_transaction::transfer,
+        solana_transaction::versioned::VersionedTransaction,
+        std::thread::sleep,
+        test_case::test_case,
     };
 
     fn test_bank_forks() -> (Arc<RwLock<BankForks>>, Keypair) {
@@ -1015,8 +1053,13 @@ mod tests {
                 &BufferedPacketsDecision::Hold,
             )
             .unwrap();
-
         assert_eq!(num_received, 0);
+
+        receive_and_buffer.maybe_queue_batch(
+            &mut container,
+            &mut timing_metrics,
+            &mut count_metrics,
+        );
         verify_container(&mut container, 0);
     }
 
@@ -1345,16 +1388,14 @@ mod tests {
         verify_container(&mut container, 1);
     }
 
-    #[test_case(setup_sanitized_transaction_receive_and_buffer_with_batching, 1, 0; "testcase-sdk")]
-    #[test_case(setup_transaction_view_receive_and_buffer_with_batching, 0, 2; "testcase-view")]
+    #[test_case(setup_sanitized_transaction_receive_and_buffer_with_batching; "testcase-sdk")]
+    #[test_case(setup_transaction_view_receive_and_buffer_with_batching; "testcase-view")]
     fn test_receive_and_buffer_batching<R: ReceiveAndBuffer>(
         setup_receive_and_buffer: impl FnOnce(
             Receiver<BankingPacketBatch>,
             Arc<RwLock<BankForks>>,
             HashSet<Pubkey>,
         ) -> (R, R::Container),
-        expected_received: usize,
-        expected_received_after_buffer: usize,
     ) {
         let (sender, receiver) = unbounded();
         let (bank_forks, mint_keypair) = test_bank_forks();
@@ -1380,10 +1421,10 @@ mod tests {
                 &BufferedPacketsDecision::Hold,
             )
             .unwrap();
-        assert_eq!(num_received, expected_received);
+        assert_eq!(num_received, 1);
 
         // Do another transfer after 2 ms
-        sleep(Duration::from_millis(2)); 
+        sleep(Duration::from_millis(2));
         let transaction = transfer(
             &mint_keypair,
             &Pubkey::new_unique(),
@@ -1401,23 +1442,10 @@ mod tests {
                 &BufferedPacketsDecision::Hold,
             )
             .unwrap();
-        assert_eq!(num_received, expected_received);
+        assert_eq!(num_received, 1);
 
-        // Sleep the btaching time and do receive as well as maybe queue
+        // Sleep the batching period
         sleep(BATCH_PERIOD);
-        let num_received = receive_and_buffer
-            .receive_and_buffer_packets(
-                &mut container,
-                &mut timing_metrics,
-                &mut count_metrics,
-                &BufferedPacketsDecision::Hold,
-            )
-            .unwrap();
-        // In sdk, we receive 0 because it is counted as received when receive_and_buffer_packets is called 
-        // This is why the 2 previous calls returned 1 each
-        // In view, we receive 2 because they are counted as received only when they are queued
-        // This is also why the expected_received in previous calls is 0
-        assert_eq!(num_received, expected_received_after_buffer);
 
         // We need to queue the batch for sdk
         receive_and_buffer.maybe_queue_batch(
