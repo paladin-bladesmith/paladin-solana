@@ -1219,20 +1219,15 @@ mod tests {
                 &BufferedPacketsDecision::Hold,
             )
             .unwrap();
-        // Should be 0 because of batching
         assert_eq!(num_received, 1);
 
-        // sleep(Duration::from_millis(10));
-        // let num_received = receive_and_buffer
-        //     .receive_and_buffer_packets(
-        //         &mut container,
-        //         &mut timing_metrics,
-        //         &mut count_metrics,
-        //         &BufferedPacketsDecision::Hold,
-        //     )
-        //     .unwrap();
+        // We need to queue the batch
+        receive_and_buffer.maybe_queue_batch(
+            &mut container,
+            &mut timing_metrics,
+            &mut count_metrics,
+        );
 
-        // assert_eq!(num_received, 1);
         verify_container(&mut container, 0);
     }
 
