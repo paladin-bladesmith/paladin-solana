@@ -1,4 +1,3 @@
-use crossbeam_channel::TryRecvError;
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
@@ -24,7 +23,7 @@ use {
     },
     arrayvec::ArrayVec,
     core::time::Duration,
-    crossbeam_channel::RecvTimeoutError,
+    crossbeam_channel::{RecvTimeoutError, TryRecvError},
     solana_accounts_db::account_locks::validate_account_locks,
     solana_address_lookup_table_interface::state::estimate_last_valid_slot,
     solana_clock::{Epoch, Slot, MAX_PROCESSING_AGE},
