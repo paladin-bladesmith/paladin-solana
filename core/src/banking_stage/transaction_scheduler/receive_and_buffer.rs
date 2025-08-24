@@ -471,7 +471,7 @@ impl TransactionViewReceiveAndBuffer {
             .iter()
             .map(|b| {
                 b.iter()
-                    .map(|p| if p.meta().discard() { 0 } else { 1 })
+                    .map(|p| usize::from(!p.meta().discard()))
                     .sum::<usize>()
             })
             .sum::<usize>();
