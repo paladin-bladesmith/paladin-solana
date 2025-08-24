@@ -1,5 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use solana_perf::packet::PacketBatch;
 use {
     super::{
         scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics},
@@ -404,7 +405,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
                 (root_bank, working_bank)
             };
 
-            self.handle_packet_batch_message(
+            self.handle_batch_of_packet_batch_messages(
                 container,
                 timing_metrics,
                 count_metrics,
@@ -481,7 +482,7 @@ impl TransactionViewReceiveAndBuffer {
     }
 
     /// Return number of received packets.
-    fn handle_packet_batch_message(
+    fn handle_batch_of_packet_batch_messages(
         &mut self,
         container: &mut TransactionViewStateContainer,
         timing_metrics: &mut SchedulerTimingMetrics,
@@ -562,50 +563,52 @@ impl TransactionViewReceiveAndBuffer {
                 );
             };
 
-        for packet_batch_message in packet_batch_messages.iter() {
-            for packet_batch in packet_batch_message.iter() {
-                for packet in packet_batch.iter() {
-                    let Some(packet_data) = packet.data(..) else {
-                        continue;
-                    };
+        let flatted_messages: Vec<PacketBatch> = packet_batch_messages
+            .into_iter()
+            .flat_map(|arc| Arc::try_unwrap(arc).unwrap_or_else(|arc| (*arc).clone()))
+            .collect();
+        for packet_batch in flatted_messages {
+            for packet in packet_batch.iter() {
+                let Some(packet_data) = packet.data(..) else {
+                    continue;
+                };
 
-                    num_received += 1;
+                num_received += 1;
 
-                    // Reserve free-space to copy packet into, run sanitization checks, and insert.
-                    if let Some(transaction_id) =
-                        container.try_insert_map_only_with_data(packet_data, |bytes| {
-                            match Self::try_handle_packet(
-                                bytes,
-                                root_bank,
-                                working_bank,
-                                alt_resolved_slot,
-                                sanitized_epoch,
-                                transaction_account_lock_limit,
-                                &self.blacklisted_accounts,
-                                packet.meta().is_mev(),
-                            ) {
-                                Ok(state) => {
-                                    num_buffered += 1;
-                                    Ok(state)
-                                }
-                                Err(()) => {
-                                    num_dropped_on_receive += 1;
-                                    Err(())
-                                }
+                // Reserve free-space to copy packet into, run sanitization checks, and insert.
+                if let Some(transaction_id) =
+                    container.try_insert_map_only_with_data(packet_data, |bytes| {
+                        match Self::try_handle_packet(
+                            bytes,
+                            root_bank,
+                            working_bank,
+                            alt_resolved_slot,
+                            sanitized_epoch,
+                            transaction_account_lock_limit,
+                            &self.blacklisted_accounts,
+                            packet.meta().is_mev(),
+                        ) {
+                            Ok(state) => {
+                                num_buffered += 1;
+                                Ok(state)
                             }
-                        })
-                    {
-                        let priority = container
-                            .get_mut_transaction_state(transaction_id)
-                            .expect("transaction must exist")
-                            .priority();
-                        transaction_priority_ids
-                            .push(TransactionPriorityId::new(priority, transaction_id));
-
-                        // If at capacity, run checks and remove invalid transactions.
-                        if transaction_priority_ids.len() == EXTRA_CAPACITY {
-                            check_and_push_to_queue(container, &mut transaction_priority_ids);
+                            Err(()) => {
+                                num_dropped_on_receive += 1;
+                                Err(())
+                            }
                         }
+                    })
+                {
+                    let priority = container
+                        .get_mut_transaction_state(transaction_id)
+                        .expect("transaction must exist")
+                        .priority();
+                    transaction_priority_ids
+                        .push(TransactionPriorityId::new(priority, transaction_id));
+
+                    // If at capacity, run checks and remove invalid transactions.
+                    if transaction_priority_ids.len() == EXTRA_CAPACITY {
+                        check_and_push_to_queue(container, &mut transaction_priority_ids);
                     }
                 }
             }
