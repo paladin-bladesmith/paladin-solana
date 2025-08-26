@@ -27,6 +27,8 @@ pub mod gen_keys;
 pub mod immutable_deserialized_bundle;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
+pub mod p3_quic;
+pub mod p3_utils;
 pub mod packet_bundle;
 pub mod proxy;
 pub mod repair;

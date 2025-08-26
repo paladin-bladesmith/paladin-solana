@@ -5205,7 +5205,7 @@ dependencies = [
  "solana-pubkey",
  "solana-sdk",
  "solana-streamer",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
 ]
 
 [[package]]
@@ -5229,19 +5229,22 @@ dependencies = [
  "keyed_priority_queue",
  "log",
  "openssl",
- "p3-quic",
  "paladin-lockup-program",
  "prost",
  "prost-types",
  "rand 0.8.5",
  "serde",
  "smpl_jwt",
+ "solana-account",
  "solana-client",
+ "solana-keypair",
  "solana-metrics",
  "solana-perf",
+ "solana-poh",
+ "solana-pubkey",
  "solana-sdk",
  "solana-streamer",
- "spl-discriminator 0.2.3",
+ "spl-discriminator",
  "thiserror 1.0.69",
  "tokio",
  "tokio-stream",
@@ -5265,7 +5268,7 @@ dependencies = [
  "solana-program-test",
  "solana-sdk",
  "spl-associated-token-account",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-token-2022",
  "test-case",
  "thiserror 2.0.12",
@@ -8427,7 +8430,6 @@ dependencies = [
  "lru",
  "min-max-heap",
  "num_enum",
- "p3-quic",
  "paladin-lockup-program",
  "prio-graph",
  "prost",
@@ -8444,6 +8446,7 @@ dependencies = [
  "serde_derive",
  "serde_json",
  "serial_test",
+ "sha2 0.10.9",
  "slab",
  "solana-account",
  "solana-accounts-db",
@@ -8504,6 +8507,7 @@ dependencies = [
  "solana-runtime-plugin",
  "solana-runtime-transaction",
  "solana-sanitize",
+ "solana-sdk",
  "solana-sdk-ids",
  "solana-seed-derivable",
  "solana-send-transaction-service",
@@ -8538,7 +8542,7 @@ dependencies = [
  "solana-vote",
  "solana-vote-program",
  "solana-wen-restart",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-memo",
  "static_assertions",
  "strum",
@@ -12693,17 +12697,6 @@ dependencies = [
 
 [[package]]
 name = "spl-discriminator"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6ee7cc93db126e110a546383dcffc116f22129fae457c5531cf5032dd50840e"
-dependencies = [
- "bytemuck",
- "solana-program",
- "spl-discriminator-derive",
-]
-
-[[package]]
-name = "spl-discriminator"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7398da23554a31660f17718164e31d31900956054f54f52d5ec1be51cb4f4b3"
@@ -12862,7 +12855,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-pod",
  "spl-program-error",
  "spl-type-length-value",
@@ -12998,7 +12991,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-pod",
  "thiserror 2.0.12",
 ]
@@ -13018,7 +13011,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-pod",
  "spl-type-length-value",
  "thiserror 2.0.12",
@@ -13041,7 +13034,7 @@ dependencies = [
  "solana-msg",
  "solana-program-error",
  "solana-pubkey",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-pod",
  "spl-program-error",
  "spl-tlv-account-resolution",
@@ -13062,7 +13055,7 @@ dependencies = [
  "solana-decode-error",
  "solana-msg",
  "solana-program-error",
- "spl-discriminator 0.4.1",
+ "spl-discriminator",
  "spl-pod",
  "thiserror 2.0.12",
 ]

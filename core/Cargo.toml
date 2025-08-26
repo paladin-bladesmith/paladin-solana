@@ -75,7 +75,6 @@ log = { workspace = true }
 lru = { workspace = true }
 min-max-heap = { workspace = true }
 num_enum = { workspace = true }
-p3-quic = { workspace = true }
 paladin-lockup-program = { workspace = true }
 prio-graph = { workspace = true }
 prost = { workspace = true }
@@ -90,6 +89,7 @@ rustls = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_derive = { workspace = true }
+sha2 = { workspace = true }
 slab = { workspace = true }
 solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
@@ -107,6 +107,7 @@ solana-compute-budget-interface = { workspace = true }
 solana-connection-cache = { workspace = true }
 solana-cost-model = { workspace = true }
 solana-entry = { workspace = true }
+solana-sdk = { workspace = true }
 solana-epoch-schedule = { workspace = true }
 solana-fee = { workspace = true }
 solana-fee-calculator = { workspace = true }
