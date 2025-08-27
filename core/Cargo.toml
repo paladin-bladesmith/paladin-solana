@@ -90,6 +90,7 @@ rustls = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }
 serde_derive = { workspace = true }
+sha2 ={ workspace = true}
 slab = { workspace = true }
 solana-account = { workspace = true }
 solana-accounts-db = { workspace = true }
