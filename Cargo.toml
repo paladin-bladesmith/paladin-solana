@@ -64,7 +64,6 @@ members = [
     "net-utils",
     "notifier",
     "p3-standalone",
-    "p3-quic",
     "perf",
     "platform-tools-sdk/cargo-build-sbf",
     "platform-tools-sdk/cargo-test-sbf",

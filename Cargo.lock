@@ -5189,26 +5189,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c1b04fb49957986fdce4d6ee7a65027d55d4b6d2265e5848bbb507b58ccfdb6f"
 
 [[package]]
-name = "p3-quic"
-version = "2.3.6"
-dependencies = [
- "bytemuck",
- "crossbeam-channel",
- "log",
- "paladin-lockup-program",
- "solana-account",
- "solana-client",
- "solana-keypair",
- "solana-metrics",
- "solana-perf",
- "solana-poh",
- "solana-pubkey",
- "solana-sdk",
- "solana-streamer",
- "spl-discriminator",
-]
-
-[[package]]
 name = "p3-standalone"
 version = "0.1.0"
 dependencies = [

@@ -1,15 +1,14 @@
-use sha2::{Digest, Sha256};
-use solana_perf::packet::{
-    BytesPacketBatch, PacketBatch, PacketRef, PacketRefMut, PinnedPacketBatch,
+use {
+    crate::packet_bundle::PacketBundle,
+    sha2::{Digest, Sha256},
+    solana_perf::packet::{
+        BytesPacketBatch, PacketBatch,
+        PacketRefMut::{self, Bytes as MutBytes, Packet as MutPacket},
+        PinnedPacketBatch,
+    },
+    solana_short_vec::decode_shortu16_len,
+    solana_signature::Signature,
 };
-use solana_perf::packet::{
-    PacketRef::*,
-    PacketRefMut::{Bytes as MutBytes, Packet as MutPacket},
-};
-use solana_short_vec::decode_shortu16_len;
-use solana_signature::Signature;
-
-use crate::packet_bundle::PacketBundle;
 
 // Bundle ID derivation mirrors `derive_bundle_id_from_sanitized_transactions` for a single
 // transaction bundle: sha256( base58(first_signature) ). We intentionally do NOT hash the
@@ -43,37 +42,6 @@ pub fn packet_bundle_from_packet_ref(mut pkt: PacketRefMut<'_>) -> PacketBundle 
     PacketBundle { batch, bundle_id }
 }
 
-/// Convert an iterator / Vec of `PacketRef` into a single `PacketBatch`.
-/// Strategy:
-/// - If all refs are `Packet`, build a `PinnedPacketBatch` (avoids per-packet Bytes allocation).
-/// - Otherwise (any `Bytes` variant present), materialize all refs as `BytesPacket`s and return a Bytes batch.
-/// Empty input returns an empty Bytes batch.
-pub fn packet_refs_to_packet_batch<'a, I>(iter: I) -> PacketBatch
-where
-    I: IntoIterator<Item = PacketRef<'a>>,
-{
-    // First collect to allow single pass classification.
-    let refs: Vec<PacketRef<'a>> = iter.into_iter().collect();
-    if refs.is_empty() {
-        return PacketBatch::Bytes(BytesPacketBatch::from(Vec::new()));
-    }
-    // Check if all are classic Packet variants.
-    if refs.iter().all(|r| matches!(r, Packet(_))) {
-        // Safe to clone underlying Packets.
-        let packets: Vec<_> = refs
-            .iter()
-            .filter_map(|r| match r {
-                Packet(p) => Some((*p).clone()),
-                _ => None,
-            })
-            .collect();
-        return PacketBatch::Pinned(PinnedPacketBatch::new(packets));
-    }
-    // Fallback: produce BytesPacketBatch (may copy legacy Packet variants to Bytes once).
-    let bytes_packets: Vec<_> = refs.iter().map(|r| r.to_bytes_packet()).collect();
-    PacketBatch::Bytes(BytesPacketBatch::from(bytes_packets))
-}
-
 fn hash_signature(sig: &Signature) -> String {
     let mut hasher = Sha256::new();
     hasher.update(sig.to_string());
@@ -100,12 +68,11 @@ fn parse_first_signature(data: &[u8]) -> Option<Signature> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use solana_hash::Hash;
-    use solana_keypair::Keypair;
-    use solana_perf::packet::to_packet_batches;
-    use solana_pubkey::Pubkey;
-    use solana_system_transaction as system_transaction;
+    use {
+        super::*, solana_hash::Hash, solana_keypair::Keypair,
+        solana_perf::packet::to_packet_batches, solana_pubkey::Pubkey,
+        solana_system_transaction as system_transaction,
+    };
 
     #[test]
     fn test_bundle_id_single_tx_matches_sanitized_logic() {
