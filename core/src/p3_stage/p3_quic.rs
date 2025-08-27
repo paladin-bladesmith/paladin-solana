@@ -1,5 +1,5 @@
 use {
-    crate::{p3_utils::packet_bundle_from_packet_ref, packet_bundle::PacketBundle},
+    crate::{p3_stage::p3_utils::packet_bundle_from_packet_ref, packet_bundle::PacketBundle},
     crossbeam_channel::{RecvError, TrySendError},
     log::{debug, info, trace, warn},
     paladin_lockup_program::state::LockupPool,
@@ -225,12 +225,13 @@ where
         let len = packets.len() as u64;
         self.metrics.mev_forwarded += len;
 
+        // Convert MEV transactions into single-transaction bundles and send them to the bundle stage.
         let mev_bundles: Vec<_> = packets
             .iter_mut()
             .map(packet_bundle_from_packet_ref)
             .collect();
 
-        // Forward for verification & inclusion.
+        // Forward the bundles for verification and inclusion.
         if let Err(TrySendError::Full(_)) = self.bundle_tx.try_send(mev_bundles) {
             self.metrics.mev_dropped += len;
         }
