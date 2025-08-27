@@ -1,4 +1,5 @@
 use {
+    crate::{p3_stage::p3_utils::packet_bundle_from_packet_ref, packet_bundle::PacketBundle},
     crossbeam_channel::{RecvError, TrySendError},
     log::{debug, info, trace, warn},
     paladin_lockup_program::state::LockupPool,
@@ -44,6 +45,7 @@ pub struct P3Quic<T = Arc<RwLock<PohRecorder>>> {
     reg_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     mev_packet_rx: crossbeam_channel::Receiver<PacketBatch>,
     packet_tx: crossbeam_channel::Sender<PacketBatch>,
+    bundle_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
 
     metrics: P3Metrics,
     metrics_creation: Instant,
@@ -56,6 +58,7 @@ where
     pub fn spawn(
         exit: Arc<AtomicBool>,
         packet_tx: crossbeam_channel::Sender<PacketBatch>,
+        bundle_tx: crossbeam_channel::Sender<Vec<PacketBundle>>,
         poh_recorder: T,
         keypair: &Keypair,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
@@ -140,6 +143,7 @@ where
             reg_packet_rx,
             mev_packet_rx,
             packet_tx,
+            bundle_tx,
 
             metrics: P3Metrics::default(),
             metrics_creation: Instant::now(),
@@ -221,15 +225,14 @@ where
         let len = packets.len() as u64;
         self.metrics.mev_forwarded += len;
 
-        // Set drop on revert flag.
-        for mut packet in packets.iter_mut() {
-            packet.meta_mut().set_mev(true);
-            // NB: Unset the staked node flag to prevent forwarding.
-            packet.meta_mut().set_from_staked_node(false);
-        }
+        // Convert MEV transactions into single-transaction bundles and send them to the bundle stage.
+        let mev_bundles: Vec<_> = packets
+            .iter_mut()
+            .map(packet_bundle_from_packet_ref)
+            .collect();
 
-        // Forward for verification & inclusion.
-        if let Err(TrySendError::Full(_)) = self.packet_tx.try_send(packets) {
+        // Forward the bundles for verification and inclusion.
+        if let Err(TrySendError::Full(_)) = self.bundle_tx.try_send(mev_bundles) {
             self.metrics.mev_dropped += len;
         }
     }
@@ -326,18 +329,6 @@ impl AccountFetch for Arc<RwLock<PohRecorder>> {
     }
 }
 
-#[cfg(feature = "solana-client")]
-impl AccountFetch for Arc<solana_client::rpc_client::RpcClient> {
-    fn get_account(&self, key: &Pubkey) -> Option<AccountSharedData> {
-        self.get_account_with_commitment(
-            key,
-            solana_sdk::commitment_config::CommitmentConfig::confirmed(),
-        )
-        .ok()
-        .and_then(|rep| rep.value.map(Into::into))
-    }
-}
-
 #[allow(dead_code)]
 #[derive(Debug)]
 struct RateLimit {
@@ -380,8 +371,8 @@ impl P3Metrics {
             ("age_ms", age_ms as i64, i64),
             ("p3_packets_forwarded", p3_forwarded as i64, i64),
             ("p3_packets_dropped", p3_dropped as i64, i64),
-            ("mev_packets_forwarded", mev_forwarded as i64, i64),
-            ("mev_packets_dropped", mev_dropped as i64, i64),
+            ("mev_bundles_forwarded", mev_forwarded as i64, i64),
+            ("mev_bundles_dropped", mev_dropped as i64, i64),
             ("staked_nodes_us", staked_nodes_us as i64, i64),
         );
     }

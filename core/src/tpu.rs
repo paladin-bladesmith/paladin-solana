@@ -24,6 +24,7 @@ use {
         forwarding_stage::{
             spawn_forwarding_stage, ForwardAddressGetter, SpawnForwardingStageResult,
         },
+        p3_stage::p3_quic::P3Quic,
         proxy::{
             block_engine_stage::{BlockBuilderFeeInfo, BlockEngineConfig, BlockEngineStage},
             fetch_stage_manager::FetchStageManager,
@@ -38,7 +39,6 @@ use {
     },
     bytes::Bytes,
     crossbeam_channel::{bounded, unbounded, Receiver},
-    p3_quic::P3Quic,
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -325,7 +325,7 @@ impl Tpu {
         let block_engine_stage = BlockEngineStage::new(
             block_engine_config,
             secondary_block_engine_urls,
-            bundle_sender,
+            bundle_sender.clone(),
             cluster_info.clone(),
             sigverify_stage_sender.clone(),
             banking_stage_sender.clone(),
@@ -337,6 +337,7 @@ impl Tpu {
         let (p3_quic, p3_quic_key_updaters) = P3Quic::spawn(
             exit.clone(),
             fetch_stage_manager_sender,
+            bundle_sender,
             poh_recorder.clone(),
             keypair,
             (p3_socket, p3_mev_socket),
