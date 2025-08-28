@@ -336,7 +336,7 @@ impl Tpu {
         // Launch paladin threads.
         let (p3_quic, p3_quic_key_updaters) = P3Quic::spawn(
             exit.clone(),
-            fetch_stage_manager_sender,
+            sigverify_stage_sender.clone(),
             bundle_sender,
             poh_recorder.clone(),
             keypair,
