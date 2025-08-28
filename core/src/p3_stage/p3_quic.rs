@@ -210,7 +210,6 @@ where
         self.metrics.p3_forwarded += len;
 
         for mut packet in packets.iter_mut() {
-            packet.meta_mut().set_p3(true);
             // NB: Unset the staked node flag to prevent forwarding.
             packet.meta_mut().set_from_staked_node(false);
         }
