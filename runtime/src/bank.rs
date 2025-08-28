@@ -3196,6 +3196,7 @@ impl Bank {
                     None,
                     self,
                     self.get_reserved_account_keys(),
+                    false,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -5833,6 +5834,8 @@ impl Bank {
                 None,
                 self,
                 self.get_reserved_account_keys(),
+                // NB: Not used by scheduler, so just hardcode false.
+                false,
             )
         }?;
 

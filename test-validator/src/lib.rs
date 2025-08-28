@@ -17,6 +17,7 @@ use {
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         consensus::tower_storage::TowerStorage,
+        proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         validator::{Validator, ValidatorConfig, ValidatorStartProgress, ValidatorTpuConfig},
     },
     solana_epoch_schedule::EpochSchedule,
@@ -64,11 +65,13 @@ use {
         net::{IpAddr, Ipv4Addr, SocketAddr},
         path::{Path, PathBuf},
         str::FromStr,
-        sync::{Arc, RwLock},
+        sync::{Arc, Mutex, RwLock},
         time::Duration,
     },
     tokio::time::sleep,
 };
+
+const DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct AccountInfo<'a> {
@@ -134,6 +137,8 @@ pub struct TestValidatorGenesis {
     pub tpu_enable_udp: bool,
     pub geyser_plugin_manager: Arc<RwLock<GeyserPluginManager>>,
     admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
+    pub block_engine_url: String,
+    pub relayer_url: String,
 }
 
 impl Default for TestValidatorGenesis {
@@ -167,6 +172,8 @@ impl Default for TestValidatorGenesis {
             geyser_plugin_manager: Arc::new(RwLock::new(GeyserPluginManager::new())),
             admin_rpc_service_post_init:
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
+            block_engine_url: String::default(),
+            relayer_url: String::default(),
         }
     }
 }
@@ -1075,6 +1082,16 @@ impl TestValidator {
             staked_nodes_overrides: config.staked_nodes_overrides.clone(),
             accounts_db_config,
             runtime_config,
+            block_engine_config: Arc::new(Mutex::new(BlockEngineConfig {
+                block_engine_url: config.block_engine_url.clone(),
+                trust_packets: false,
+            })),
+            relayer_config: Arc::new(Mutex::new(RelayerConfig {
+                relayer_url: config.relayer_url.clone(),
+                expected_heartbeat_interval: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL,
+                oldest_allowed_heartbeat: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL * 3,
+                trust_packets: false,
+            })),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {
