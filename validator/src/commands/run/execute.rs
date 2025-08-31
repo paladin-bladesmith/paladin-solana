@@ -856,6 +856,11 @@ pub fn execute(
             Ipv4Addr::UNSPECIFIED,
             value_of(matches, "p3_mev_port").unwrap(),
         )),
+        secondary_block_engine_urls: matches
+            .values_of("secondary_block_engines_urls")
+            .unwrap_or_default()
+            .map(|v| v.to_string())
+            .collect(),
         ..ValidatorConfig::default()
     };
 
