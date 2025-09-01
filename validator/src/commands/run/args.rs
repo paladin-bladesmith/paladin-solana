@@ -1782,6 +1782,17 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
     )
     .arg(
+        Arg::with_name("secondary_block_engines_urls")
+            .long("secondary-block-engines-urls")
+            .value_name("HOST:PORT")
+            .help(
+                "Specify extra block engines urls to receive bundles from. \
+                Comma separated urls, May be specified multiple times.",
+            )
+            .takes_value(true)
+            .multiple(true)
+    )
+    .arg(
         Arg::with_name("batch_interval_ms")
             .long("batch-interval-ms")
             .help("scheduler batch interval in milliseconds. Defaults to 50ms")
