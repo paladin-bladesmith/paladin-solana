@@ -15,7 +15,6 @@ use {
 // entire message nor all signatures; upstream sanitized logic uses only the primary signature
 // as the transaction identity. No prefix is added to keep parity with sanitized bundles.
 pub fn packet_bundle_from_packet_ref(mut pkt: PacketRefMut<'_>) -> PacketBundle {
-    pkt.meta_mut().set_mev(true);
     // NB: Unset the staked node flag to prevent forwarding.
     pkt.meta_mut().set_from_staked_node(false);
     let (batch, data_slice) = match pkt {

@@ -80,7 +80,6 @@ impl RuntimeTransaction<SanitizedTransaction> {
         is_simple_vote_tx: Option<bool>,
         address_loader: impl AddressLoader,
         reserved_account_keys: &HashSet<Pubkey>,
-        drop_on_revert: bool,
     ) -> Result<Self> {
         let statically_loaded_runtime_tx =
             RuntimeTransaction::<SanitizedVersionedTransaction>::try_from(
@@ -92,7 +91,6 @@ impl RuntimeTransaction<SanitizedTransaction> {
             statically_loaded_runtime_tx,
             address_loader,
             reserved_account_keys,
-            drop_on_revert,
         )
     }
 
@@ -103,7 +101,6 @@ impl RuntimeTransaction<SanitizedTransaction> {
         statically_loaded_runtime_tx: RuntimeTransaction<SanitizedVersionedTransaction>,
         address_loader: impl AddressLoader,
         reserved_account_keys: &HashSet<Pubkey>,
-        drop_on_revert: bool,
     ) -> Result<Self> {
         let hash = *statically_loaded_runtime_tx.message_hash();
         let is_simple_vote_tx = statically_loaded_runtime_tx.is_simple_vote_transaction();
@@ -113,7 +110,6 @@ impl RuntimeTransaction<SanitizedTransaction> {
             is_simple_vote_tx,
             address_loader,
             reserved_account_keys,
-            drop_on_revert,
         )?;
 
         let mut tx = Self {
@@ -152,7 +148,6 @@ impl RuntimeTransaction<SanitizedTransaction> {
             None,
             solana_message::SimpleAddressLoader::Disabled,
             &HashSet::new(),
-            false,
         )
         .expect("failed to create RuntimeTransaction from Transaction")
     }
@@ -299,7 +294,6 @@ mod tests {
             statically_loaded_transaction,
             SimpleAddressLoader::Disabled,
             &ReservedAccountKeys::empty_key_set(),
-            false,
         );
         let dynamically_loaded_transaction =
             dynamically_loaded_transaction.expect("created from statically loaded tx");

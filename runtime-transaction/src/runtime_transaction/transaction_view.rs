@@ -86,7 +86,6 @@ impl<D: TransactionData> RuntimeTransaction<ResolvedTransactionView<D>> {
         statically_loaded_runtime_tx: RuntimeTransaction<SanitizedTransactionView<D>>,
         loaded_addresses: Option<LoadedAddresses>,
         reserved_account_keys: &HashSet<Pubkey>,
-        drop_on_revert: bool,
     ) -> Result<Self> {
         let RuntimeTransaction { transaction, meta } = statically_loaded_runtime_tx;
         // transaction-view does not distinguish between different types of errors here.
@@ -97,7 +96,6 @@ impl<D: TransactionData> RuntimeTransaction<ResolvedTransactionView<D>> {
             transaction,
             loaded_addresses,
             reserved_account_keys,
-            drop_on_revert,
         )
         .map_err(|_| TransactionError::SanitizeFailure)?;
         let mut tx = Self { transaction, meta };
@@ -143,7 +141,6 @@ impl<D: TransactionData> TransactionWithMeta for RuntimeTransaction<ResolvedTran
                 *self.message_hash(),
                 self.is_simple_vote_transaction(),
                 signatures,
-                self.drop_on_revert(),
             )
             .expect("transaction view is sanitized"),
         )

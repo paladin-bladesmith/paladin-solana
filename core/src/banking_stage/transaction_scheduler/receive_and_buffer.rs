@@ -586,7 +586,6 @@ impl TransactionViewReceiveAndBuffer {
                             sanitized_epoch,
                             transaction_account_lock_limit,
                             &self.blacklisted_accounts,
-                            packet.meta().is_mev(),
                         ) {
                             Ok(state) => {
                                 num_buffered += 1;
@@ -640,7 +639,6 @@ impl TransactionViewReceiveAndBuffer {
         sanitized_epoch: Epoch,
         transaction_account_lock_limit: usize,
         blacklisted_accounts: &HashSet<Pubkey>,
-        drop_on_revert: bool,
     ) -> Result<TransactionViewState, ()> {
         // Parsing and basic sanitization checks
         let Ok(view) = SanitizedTransactionView::try_new_sanitized(bytes) else {
@@ -686,7 +684,6 @@ impl TransactionViewReceiveAndBuffer {
             view,
             loaded_addresses,
             root_bank.get_reserved_account_keys(),
-            drop_on_revert,
         ) else {
             return Err(());
         };

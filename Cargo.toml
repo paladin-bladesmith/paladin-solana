@@ -333,7 +333,6 @@ num-traits = "0.2"
 num_cpus = "1.17.0"
 num_enum = "0.7.3"
 openssl = "0.10"
-p3-quic = { path = "p3-quic" }
 paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
 parking_lot = "0.12"
 pbkdf2 = { version = "0.11.0", default-features = false }
@@ -705,5 +704,5 @@ solana-zk-sdk = { path = "zk-sdk" }
 
 # Paladin patches.
 # solana-packet = { git = "https://github.com/paladin-bladesmith/solana-sdk", branch = "temp" }
-solana-packet = { git = "https://github.com/paladin-bladesmith/solana-sdk", tag = "v2.2.7-paladin" }
-solana-transaction = { git = "https://github.com/paladin-bladesmith/solana-sdk", tag = "v2.2.7-paladin" }
+# solana-packet = { git = "https://github.com/paladin-bladesmith/solana-sdk", tag = "v2.2.7-paladin" }
+# solana-transaction = { git = "https://github.com/paladin-bladesmith/solana-sdk", tag = "v2.2.7-paladin" }

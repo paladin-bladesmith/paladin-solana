@@ -153,8 +153,4 @@ impl<T: SVMTransaction> SVMTransaction for RuntimeTransaction<T> {
     fn signatures(&self) -> &[Signature] {
         self.transaction.signatures()
     }
-
-    fn drop_on_revert(&self) -> bool {
-        self.transaction.drop_on_revert()
-    }
 }

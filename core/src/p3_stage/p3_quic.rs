@@ -97,6 +97,8 @@ where
                 variant: QuicVariant::P3,
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
+                max_connections_per_ipaddr_per_min: 999999,
+                max_connections_per_peer: 99999,
                 // NB: This must be 1 second for the `P3_RATE_LIMIT` const to be valid.
                 stream_throttling_interval_ms: 1000,
                 ..Default::default()
@@ -123,6 +125,8 @@ where
                 variant: QuicVariant::Mev,
                 max_staked_connections: MAX_STAKED_CONNECTIONS,
                 max_unstaked_connections: 0,
+                max_connections_per_ipaddr_per_min: 999999,
+                max_connections_per_peer: 99999,
                 // NB: This must be 1 second for the `P3_RATE_LIMIT` const to be valid.
                 stream_throttling_interval_ms: 1000,
                 ..Default::default()
@@ -240,6 +244,23 @@ where
         // Load the lockup pool account.
         let Some(pool) = self.accounts.get_account(&POOL_KEY) else {
             warn!("Lockup pool does not exist; pool={POOL_KEY}");
+
+            let mut stakes: HashMap<Pubkey, u64> = HashMap::new();
+            stakes.insert(
+                Pubkey::from_str_const("3wWrxQNpmGRzaVYVCCGEVLV6GMHG4Vvzza4iT79atw5A"),
+                100_000_000_000,
+            );
+            stakes.insert(
+                Pubkey::from_str_const("E9Gr9GmYTB9eEYr44VMhfZh9LRVYzppD94UrcgQubTrG"),
+                100_000_000_000,
+            );
+            stakes.insert(
+                Pubkey::from_str_const("AjB8Gwd1rvMGPoufD39PsJqsnL9tBo4z7xg6CpxACX1S"),
+                100_000_000_000,
+            );
+            let stakes = Arc::new(stakes);
+            *self.staked_nodes.write().unwrap() =
+                StakedNodes::new(stakes.clone(), HashMap::default());
 
             return;
         };

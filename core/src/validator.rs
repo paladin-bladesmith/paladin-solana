@@ -1,6 +1,9 @@
 //! The `validator` module hosts all the validator microservices.
 
 pub use solana_perf::report_target_features;
+use solana_sdk::pubkey;
+use crate::tip_manager::TipDistributionAccountConfig;
+
 use {
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
@@ -417,6 +420,19 @@ impl ValidatorConfig {
             replay_transactions_threads: max_thread_count,
             tvu_shred_sigverify_threads: NonZeroUsize::new(get_thread_count())
                 .expect("thread count is non-zero"),
+                tip_manager_config: TipManagerConfig {
+                funnel: None,
+                rewards_split: None,
+                tip_payment_program_id: pubkey!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"),
+                tip_distribution_program_id: pubkey!(
+                    "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
+                ),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: pubkey!("BLVyXFRKAELbMwdx9NLoFfsco8DEebsv3KUFd2EwmyMN"),
+                    commission_bps: 10,
+                },
+            },
             ..Self::default()
         }
     }
