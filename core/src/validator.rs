@@ -1,9 +1,4 @@
 //! The `validator` module hosts all the validator microservices.
-
-pub use solana_perf::report_target_features;
-use solana_sdk::pubkey;
-use crate::tip_manager::TipDistributionAccountConfig;
-
 use {
     crate::{
         accounts_hash_verifier::AccountsHashVerifier,
