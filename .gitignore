@@ -6,6 +6,7 @@ target/
 /solana-metrics.tar.bz2
 **/target/
 /test-ledger/
+/.direnv
 
 **/*.rs.bk
 .cargo

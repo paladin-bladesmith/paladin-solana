@@ -28,6 +28,10 @@ pub enum KeyUpdaterType {
     Forward,
     /// For the RPC service
     RpcService,
+    /// For the P3 service
+    P3Regular,
+    /// For the P3 MEV service
+    P3Mev,
 }
 
 /// Responsible for managing the updaters for identity key change

@@ -16,6 +16,7 @@ use {
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
     },
+    itertools::Itertools,
     solana_bundle::{
         bundle_execution::{load_and_execute_bundle, BundleExecutionMetrics},
         BundleExecutionError, BundleExecutionResult, SanitizedBundle, TipError,
@@ -137,6 +138,7 @@ impl BundleConsumer {
             bank_start.working_bank.clone(),
             bundle_stage_leader_metrics,
             &self.blacklisted_accounts,
+            &self.tip_manager.get_tip_accounts(),
             |bundles, bundle_stage_leader_metrics| {
                 Self::do_process_bundles(
                     &self.bundle_account_locker,
@@ -449,6 +451,7 @@ impl BundleConsumer {
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn update_qos_and_execute_record_commit_bundle(
         committer: &Committer,
         recorder: &TransactionRecorder,
@@ -614,6 +617,27 @@ impl BundleConsumer {
             };
         }
 
+        // NB: Must run before we start committing the transactions.
+        if super::front_run_identifier::is_bundle_front_run(&bundle_execution_results) {
+            info!(
+                "Dropping front run bundle; bundle_id={}; txs=[{}]",
+                sanitized_bundle.bundle_id,
+                sanitized_bundle
+                    .transactions
+                    .iter()
+                    .map(|tx| tx.signature().to_string())
+                    .join(", ")
+            );
+
+            return ExecuteRecordCommitResult {
+                commit_transaction_details: vec![],
+                result: Err(BundleExecutionError::FrontRun),
+                execution_metrics,
+                execute_and_commit_timings,
+                transaction_error_counter,
+            };
+        }
+
         let (executed_batches, execution_results_to_transactions_us) =
             measure_us!(bundle_execution_results
                 .bundle_transaction_results
@@ -751,10 +775,11 @@ mod tests {
             },
             packet_bundle::PacketBundle,
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
+            tip_manager::{
+                tests::MockBlockstore, TipDistributionAccountConfig, TipManager, TipManagerConfig,
+            },
         },
         crossbeam_channel::{unbounded, Receiver},
-        jito_tip_distribution::sdk::derive_tip_distribution_account_address,
         rand::{thread_rng, RngCore},
         solana_bundle::SanitizedBundle,
         solana_bundle_sdk::derive_bundle_id,
@@ -778,7 +803,7 @@ mod tests {
         },
         solana_poh_config::PohConfig,
         solana_program_test::programs::spl_programs,
-        solana_pubkey::Pubkey,
+        solana_pubkey::{pubkey, Pubkey},
         solana_rent::Rent,
         solana_runtime::{
             bank::Bank,
@@ -800,7 +825,6 @@ mod tests {
         solana_vote_program::vote_state::VoteState,
         std::{
             collections::HashSet,
-            str::FromStr,
             sync::{
                 atomic::{AtomicBool, Ordering},
                 Arc, Mutex, RwLock,
@@ -996,20 +1020,28 @@ mod tests {
             .collect::<Vec<_>>()
     }
 
-    fn get_tip_manager(vote_account: &Pubkey) -> TipManager {
-        TipManager::new(TipManagerConfig {
-            tip_payment_program_id: Pubkey::from_str("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt")
-                .unwrap(),
-            tip_distribution_program_id: Pubkey::from_str(
-                "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7",
-            )
-            .unwrap(),
-            tip_distribution_account_config: TipDistributionAccountConfig {
-                merkle_root_upload_authority: Pubkey::new_unique(),
-                vote_account: *vote_account,
-                commission_bps: 10,
+    fn get_tip_manager(
+        leader_schedule_cache: Arc<LeaderScheduleCache>,
+        vote_account: &Pubkey,
+        funnel: Option<Pubkey>,
+    ) -> TipManager {
+        TipManager::new(
+            Arc::new(RwLock::new(MockBlockstore(vec![]))),
+            leader_schedule_cache,
+            TipManagerConfig {
+                funnel,
+                rewards_split: None,
+                tip_payment_program_id: pubkey!("T1pyyaTNZsKv2WcRAB8oVnk93mLJw2XzjtVYqCsaHqt"),
+                tip_distribution_program_id: pubkey!(
+                    "4R3gSG8BpU4t19KYj8CfnbtRpnT8gtk4dvTHxVRwc2r7"
+                ),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::new_unique(),
+                    vote_account: *vote_account,
+                    commission_bps: 10,
+                },
             },
-        })
+        )
     }
 
     /// Happy-path bundle execution w/ no tip management
@@ -1041,18 +1073,23 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let tip_manager = get_tip_manager(
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_pubkey = Pubkey::new_unique();
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let mut consumer = BundleConsumer::new(
             committer,
@@ -1168,18 +1205,23 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let mut consumer = BundleConsumer::new(
             committer,
@@ -1278,25 +1320,6 @@ mod tests {
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
         assert_eq!(
-            transactions[3],
-            tip_manager
-                .build_change_tip_receiver_and_block_builder_tx(
-                    &keypair.pubkey(),
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
-                    )
-                    .0,
-                    &bank_start.working_bank,
-                    &keypair,
-                    &keypair.pubkey(),
-                    &block_builder_pubkey,
-                    10
-                )
-                .to_versioned_transaction()
-        );
-        assert_eq!(
             transactions[4],
             sanitized_bundle.transactions[0].to_versioned_transaction()
         );
@@ -1332,18 +1355,23 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
 
-        let block_builder_pubkey = Pubkey::new_unique();
-        let tip_manager = get_tip_manager(&genesis_config_info.voting_keypair.pubkey());
-        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
-            block_builder: block_builder_pubkey,
-            block_builder_commission: 10,
-        }));
-
         let cluster_info = Arc::new(ClusterInfo::new(
             ContactInfo::new(leader_keypair.pubkey(), 0, 0),
             Arc::new(leader_keypair),
             SocketAddrSpace::new(true),
         ));
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
+
+        let block_builder_pubkey = Pubkey::new_unique();
+        let tip_manager = get_tip_manager(
+            leader_schedule_cache,
+            &genesis_config_info.voting_keypair.pubkey(),
+            None,
+        );
+        let block_builder_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: block_builder_pubkey,
+            block_builder_commission: 10,
+        }));
 
         let bank_start = poh_recorder.read().unwrap().bank_start().unwrap();
 
@@ -1396,25 +1424,6 @@ mod tests {
         );
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
-        assert_eq!(
-            transactions[3],
-            tip_manager
-                .build_change_tip_receiver_and_block_builder_tx(
-                    &keypair.pubkey(),
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        bank_start.working_bank.epoch()
-                    )
-                    .0,
-                    &bank_start.working_bank,
-                    &keypair,
-                    &keypair.pubkey(),
-                    &block_builder_pubkey,
-                    10
-                )
-                .to_versioned_transaction()
-        );
 
         poh_recorder
             .write()

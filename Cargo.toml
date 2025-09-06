@@ -270,6 +270,7 @@ five8_const = "0.1.4"
 flate2 = "1.0.31"
 fnv = "1.0.7"
 fs_extra = "1.3.0"
+funnel = { path = "./paladin-programs/funnel/crates/funnel" }
 futures = "0.3.31"
 futures-util = "0.3.29"
 gag = "1.0.0"
@@ -277,6 +278,7 @@ gethostname = "0.2.3"
 getrandom = "0.3.3"
 goauth = "0.13.1"
 governor = "0.6.3"
+hashbrown = "0.15.2"
 hex = "0.4.3"
 hidapi = { version = "2.6.3", default-features = false }
 histogram = "0.6.9"
@@ -330,6 +332,7 @@ num-traits = "0.2"
 num_cpus = "1.17.0"
 num_enum = "0.7.3"
 openssl = "0.10"
+paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
 parking_lot = "0.12"
 pbkdf2 = { version = "0.11.0", default-features = false }
 pem = "1.1.1"
@@ -374,6 +377,7 @@ serde_yaml = "0.9.34"
 serial_test = "2.0.0"
 sha2 = "0.10.9"
 sha3 = "0.10.8"
+shank = "0.4.2"
 shuttle = "0.7.1"
 signal-hook = "0.3.18"
 siphasher = "1.0.1"
@@ -497,6 +501,7 @@ solana-program-test = { path = "program-test", version = "=2.3.7" }
 solana-pubkey = { version = "2.4.0", default-features = false }
 solana-pubsub-client = { path = "pubsub-client", version = "=2.3.7" }
 solana-quic-client = { path = "quic-client", version = "=2.3.7" }
+solana-sdk = "2.2.1"
 solana-quic-definitions = "2.2.1"
 solana-rayon-threadlimit = { path = "rayon-threadlimit", version = "=2.3.7" }
 solana-remote-wallet = { path = "remote-wallet", version = "=2.3.7", default-features = false }
@@ -538,9 +543,9 @@ solana-storage-bigtable = { path = "storage-bigtable", version = "=2.3.7" }
 solana-storage-proto = { path = "storage-proto", version = "=2.3.7" }
 solana-streamer = { path = "streamer", version = "=2.3.7" }
 solana-svm = { path = "svm", version = "=2.3.7" }
-solana-svm-callback = { path = "svm-callback", version = "=2.3.7" }
+solana-svm-callback = { path = "svm-callback", version = "=2.3.6" }
 solana-svm-conformance = { path = "svm-conformance", version = "=2.3.7" }
-solana-svm-feature-set = { path = "svm-feature-set", version = "=2.3.7" }
+solana-svm-feature-set = { path = "svm-feature-set", version = "=2.3.6" }
 solana-svm-rent-collector = { path = "svm-rent-collector", version = "=2.3.7" }
 solana-svm-transaction = { path = "svm-transaction", version = "=2.3.7" }
 solana-system-interface = "1.0"
@@ -579,6 +584,7 @@ solana-zk-sdk = { path = "zk-sdk", version = "=2.3.7" }
 solana-zk-token-proof-program = { path = "programs/zk-token-proof", version = "=2.3.7" }
 solana-zk-token-sdk = { path = "zk-token-sdk", version = "=2.3.7" }
 spl-associated-token-account = "7.0.0"
+spl-discriminator = "0.4.1"
 spl-generic-token = "1.0.1"
 spl-instruction-padding = "0.3.0"
 spl-memo = "6.0.0"

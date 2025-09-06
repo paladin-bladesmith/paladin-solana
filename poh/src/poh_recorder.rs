@@ -99,6 +99,27 @@ impl Record {
     }
 }
 
+pub enum PohRecorderBank {
+    WorkingBank(BankStart),
+    LastResetBank(Arc<Bank>),
+}
+
+impl PohRecorderBank {
+    pub fn bank(&self) -> &Bank {
+        match self {
+            PohRecorderBank::WorkingBank(bank_start) => &bank_start.working_bank,
+            PohRecorderBank::LastResetBank(last_reset_bank) => last_reset_bank,
+        }
+    }
+
+    pub fn working_bank_start(&self) -> Option<&BankStart> {
+        match self {
+            PohRecorderBank::WorkingBank(bank_start) => Some(bank_start),
+            PohRecorderBank::LastResetBank(_last_reset_bank) => None,
+        }
+    }
+}
+
 pub struct WorkingBank {
     pub bank: BankWithScheduler,
     pub start: Arc<Instant>,
@@ -640,6 +661,15 @@ impl PohRecorder {
             working_bank: w.bank.clone(),
             bank_creation_time: w.start.clone(),
         })
+    }
+
+    pub fn get_poh_recorder_bank(&self) -> PohRecorderBank {
+        let bank_start = self.bank_start();
+        if let Some(bank_start) = bank_start {
+            PohRecorderBank::WorkingBank(bank_start)
+        } else {
+            PohRecorderBank::LastResetBank(self.start_bank.clone())
+        }
     }
 
     pub fn has_bank(&self) -> bool {

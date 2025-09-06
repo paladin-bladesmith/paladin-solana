@@ -13,8 +13,10 @@ use {
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_measure::{measure::Measure, measure_us},
     solana_time_utils::timestamp,
-    std::time::Duration,
+    std::time::{Duration, Instant},
 };
+
+const DEFAULT_BATCH_BUNDLE_TIMEOUT: Duration = Duration::from_millis(10);
 
 pub struct BundleReceiver {
     id: u32,
@@ -40,12 +42,36 @@ impl BundleReceiver {
     pub fn receive_and_buffer_bundles(
         &mut self,
         bundle_storage: &mut BundleStorage,
+        batch_bundle_results: &mut ReceiveBundleResults,
+        batch_bundle_timer: &mut Option<Instant>,
         bundle_stage_metrics: &mut BundleStageLoopMetrics,
         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
     ) -> Result<(), RecvTimeoutError> {
         let (result, recv_time_us) = measure_us!({
-            let recv_timeout = Self::get_receive_timeout(bundle_storage);
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
+
+            // If timer has passed, buffer current bundles and reset timer
+            if let Some(timer) = batch_bundle_timer {
+                if timer.elapsed() >= DEFAULT_BATCH_BUNDLE_TIMEOUT {
+                    // Take the batch, and reset to default
+                    let batch_bundles = std::mem::take(batch_bundle_results);
+
+                    // Buffer bundles
+                    self.buffer_bundles(
+                        batch_bundles,
+                        bundle_storage,
+                        bundle_stage_metrics,
+                        // tracer_packet_stats,
+                        bundle_stage_leader_metrics,
+                    );
+
+                    // Reset timer
+                    *batch_bundle_timer = None;
+                }
+            }
+
+            let recv_timeout = Self::get_receive_timeout(bundle_storage, &batch_bundle_timer);
+
             self.bundle_packet_deserializer
                 .receive_bundles(
                     recv_timeout,
@@ -57,15 +83,15 @@ impl BundleReceiver {
                         Ok(packet)
                     },
                 )
-                // Consumes results if Ok, otherwise we keep the Err
+                // Add to batch if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
-                    self.buffer_bundles(
-                        receive_bundle_results,
-                        bundle_storage,
-                        bundle_stage_metrics,
-                        // tracer_packet_stats,
-                        bundle_stage_leader_metrics,
-                    );
+                    // If batch is empty, start timer because its the first bundle we receive
+                    if batch_bundle_results.is_empty() {
+                        *batch_bundle_timer = Some(Instant::now());
+                    }
+
+                    batch_bundle_results.extend(receive_bundle_results);
+
                     recv_and_buffer_measure.stop();
                     bundle_stage_metrics.increment_receive_and_buffer_bundles_elapsed_us(
                         recv_and_buffer_measure.as_us(),
@@ -80,7 +106,10 @@ impl BundleReceiver {
         result
     }
 
-    fn get_receive_timeout(bundle_storage: &BundleStorage) -> Duration {
+    fn get_receive_timeout(
+        bundle_storage: &BundleStorage,
+        batch_bundle_timer: &Option<Instant>,
+    ) -> Duration {
         // Gossip thread will almost always not wait because the transaction storage will most likely not be empty
         if !bundle_storage.is_empty() {
             // If there are buffered packets, run the equivalent of try_recv to try reading more
@@ -88,6 +117,8 @@ impl BundleReceiver {
             // buffered_packet_batches containing transactions that exceed the cost model for
             // the current bank.
             Duration::from_millis(0)
+        } else if let Some(timer) = batch_bundle_timer {
+            DEFAULT_BATCH_BUNDLE_TIMEOUT.saturating_sub(timer.elapsed())
         } else {
             // BundleStage should pick up a working_bank as fast as possible
             Duration::from_millis(100)
@@ -175,7 +206,7 @@ mod tests {
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::versioned::VersionedTransaction,
-        std::{collections::HashSet, sync::Arc},
+        std::{collections::HashSet, sync::Arc, thread::sleep},
     };
 
     /// Makes `num_bundles` random bundles with `num_packets_per_bundle` packets per bundle.
@@ -252,12 +283,43 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
+        // confirm bundles were batched
+        assert_eq!(
+            batch_bundle_results.deserialized_bundles.len(),
+            bundles.len()
+        );
+        assert_eq!(batch_bundle_results.num_dropped_bundles.0, 0);
+        // Confirm timer was set
+        assert!(batch_bundle_timer.is_some());
+
+        // Advance time by default batch timeout
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+
+        // Call again to buffer batch
+        let result = bundle_receiver.receive_and_buffer_bundles(
+            &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
+            &mut bundle_stage_stats,
+            &mut bundle_stage_leader_metrics,
+        );
+        // No new bundles, so we should timeout
+        assert_eq!(result.unwrap_err(), RecvTimeoutError::Timeout);
+        // Confirm batch results is empty
+        assert!(batch_bundle_results.is_empty());
+        // Assert timer reset
+        assert!(batch_bundle_timer.is_none());
 
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 10);
         assert_eq!(bundle_storage.unprocessed_packets_len(), 20);
@@ -268,6 +330,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -309,12 +372,29 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
+
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
 
         // 1005 bundles were sent, but the capacity is 1000
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 1000);
@@ -325,6 +405,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure the first 1000 bundles are the ones to process
@@ -361,12 +442,29 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
+
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
 
         let poh_max_height_reached_index = 3;
 
@@ -375,6 +473,7 @@ mod tests {
         assert!(bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -395,6 +494,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles[poh_max_height_reached_index..], bundles_to_process);
@@ -426,12 +526,29 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
+
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
 
         let bank_processing_done_index = 3;
 
@@ -439,6 +556,7 @@ mod tests {
         assert!(bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -458,6 +576,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles[bank_processing_done_index..], bundles_to_process);
@@ -489,16 +608,34 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -535,16 +672,34 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -579,16 +734,34 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 vec![Err(BundleExecutionError::LockError); bundles_to_process.len()]
@@ -619,17 +792,35 @@ mod tests {
 
         let mut bundle_stage_stats = BundleStageLoopMetrics::default();
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         // buffered bundles are moved to cost model side deque
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles, bundles_to_process);
@@ -643,6 +834,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert!(bundles_to_process.is_empty());
@@ -661,6 +853,7 @@ mod tests {
         assert!(!bundle_storage.process_bundles(
             new_bank,
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure same order as original
@@ -701,17 +894,35 @@ mod tests {
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
 
         // receive and buffer bundles to the cost model reserve to test the capacity/dropped bundles there
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         // buffered bundles are moved to cost model side deque
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles0, bundles_to_process);
@@ -731,15 +942,30 @@ mod tests {
         // should get 500 more bundles, cost model buffered length should be 1000
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         // buffered bundles are moved to cost model side deque
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles1, bundles_to_process);
@@ -756,15 +982,30 @@ mod tests {
         // this set will get dropped from cost model buffered bundles
         let result = bundle_receiver.receive_and_buffer_bundles(
             &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
             &mut bundle_stage_stats,
             &mut bundle_stage_leader_metrics,
         );
         assert!(result.is_ok());
 
+        // Buffer batch (timeout error)
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
         // buffered bundles are moved to cost model side deque, but its at capacity so stays the same size
         assert!(!bundle_storage.process_bundles(
             bank_forks.read().unwrap().working_bank(),
             &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
             &HashSet::default(),
             |bundles_to_process, _stats| {
                 assert_bundles_same(&bundles2, bundles_to_process);
@@ -785,6 +1026,7 @@ mod tests {
             new_bank,
             &mut bundle_stage_leader_metrics,
             &HashSet::default(),
+            &HashSet::default(),
             |bundles_to_process, _stats| {
                 // make sure same order as original
                 let expected_bundles: Vec<_> =
@@ -795,5 +1037,102 @@ mod tests {
         ));
         assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
         assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
+    }
+
+    #[test]
+    fn test_batching_bundles() {
+        solana_logger::setup();
+
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config(10_000);
+        let (_, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let mut bundle_storage = BundleStorage::default();
+
+        let (sender, receiver) = unbounded();
+        let mut bundle_receiver = BundleReceiver::new(0, receiver, Some(5));
+
+        // send 2 bundles across the queue
+        let bundles = make_random_bundles(&mint_keypair, 2, 2, genesis_config.hash());
+        sender.send(bundles.clone()).unwrap();
+
+        let mut bundle_stage_stats = BundleStageLoopMetrics::default();
+        let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
+        let result = bundle_receiver.receive_and_buffer_bundles(
+            &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
+            &mut bundle_stage_stats,
+            &mut bundle_stage_leader_metrics,
+        );
+        assert!(result.is_ok());
+        assert_eq!(batch_bundle_results.deserialized_bundles.len(), bundles.len());
+
+        let bundles2 = make_random_bundles(&mint_keypair, 2, 2, genesis_config.hash());
+        sender.send(bundles2.clone()).unwrap();
+
+        // Some time should have passed, but not 10ms
+        let result = bundle_receiver.receive_and_buffer_bundles(
+            &mut bundle_storage,
+            &mut batch_bundle_results,
+            &mut batch_bundle_timer,
+            &mut bundle_stage_stats,
+            &mut bundle_stage_leader_metrics,
+        );
+        assert!(result.is_ok());
+        assert_eq!(batch_bundle_results.deserialized_bundles.len(), bundles.len() + bundles2.len());
+
+        // Fast forward 10ms to buffer the batch
+        sleep(DEFAULT_BATCH_BUNDLE_TIMEOUT);
+        let err = bundle_receiver
+            .receive_and_buffer_bundles(
+                &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
+                &mut bundle_stage_stats,
+                &mut bundle_stage_leader_metrics,
+            )
+            .unwrap_err();
+
+        // No new bundles, so we should timeout
+        assert_eq!(err, RecvTimeoutError::Timeout);
+        // Confirm batch results is empty
+        assert!(batch_bundle_results.is_empty());
+        // Assert timer reset
+        assert!(batch_bundle_timer.is_none());
+
+        assert_eq!(bundle_storage.unprocessed_bundles_len(), 4);
+        assert_eq!(bundle_storage.unprocessed_packets_len(), 8);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
+        assert_eq!(bundle_storage.cost_model_buffered_packets_len(), 0);
+        assert_eq!(bundle_storage.max_receive_size(), 996);
+
+        assert!(!bundle_storage.process_bundles(
+            bank_forks.read().unwrap().working_bank(),
+            &mut bundle_stage_leader_metrics,
+            &HashSet::default(),
+            &HashSet::default(),
+            |bundles_to_process, _stats| {
+                let merged_bundles = bundles
+                    .iter()
+                    .chain(bundles2.iter())
+                    .cloned()
+                    .collect::<Vec<_>>();
+                assert_bundles_same(&merged_bundles, bundles_to_process);
+                (0..bundles_to_process.len()).map(|_| Ok(())).collect()
+            }
+        ));
+        assert_eq!(bundle_storage.unprocessed_bundles_len(), 0);
+        assert_eq!(bundle_storage.unprocessed_packets_len(), 0);
+        assert_eq!(bundle_storage.cost_model_buffered_bundles_len(), 0);
+        assert_eq!(bundle_storage.cost_model_buffered_packets_len(), 0);
+        assert_eq!(bundle_storage.max_receive_size(), 1000);
     }
 }

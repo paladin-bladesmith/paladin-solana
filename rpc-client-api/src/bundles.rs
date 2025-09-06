@@ -3,7 +3,7 @@
 use {
     crate::config::RpcSimulateTransactionAccountsConfig,
     solana_account_decoder_client_types::UiAccount,
-    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError},
+    solana_bundle::{bundle_execution::LoadAndExecuteBundleError, BundleExecutionError, TipError},
     solana_clock::Slot,
     solana_commitment_config::{CommitmentConfig, CommitmentLevel},
     solana_signature::Signature,
@@ -93,6 +93,8 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
             BundleExecutionError::LockError => Self::BundleLockError,
             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
+            // NB: Lie about error type to not break downstream consumers.
+            BundleExecutionError::FrontRun => Self::TipError(TipError::CrankTipError.to_string()),
         }
     }
 }
@@ -119,7 +121,7 @@ pub struct RpcSimulateBundleTransactionResult {
 #[serde(rename_all = "camelCase")]
 pub struct RpcSimulateBundleConfig {
     /// Gives the state of accounts pre/post transaction execution.
-    /// The length of each of these must be equal to the number transactions.   
+    /// The length of each of these must be equal to the number transactions.
     pub pre_execution_accounts_configs: Vec<Option<RpcSimulateTransactionAccountsConfig>>,
     pub post_execution_accounts_configs: Vec<Option<RpcSimulateTransactionAccountsConfig>>,
 

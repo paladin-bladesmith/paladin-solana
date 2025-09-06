@@ -27,6 +27,9 @@ use {
 const EXCLUDE_KEY: &str = "account-index-exclude-key";
 const INCLUDE_KEY: &str = "account-index-include-key";
 
+const DEFAULT_P3_PORT: &str = "4819";
+const DEFAULT_P3_MEV_PORT: &str = "4820";
+
 pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     app
     .arg(
@@ -1638,6 +1641,12 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
             .takes_value(true)
     )
     .arg(
+        Arg::with_name("trust_relayer_packets")
+            .long("trust-relayer-packets")
+            .takes_value(false)
+            .help("Skip signature verification on relayer packets. Not recommended unless the relayer is trusted.")
+    )
+    .arg(
         Arg::with_name("relayer_expected_heartbeat_interval_ms")
             .long("relayer-expected-heartbeat-interval-ms")
             .takes_value(true)
@@ -1751,5 +1760,54 @@ pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 
                 "Use connection-cache crate to send transactions over TPU ports. If not set,\
                 tpu-client-next is used by default.",
             ),
+    )
+    .arg(
+        Arg::with_name("funnel")
+            .long("funnel")
+            .help("funnel. Defaults to None")
+            .takes_value(true),
+    )
+    .arg(
+        Arg::with_name("p3_port")
+            .long("p3-port")
+            .help("Which port to bind P3 to")
+            .default_value(DEFAULT_P3_PORT)
+            .takes_value(true)
+    )
+    .arg(
+        Arg::with_name("p3_mev_port")
+            .long("p3-mev-port")
+            .help("Which port to bind P3 MEV to")
+            .default_value(DEFAULT_P3_MEV_PORT)
+            .takes_value(true)
+    )
+    .arg(
+        Arg::with_name("secondary_block_engines_urls")
+            .long("secondary-block-engines-urls")
+            .value_name("HOST:PORT")
+            .help(
+                "Specify extra block engines urls to receive bundles from. \
+                Comma separated urls, May be specified multiple times.",
+            )
+            .takes_value(true)
+            .multiple(true)
+    )
+    .arg(
+        Arg::with_name("batch_interval_ms")
+            .long("batch-interval-ms")
+            .help("scheduler batch interval in milliseconds. Defaults to 50ms")
+            .takes_value(true),
+    )
+    .arg(
+        Arg::with_name("rewards_split_minimum_lamports")
+            .long("rewards-split-minimum-lamports")
+            .help("the minimum number of lamports to reserve for the voting identity")
+            .takes_value(true),
+    )
+    .arg(
+        Arg::with_name("rewards_split_bp")
+            .long("rewards-split-bp")
+            .help("the percentage of block rewards to send to stakers (in basis points)")
+            .takes_value(true),
     )
 }
