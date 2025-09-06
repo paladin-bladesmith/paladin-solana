@@ -111,6 +111,8 @@ where
 
             self.receive_completed()?;
             self.process_transactions(&decision)?;
+            self.receive_and_buffer
+                .maybe_queue_batch(&mut self.container, &decision);
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
@@ -338,8 +340,7 @@ where
             count_metrics.num_dropped_on_receive_fee_payer += *num_dropped_on_fee_payer;
             count_metrics.num_dropped_on_capacity += *num_dropped_on_capacity;
             count_metrics.num_buffered += *num_buffered;
-            count_metrics.num_dropped_on_blacklisted_account +=
-                *num_dropped_on_blacklisted_account;
+            count_metrics.num_dropped_on_blacklisted_account += *num_dropped_on_blacklisted_account;
         });
 
         self.timing_metrics.update(|timing_metrics| {
@@ -386,7 +387,10 @@ mod tests {
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
         solana_transaction::Transaction,
-        std::sync::{Arc, RwLock},
+        std::{
+            sync::{atomic::AtomicBool, Arc, RwLock},
+            time::Duration,
+        },
         test_case::test_case,
     };
 
@@ -414,6 +418,7 @@ mod tests {
             PacketDeserializer::new(receiver),
             bank_forks,
             blacklisted_accounts,
+            Duration::ZERO,
         )
     }
 
@@ -422,11 +427,7 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer {
-            receiver,
-            bank_forks,
-            blacklisted_accounts,
-        }
+        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts)
     }
 
     #[allow(clippy::type_complexity)]

@@ -1062,6 +1062,7 @@ mod tests {
         solana_core::{
             admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
             consensus::tower_storage::NullTowerStorage,
+            proxy::block_engine_stage::BlockEngineConfig,
             validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
         },
         solana_gossip::{cluster_info::ClusterInfo, node::Node},

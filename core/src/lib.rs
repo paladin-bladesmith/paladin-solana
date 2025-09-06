@@ -27,6 +27,7 @@ pub mod immutable_deserialized_bundle;
 mod mock_alpenglow_consensus;
 pub mod next_leader;
 pub mod optimistic_confirmation_verifier;
+pub mod p3_stage;
 pub mod packet_bundle;
 pub mod proxy;
 pub mod repair;

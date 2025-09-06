@@ -629,6 +629,14 @@ x509-parser = "0.14.0"
 zeroize = { version = "1.7", default-features = false }
 zstd = "0.13.3"
 
+# Paladin
+funnel = { path = "./paladin-programs/funnel/crates/funnel" }
+hashbrown = "0.15.2"
+paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
+shank = "0.4.2"
+solana-sdk = "3.0.0"
+spl-discriminator = "0.4.1"
+
 [profile.release-with-debug]
 inherits = "release"
 debug = true
