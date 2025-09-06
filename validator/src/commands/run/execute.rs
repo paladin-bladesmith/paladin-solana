@@ -1,12 +1,12 @@
 use {
     crate::{
-        admin_rpc_service::{self, load_staked_nodes_overrides, StakedNodesOverrides},
+        admin_rpc_service::{self, StakedNodesOverrides, load_staked_nodes_overrides},
         bootstrap,
         cli::{self},
-        commands::{run::args::RunArgs, FromClapArgMatches},
+        commands::{FromClapArgMatches, run::args::RunArgs},
         ledger_lockfile, lock_ledger,
     },
-    clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
+    clap::{ArgMatches, crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit},
     crossbeam_channel::unbounded,
     log::*,
     rand::{seq::SliceRandom, thread_rng},
@@ -23,8 +23,9 @@ use {
     solana_clap_utils::input_parsers::{
         keypair_of, keypairs_of, parse_cpu_ranges, pubkey_of, value_of, values_of,
     },
-    solana_clock::{Slot, DEFAULT_SLOTS_PER_EPOCH},
+    solana_clock::{DEFAULT_SLOTS_PER_EPOCH, Slot},
     solana_core::{
+        banking_stage::DEFAULT_BATCH_INTERVAL,
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
@@ -33,13 +34,11 @@ use {
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{
-            is_snapshot_config_valid, BlockProductionMethod, BlockVerificationMethod,
-            TransactionStructure, Validator, ValidatorConfig, ValidatorError,
-            ValidatorStartProgress, ValidatorTpuConfig,
+            BlockProductionMethod, BlockVerificationMethod, TransactionStructure, Validator, ValidatorConfig, ValidatorError, ValidatorStartProgress, ValidatorTpuConfig, is_snapshot_config_valid
         },
     },
     solana_gossip::{
-        cluster_info::{NodeConfig, DEFAULT_CONTACT_SAVE_INTERVAL_MILLIS},
+        cluster_info::{DEFAULT_CONTACT_SAVE_INTERVAL_MILLIS, NodeConfig},
         contact_info::ContactInfo,
         node::Node,
     },
@@ -51,34 +50,34 @@ use {
     },
     solana_logger::redirect_stderr_to_file,
     solana_net_utils::multihomed_sockets::BindIpAddrs,
-    solana_perf::recycler::enable_recycler_warming,
+    solana_perf::{recycler::enable_recycler_warming, report_target_features},
     solana_poh::poh_service,
     solana_pubkey::Pubkey,
     solana_runtime::{
         runtime_config::RuntimeConfig,
         snapshot_config::{SnapshotConfig, SnapshotUsage},
         snapshot_utils::{
-            self, ArchiveFormat, SnapshotInterval, SnapshotVersion, BANK_SNAPSHOTS_DIR,
+            self, ArchiveFormat, BANK_SNAPSHOTS_DIR, SnapshotInterval, SnapshotVersion
         },
     },
     solana_send_transaction_service::send_transaction_service,
     solana_signer::Signer,
-    solana_streamer::quic::{QuicServerParams, DEFAULT_TPU_COALESCE},
+    solana_streamer::quic::{DEFAULT_TPU_COALESCE, QuicServerParams},
     solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
     solana_turbine::{
         broadcast_stage::BroadcastStageType,
-        xdp::{set_cpu_affinity, XdpConfig},
+        xdp::{XdpConfig, set_cpu_affinity},
     },
     solana_validator_exit::Exit,
     std::{
         collections::HashSet,
         fs::{self, File},
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         num::{NonZeroU64, NonZeroUsize},
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
         time::Duration,
     },
 };
@@ -138,7 +137,7 @@ pub fn execute(
         enable_recycler_warming();
     }
 
-    solana_core::validator::report_target_features();
+    report_target_features();
 
     let authorized_voter_keypairs = keypairs_of(matches, "authorized_voter_keypairs")
         .map(|keypairs| keypairs.into_iter().map(Arc::new).collect())
@@ -748,6 +747,28 @@ pub fn execute(
         tip_manager_config,
         preallocated_bundle_cost: value_of(matches, "preallocated_bundle_cost")
             .expect("preallocated_bundle_cost set as default"),
+        // paladin config
+        batch_interval: if matches.is_present("batch_interval_ms") {
+            Duration::from_millis(
+                value_of(matches, "batch_interval_ms")
+                    .expect("Couldn't parse --batch-interval-ms"),
+            )
+        } else {
+            DEFAULT_BATCH_INTERVAL
+        },
+        p3_socket: SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            value_of(matches, "p3_port").unwrap(),
+        )),
+        p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            value_of(matches, "p3_mev_port").unwrap(),
+        )),
+        secondary_block_engine_urls: matches
+            .values_of("secondary_block_engines_urls")
+            .unwrap_or_default()
+            .map(ToString::to_string)
+            .collect(),
     };
 
     let reserved = validator_config
@@ -1380,6 +1401,9 @@ fn tip_manager_config_from_matches(
     voting_disabled: bool,
 ) -> TipManagerConfig {
     TipManagerConfig {
+        // TODO: Re-enable.
+        funnel: None,
+        rewards_split: None,
         tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
             || {
                 if !voting_disabled {

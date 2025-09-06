@@ -2806,6 +2806,7 @@ mod tests {
             &mut Vec::new(), // pings
             &SocketAddrSpace::Unspecified,
             None,
+            
         );
         let mut reqs = cluster_info.generate_new_gossip_requests(
             &thread_pool,
