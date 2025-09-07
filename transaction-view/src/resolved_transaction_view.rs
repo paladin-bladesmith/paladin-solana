@@ -316,8 +316,11 @@ mod tests {
         };
         let bytes = bincode::serialize(&transaction).unwrap();
         let view = SanitizedTransactionView::try_new_sanitized(bytes.as_ref()).unwrap();
-        let result =
-            ResolvedTransactionView::try_new(view, Some(loaded_addresses), &HashSet::default());
+        let result = ResolvedTransactionView::try_new(
+            view,
+            Some(loaded_addresses),
+            &HashSet::default(),
+        );
         assert!(matches!(
             result,
             Err(TransactionViewError::AddressLookupMismatch)
@@ -353,8 +356,11 @@ mod tests {
         };
         let bytes = bincode::serialize(&transaction).unwrap();
         let view = SanitizedTransactionView::try_new_sanitized(bytes.as_ref()).unwrap();
-        let result =
-            ResolvedTransactionView::try_new(view, Some(loaded_addresses), &HashSet::default());
+        let result = ResolvedTransactionView::try_new(
+            view,
+            Some(loaded_addresses),
+            &HashSet::default(),
+        );
         assert!(matches!(
             result,
             Err(TransactionViewError::AddressLookupMismatch)
