@@ -1030,13 +1030,13 @@ pub(crate) mod tests {
         // Setup genesis.
         let rent = Rent::default();
         let genesis_config = create_genesis_config_with_leader_ex(
-            sol_str_to_lamports("1000.0").unwrap(),
+            sol_str_to_lamports("1000").unwrap(),
             &mint_keypair.pubkey(),
             &leader_keypair.pubkey(),
             &voting_keypair.pubkey(),
             &solana_pubkey::new_rand(),
-            rent.minimum_balance(VoteState::size_of()) + sol_str_to_lamports("1_000_000.0").unwrap(),
-            sol_str_to_lamports("1_000_000.0").unwrap(),
+            rent.minimum_balance(VoteState::size_of()) + sol_str_to_lamports("1000000").unwrap(),
+            sol_str_to_lamports("1000000").unwrap(),
             FeeRateGovernor {
                 // Initialize with a non-zero fee
                 lamports_per_signature: DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE / 2,
@@ -1231,7 +1231,7 @@ pub(crate) mod tests {
         let fixture = create_fixture(&[0, 12, 20, 32]);
         let bank = Bank::new_from_parent(fixture.bank, &Pubkey::new_unique(), 33);
 
-        // Set the block reward to to the slot index.
+        // Set the block reward to the slot index.
         fixture
             .blockstore
             .write()

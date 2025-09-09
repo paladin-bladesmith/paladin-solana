@@ -427,7 +427,7 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts)
+        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts, Duration::ZERO)
     }
 
     #[allow(clippy::type_complexity)]
