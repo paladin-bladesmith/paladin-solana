@@ -1019,7 +1019,7 @@ pub(crate) mod tests {
         leader_keypair: Arc<Keypair>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager: TipManager,
-        paladin: Pubkey,
+        paladin: Arc<Keypair>,
     }
 
     fn create_fixture(paladin_slots: &[u64]) -> TestFixture {
@@ -1112,7 +1112,7 @@ pub(crate) mod tests {
             leader_keypair,
             leader_schedule_cache: leader_schedule_cache.clone(),
             tip_manager: TipManager::new(blockstore, leader_schedule_cache, config),
-            paladin: paladin.pubkey(),
+            paladin,
         }
     }
 
@@ -1124,7 +1124,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&fixture.bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&fixture.bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, 0);
@@ -1143,7 +1143,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&child_bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&child_bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, 0);
@@ -1158,12 +1158,18 @@ pub(crate) mod tests {
             &fixture.leader_keypair.pubkey(),
             fixture.bank.slot() + 1,
         );
-        fixture.blockstore.write().unwrap().0.push(100);
+
+        fixture
+            .blockstore
+            .write()
+            .unwrap()
+            .0
+            .extend(std::iter::repeat(100).take(3));
 
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&child_bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&child_bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, TipManager::calculate_funnel_take(100));
@@ -1195,7 +1201,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&child_bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&child_bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, 0);
@@ -1207,8 +1213,7 @@ pub(crate) mod tests {
         let fixture = create_fixture(&[32, 35, 37, 39]);
 
         // Create a bank at slot 40.
-        let child_bank =
-            Bank::new_from_parent(fixture.bank.clone(), &fixture.leader_keypair.pubkey(), 40);
+        let child_bank = Bank::new_from_parent(fixture.bank, &fixture.leader_keypair.pubkey(), 40);
         fixture
             .blockstore
             .write()
@@ -1219,7 +1224,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&child_bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&child_bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, TipManager::calculate_funnel_take(400));
@@ -1242,7 +1247,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(
@@ -1265,13 +1270,13 @@ pub(crate) mod tests {
             .extend((0..64).map(|i| i * 10));
 
         // Remove paladin leader state account.
-        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin);
+        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin.pubkey());
         bank.store_account(&paladin_leader_state, &Account::default().into());
 
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, 0);
@@ -1291,13 +1296,13 @@ pub(crate) mod tests {
             .extend((0..64).map(|i| i * 10));
 
         // Remove paladin leader state account.
-        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin);
+        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin.pubkey());
         bank.store_account(&paladin_leader_state, &Account::default().into());
 
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, TipManager::calculate_funnel_take(320 + 390));
@@ -1317,13 +1322,13 @@ pub(crate) mod tests {
             .extend((0..64).map(|i| i * 10));
 
         // Remove paladin leader state account.
-        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin);
+        let (paladin_leader_state, _) = funnel::find_leader_state(&fixture.paladin.pubkey());
         bank.store_account(&paladin_leader_state, &Account::default().into());
 
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, TipManager::calculate_funnel_take(340 + 390));
@@ -1345,7 +1350,7 @@ pub(crate) mod tests {
         // Reduce the paladin leader lamport balance to just the rent exemption
         // requirement.
         bank.store_account(
-            &fixture.paladin,
+            &fixture.paladin.pubkey(),
             &Account {
                 lamports: bank.rent_collector().rent.minimum_balance(0),
                 ..Account::default()
@@ -1356,7 +1361,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, 0);
@@ -1378,7 +1383,7 @@ pub(crate) mod tests {
         // Reduce the paladin leader lamport balance to just the rent exemption
         // requirement.
         bank.store_account(
-            &fixture.paladin,
+            &fixture.paladin.pubkey(),
             &Account {
                 lamports: bank.rent_collector().rent.minimum_balance(0) + 1,
                 ..Account::default()
@@ -1389,7 +1394,7 @@ pub(crate) mod tests {
         // Act.
         let additional = fixture
             .tip_manager
-            .compute_additional_lamports(&bank, &fixture.leader_keypair);
+            .compute_additional_lamports(&bank, &fixture.paladin);
 
         // Assert.
         assert_eq!(additional, 1);

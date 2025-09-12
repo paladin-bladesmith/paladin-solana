@@ -169,11 +169,7 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
                     Ok(ReceivingStats {
                         num_received,
                         num_dropped_without_parsing: 0,
-                        num_dropped_on_parsing_and_sanitization: num_dropped_on_initial_parsing
-                            + receive_packet_results
-                                .packet_stats
-                                .failed_sanitization_count
-                                .0 as usize,
+                        num_dropped_on_parsing_and_sanitization: num_dropped_on_initial_parsing,
                         num_dropped_on_lock_validation: 0,
                         num_dropped_on_compute_budget: 0,
                         num_dropped_on_age: 0,
@@ -1291,6 +1287,20 @@ mod tests {
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
 
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_without_parsing,
+            num_dropped_on_sanitization,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_sanitization, 0);
+
         verify_container(&mut container, 0);
     }
 
@@ -1335,11 +1345,23 @@ mod tests {
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
-        assert_eq!(num_dropped_on_age, 1);
+        assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_age,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_age, 1);
 
         verify_container(&mut container, 0);
     }
@@ -1392,9 +1414,21 @@ mod tests {
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
-        assert_eq!(num_dropped_on_fee_payer, 1);
+        assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_fee_payer,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_fee_payer, 1);
 
         verify_container(&mut container, 0);
     }
@@ -1457,7 +1491,7 @@ mod tests {
         assert_eq!(num_received, 1);
 
         assert_eq!(num_dropped_without_parsing, 0);
-        assert_eq!(num_dropped_on_parsing_and_sanitization, 1);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
@@ -1467,8 +1501,20 @@ mod tests {
         assert_eq!(num_buffered, 0);
 
         // We need to queue the batch
-        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_without_parsing,
+            num_dropped_on_sanitization,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
 
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_sanitization, 1);
+
+        // Nothing should be included in the container
         verify_container(&mut container, 0);
     }
 
@@ -1583,11 +1629,20 @@ mod tests {
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
-        assert!(num_dropped_on_capacity > 0);
+        assert!(num_dropped_on_capacity == 0);
         assert_eq!(num_buffered, 0);
 
         // We need to queue the batch
-        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_capacity,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, num_transactions);
+        assert!(num_dropped_on_capacity > 0);
 
         // assert_eq!(num_buffered, num_transactions);
         verify_container(&mut container, TEST_CONTAINER_CAPACITY);
@@ -1636,10 +1691,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(num_received, 2);
-        assert_eq!(num_dropped_on_blacklisted_account, 1);
+        assert_eq!(num_dropped_on_blacklisted_account, 0);
 
         // We need to queue the batch
-        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_blacklisted_account,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 1);
+        assert_eq!(num_dropped_on_blacklisted_account, 1);
+
         verify_container(&mut container, 1);
     }
 
