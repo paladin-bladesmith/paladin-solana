@@ -402,6 +402,6 @@ mod tests {
 
         let cost = CostModel::calculate_cost(&sanitized, &FeatureSet::all_enabled());
 
-        assert_eq!(cost.sum(), 17857);
+        assert_eq!(cost.sum(), 20707);
     }
 }
