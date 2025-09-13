@@ -803,6 +803,7 @@ mod tests {
             prioritization_fee_cache::PrioritizationFeeCache,
         },
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
+        solana_sdk::transaction::MessageHash,
         solana_signer::Signer,
         solana_streamer::socket::SocketAddrSpace,
         solana_svm::{
@@ -810,7 +811,7 @@ mod tests {
             transaction_error_metrics::TransactionErrorMetrics,
         },
         solana_system_transaction::transfer,
-        solana_transaction::versioned::VersionedTransaction,
+        solana_transaction::{versioned::VersionedTransaction, Transaction},
         solana_transaction_error::TransactionError,
         solana_vote_interface::state::VoteStateV3,
         std::{
@@ -1296,24 +1297,37 @@ mod tests {
 
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
-        assert_eq!(
-            transactions[3],
-            tip_manager
-                .change_tip_receiver_and_block_builder_tx(
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        working_bank.epoch()
-                    )
-                    .0,
-                    &bank,
-                    &keypair,
-                    &block_builder_pubkey,
-                    10
-                )
-                .unwrap()
-                .to_versioned_transaction()
+        
+        // Build the tx to compare
+        let ixs = tip_manager.build_change_tip_receiver_and_block_builder_tx(
+            &keypair.pubkey(),
+            &derive_tip_distribution_account_address(
+                &tip_manager.tip_distribution_program_id(),
+                &genesis_config_info.validator_pubkey,
+                working_bank.epoch(),
+            )
+            .0,
+            &keypair,
+            &keypair.pubkey(),
+            &block_builder_pubkey,
+            10,
         );
+        let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&keypair.pubkey()),
+            &[keypair],
+            working_bank.last_blockhash(),
+        ));
+        let tx = RuntimeTransaction::try_create(
+            tx,
+            MessageHash::Compute,
+            None,
+            &*working_bank,
+            bank.get_reserved_account_keys(),
+        )
+        .unwrap();
+        assert_eq!(transactions[3], tx.to_versioned_transaction());
+        
         assert_eq!(
             transactions[4],
             sanitized_bundle.transactions[0].to_versioned_transaction()
@@ -1420,24 +1434,36 @@ mod tests {
 
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
-        assert_eq!(
-            transactions[3],
-            tip_manager
-                .change_tip_receiver_and_block_builder_tx(
-                    &derive_tip_distribution_account_address(
-                        &tip_manager.tip_distribution_program_id(),
-                        &genesis_config_info.validator_pubkey,
-                        working_bank.epoch()
-                    )
-                    .0,
-                    &bank,
-                    &keypair,
-                    &block_builder_pubkey,
-                    10
-                )
-                .unwrap()
-                .to_versioned_transaction()
+
+        // Build the tx to compare
+        let ixs = tip_manager.build_change_tip_receiver_and_block_builder_tx(
+            &keypair.pubkey(),
+            &derive_tip_distribution_account_address(
+                &tip_manager.tip_distribution_program_id(),
+                &genesis_config_info.validator_pubkey,
+                working_bank.epoch(),
+            )
+            .0,
+            &keypair,
+            &keypair.pubkey(),
+            &block_builder_pubkey,
+            10,
         );
+        let tx = VersionedTransaction::from(Transaction::new_signed_with_payer(
+            &ixs,
+            Some(&keypair.pubkey()),
+            &[keypair],
+            working_bank.last_blockhash(),
+        ));
+        let tx = RuntimeTransaction::try_create(
+            tx,
+            MessageHash::Compute,
+            None,
+            &*working_bank,
+            bank.get_reserved_account_keys(),
+        )
+        .unwrap();
+        assert_eq!(transactions[3], tx.to_versioned_transaction());
 
         poh_recorder
             .write()

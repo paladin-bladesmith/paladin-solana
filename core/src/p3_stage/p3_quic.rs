@@ -18,7 +18,7 @@ use {
     spl_discriminator::discriminator::SplDiscriminate,
     std::{
         collections::HashMap,
-        net::SocketAddr,
+        net::{SocketAddr, UdpSocket},
         num::Saturating,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -51,6 +51,41 @@ pub struct P3Quic<T = Arc<RwLock<PohRecorder>>> {
     metrics_creation: Instant,
 }
 
+#[cfg(not(test))]
+/// Bind the P3 QUIC UDP socket.
+/// 
+/// For tests, we find available sockets starting our default.
+/// Should work for up to 10 validators given ports are available
+fn bind_p3_sockets(p3: SocketAddr, mev: SocketAddr) -> (UdpSocket, UdpSocket) {
+    (
+        solana_net_utils::sockets::bind_to(p3.ip(), p3.port()).unwrap(),
+        solana_net_utils::sockets::bind_to(mev.ip(), mev.port()).unwrap(),
+    )
+}
+
+#[cfg(test)]
+/// Bind the P3 QUIC UDP socket.
+/// 
+/// For tests, we find available sockets starting our default.
+/// Should work for up to 10 validators given ports are available
+fn bind_p3_sockets(p3: SocketAddr, mev: SocketAddr) -> (UdpSocket, UdpSocket) {
+    let s1 = (0..10)
+        .find_map(|i| {
+            let port = p3.port() + (i * 2);
+            solana_net_utils::sockets::bind_to(p3.ip(), port).ok()
+        })
+        .expect("Failed to bind p3 socket");
+
+    let s2 = (0..10)
+        .find_map(|i| {
+            let port = mev.port() + i;
+            solana_net_utils::sockets::bind_to(mev.ip(), port).ok()
+        })
+        .expect("Failed to bind mev socket");
+
+    (s1, s2)
+}
+
 impl<T> P3Quic<T>
 where
     T: AccountFetch + Send + 'static,
@@ -63,11 +98,7 @@ where
         keypair: &Keypair,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
     ) -> (std::thread::JoinHandle<()>, [Arc<EndpointKeyUpdater>; 2]) {
-        // Bind the P3 QUIC UDP socket.
-        let socket_regular =
-            solana_net_utils::sockets::bind_to(p3_socket.ip(), p3_socket.port()).unwrap();
-        let socket_mev =
-            solana_net_utils::sockets::bind_to(p3_mev_socket.ip(), p3_mev_socket.port()).unwrap();
+        let (socket_regular, socket_mev) = bind_p3_sockets(p3_socket, p3_mev_socket);
 
         // Setup initial staked nodes (empty).
         let stakes = Arc::default();

@@ -1620,6 +1620,8 @@ mod tests {
                 updater_keys,
                 HashSet::from_iter(vec![
                     KeyUpdaterType::Tpu,
+                    KeyUpdaterType::P3Regular,
+                    KeyUpdaterType::P3Mev,
                     KeyUpdaterType::TpuForwards,
                     KeyUpdaterType::TpuVote,
                     KeyUpdaterType::Forward,
