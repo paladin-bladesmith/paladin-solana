@@ -6650,15 +6650,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "scc"
-version = "2.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46e6f046b7fef48e2660c57ed794263155d713de679057f2d0c169bfc6e756cc"
-dependencies = [
- "sdd",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6688,12 +6679,6 @@ dependencies = [
  "ring 0.17.14",
  "untrusted 0.9.0",
 ]
-
-[[package]]
-name = "sdd"
-version = "3.0.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "490dcfcbfef26be6800d11870ff2df8774fa6e86d047e3e8c8a76b25655e41ca"
 
 [[package]]
 name = "sec1"
@@ -6903,21 +6888,7 @@ dependencies = [
  "lazy_static",
  "log",
  "parking_lot 0.12.4",
- "serial_test_derive 2.0.0",
-]
-
-[[package]]
-name = "serial_test"
-version = "3.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b258109f244e1d6891bf1053a55d63a5cd4f8f4c30cf9a1280989f80e7a1fa9"
-dependencies = [
- "futures 0.3.31",
- "log",
- "once_cell",
- "parking_lot 0.12.4",
- "scc",
- "serial_test_derive 3.2.0",
+ "serial_test_derive",
 ]
 
 [[package]]
@@ -6925,17 +6896,6 @@ name = "serial_test_derive"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91d129178576168c589c9ec973feedf7d3126c01ac2bf08795109aa35b69fb8f"
-dependencies = [
- "proc-macro2 1.0.101",
- "quote 1.0.40",
- "syn 2.0.106",
-]
-
-[[package]]
-name = "serial_test_derive"
-version = "3.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5d69265a08751de7844521fd15003ae0a888e035773ba05695c5c759a6f89eef"
 dependencies = [
  "proc-macro2 1.0.101",
  "quote 1.0.40",
@@ -7345,7 +7305,6 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "rayon",
- "serial_test 3.2.0",
  "solana-account-decoder",
  "solana-accounts-db",
  "solana-clap-utils",
@@ -7693,7 +7652,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml 0.9.34+deprecated",
- "serial_test 2.0.0",
+ "serial_test",
  "solana-account 3.0.0",
  "solana-clap-utils",
  "solana-cli-config",
@@ -8069,7 +8028,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.23",
  "semver",
- "serial_test 2.0.0",
+ "serial_test",
  "solana-file-download",
  "solana-keypair",
  "solana-logger",
@@ -8175,7 +8134,6 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "serial_test 3.2.0",
  "solana-account 3.0.0",
  "solana-account-decoder",
  "solana-address-lookup-table-interface 3.0.0",
@@ -8628,7 +8586,7 @@ dependencies = [
  "serde_bytes",
  "serde_derive",
  "serde_json",
- "serial_test 2.0.0",
+ "serial_test",
  "sha2 0.10.9",
  "slab",
  "solana-account 3.0.0",
@@ -9429,7 +9387,7 @@ dependencies = [
  "serde-big-array",
  "serde_bytes",
  "serde_derive",
- "serial_test 2.0.0",
+ "serial_test",
  "siphasher 1.0.1",
  "solana-account 3.0.0",
  "solana-bloom",
@@ -9975,7 +9933,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "rayon",
- "serial_test 2.0.0",
+ "serial_test",
  "solana-account 3.0.0",
  "solana-accounts-db",
  "solana-client",
@@ -10114,7 +10072,7 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "reqwest 0.12.23",
- "serial_test 2.0.0",
+ "serial_test",
  "solana-cluster-type",
  "solana-sha256-hasher 3.0.0",
  "solana-time-utils",
@@ -10950,7 +10908,7 @@ dependencies = [
  "serde",
  "serde_derive",
  "serde_json",
- "serial_test 2.0.0",
+ "serial_test",
  "soketto",
  "solana-account 3.0.0",
  "solana-account-decoder",
@@ -11174,7 +11132,7 @@ dependencies = [
  "reqwest 0.12.23",
  "serde",
  "serde_json",
- "serial_test 2.0.0",
+ "serial_test",
  "solana-account-decoder",
  "solana-client",
  "solana-clock 3.0.0",
@@ -13136,7 +13094,7 @@ dependencies = [
  "protobuf-src",
  "rand 0.8.5",
  "rayon",
- "serial_test 2.0.0",
+ "serial_test",
  "solana-accounts-db",
  "solana-clock 3.0.0",
  "solana-entry",
