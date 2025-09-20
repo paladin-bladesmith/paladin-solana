@@ -311,6 +311,8 @@ pub struct SchedulerTimingMetricsInner {
     pub decision_time_us: Saturating<u64>,
     /// Time spent receiving packets.
     pub receive_time_us: Saturating<u64>,
+    /// Time spent batching packets.
+    pub batch_time_us: Saturating<u64>,
     /// Time spent buffering packets.
     pub buffer_time_us: Saturating<u64>,
     /// Time spent filtering transactions during scheduling.
@@ -357,6 +359,7 @@ impl SchedulerTimingMetricsInner {
             decision_time_us: Saturating(decision_time_us),
             receive_time_us: Saturating(receive_time_us),
             buffer_time_us: Saturating(buffer_time_us),
+            batch_time_us: Saturating(batch_time_us),
             schedule_filter_time_us: Saturating(schedule_filter_time_us),
             schedule_time_us: Saturating(schedule_time_us),
             clear_time_us: Saturating(clear_time_us),
@@ -368,6 +371,7 @@ impl SchedulerTimingMetricsInner {
             ("decision_time_us", decision_time_us, i64),
             ("receive_time_us", receive_time_us, i64),
             ("buffer_time_us", buffer_time_us, i64),
+            ("batch_time_us", batch_time_us, i64),
             ("schedule_filter_time_us", schedule_filter_time_us, i64),
             ("schedule_time_us", schedule_time_us, i64),
             ("clear_time_us", clear_time_us, i64),
@@ -388,6 +392,7 @@ impl SchedulerTimingMetricsInner {
         self.decision_time_us = Saturating(0);
         self.receive_time_us = Saturating(0);
         self.buffer_time_us = Saturating(0);
+        self.batch_time_us = Saturating(0);
         self.schedule_filter_time_us = Saturating(0);
         self.schedule_time_us = Saturating(0);
         self.clear_time_us = Saturating(0);
