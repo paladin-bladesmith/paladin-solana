@@ -53,7 +53,7 @@ pub struct P3Quic<T = Arc<RwLock<PohRecorder>>> {
 
 #[cfg(not(test))]
 /// Bind the P3 QUIC UDP socket.
-///
+/// 
 /// For tests, we find available sockets starting our default.
 /// Should work for up to 10 validators given ports are available
 fn bind_p3_sockets(p3: SocketAddr, mev: SocketAddr) -> (UdpSocket, UdpSocket) {
@@ -65,7 +65,7 @@ fn bind_p3_sockets(p3: SocketAddr, mev: SocketAddr) -> (UdpSocket, UdpSocket) {
 
 #[cfg(test)]
 /// Bind the P3 QUIC UDP socket.
-///
+/// 
 /// For tests, we find available sockets starting our default.
 /// Should work for up to 10 validators given ports are available
 fn bind_p3_sockets(p3: SocketAddr, mev: SocketAddr) -> (UdpSocket, UdpSocket) {
