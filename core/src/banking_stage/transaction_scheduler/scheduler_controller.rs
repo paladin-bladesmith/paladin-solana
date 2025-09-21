@@ -427,7 +427,7 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts)
+        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts, Duration::ZERO)
     }
 
     #[allow(clippy::type_complexity)]
@@ -552,6 +552,7 @@ mod tests {
             .map(|n| n.num_received > 0)
             .unwrap_or_default()
         {}
+        scheduler_controller.receive_and_buffer.maybe_queue_batch(&mut scheduler_controller.container, &decision);
         assert!(scheduler_controller.process_transactions(&decision).is_ok());
     }
 
