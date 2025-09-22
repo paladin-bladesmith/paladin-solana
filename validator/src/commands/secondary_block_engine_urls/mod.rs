@@ -5,7 +5,7 @@ use {
 };
 
 pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
-    SubCommand::with_name("set-secondary_block_engine_urls")
+    SubCommand::with_name("set-secondary-block-engine-urls")
         .about("Set secondary block engine urls")
         .arg(
             Arg::with_name("urls")
