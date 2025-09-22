@@ -85,7 +85,9 @@ pub fn app<'a>(version: &'a str, default_args: &'a DefaultArgs) -> App<'a, 'a> {
         .subcommand(commands::shred::shred_retransmit_receiver_command(
             default_args,
         ))
-        .subcommand(commands::runtime_plugin::command(default_args));
+        .subcommand(commands::runtime_plugin::command(default_args))
+        // Paladin commands
+        .subcommand(commands::secondary_block_engine_urls::command(default_args));
 
     commands::run::add_args(app, default_args)
         .args(&thread_args(&default_args.thread_args))

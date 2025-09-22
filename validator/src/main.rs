@@ -77,7 +77,7 @@ pub fn main() {
         ("set-block-engine-config", Some(subcommand_matches)) => {
             commands::block_engine::execute(subcommand_matches, &ledger_path)
         }
-        ("set-secondary-block-engine-curls", Some(subcommand_matches)) => {
+        ("set-secondary-block-engine-urls", Some(subcommand_matches)) => {
             commands::secondary_block_engine_urls::execute(subcommand_matches, &ledger_path)
         }
         ("set-relayer-config", Some(subcommand_matches)) => {
