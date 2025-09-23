@@ -1,6 +1,7 @@
 use {
     crate::{admin_rpc_service, cli::DefaultArgs, commands::Result},
     clap::{App, Arg, ArgMatches, SubCommand},
+    solana_clap_utils::input_parsers::values_of,
     std::path::Path,
 };
 
@@ -18,11 +19,7 @@ pub fn command(_default_args: &DefaultArgs) -> App<'_, '_> {
 }
 
 pub fn execute(subcommand_matches: &ArgMatches, ledger_path: &Path) -> Result<()> {
-    let secondary_block_engine_urls = subcommand_matches
-        .values_of("secondary_block_engines_urls")
-        .unwrap_or_default()
-        .map(ToString::to_string)
-        .collect();
+    let secondary_block_engine_urls = values_of(subcommand_matches, "urls").unwrap();
     let admin_client = admin_rpc_service::connect(ledger_path);
     admin_rpc_service::runtime().block_on(async move {
         admin_client
