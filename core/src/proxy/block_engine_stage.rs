@@ -200,8 +200,21 @@ impl BlockEngineStage {
                     if new_urls != current_urls {
                         info!("Secondary URLs changed from {:#?} to {:#?}", current_urls, new_urls);
 
+                        let urls_to_remove: Vec<String> = current_urls
+                            .iter()
+                            .filter(|url| !new_urls.contains(url))
+                            .cloned()
+                            .collect();
+                        
+                        // Find URLs to add
+                        let urls_to_add: Vec<String> = new_urls
+                            .iter()
+                            .filter(|url| !current_urls.contains(url))
+                            .cloned()
+                            .collect();
+
                         // Stop tasks for all current URLs
-                        for url in current_urls {
+                        for url in urls_to_remove {
                             if let Some(task_exit) = {
                                 let mut exits = secondary_task_exits.lock().unwrap();
                                 exits.remove(&url)
@@ -212,7 +225,7 @@ impl BlockEngineStage {
                         }
 
                         // Start tasks for all new URLs
-                        for url in new_urls.iter() {
+                        for url in urls_to_add {
                             let task_exit = Arc::new(AtomicBool::new(false));
 
                             // Store the exit signal for this task
