@@ -186,7 +186,7 @@ impl Tpu {
         _generator_config: Option<GeneratorConfig>, /* vestigial code for replay invalidator */
         key_notifiers: Arc<RwLock<KeyUpdaters>>,
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-        secondary_block_engine_urls: Vec<String>,
+        secondary_block_engine_urls: Arc<Mutex<Vec<String>>>,
         relayer_config: Arc<Mutex<RelayerConfig>>,
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,

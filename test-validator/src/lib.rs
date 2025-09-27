@@ -1157,7 +1157,7 @@ impl TestValidator {
                 expected_heartbeat_interval: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL,
                 oldest_allowed_heartbeat: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL * 3,
             })),
-            secondary_block_engine_urls: config.secondary_block_engine_urls.clone(),
+            secondary_block_engine_urls: Arc::new(Mutex::new(config.secondary_block_engine_urls.clone())),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {

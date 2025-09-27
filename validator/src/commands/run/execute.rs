@@ -1,12 +1,12 @@
 use {
     crate::{
-        admin_rpc_service::{self, StakedNodesOverrides, load_staked_nodes_overrides},
+        admin_rpc_service::{self, load_staked_nodes_overrides, StakedNodesOverrides},
         bootstrap,
         cli::{self},
-        commands::{FromClapArgMatches, run::args::RunArgs},
+        commands::{run::args::RunArgs, FromClapArgMatches},
         ledger_lockfile, lock_ledger,
     },
-    clap::{ArgMatches, crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit},
+    clap::{crate_name, value_t, value_t_or_exit, values_t, values_t_or_exit, ArgMatches},
     crossbeam_channel::unbounded,
     log::*,
     rand::{seq::SliceRandom, thread_rng},
@@ -23,7 +23,7 @@ use {
     solana_clap_utils::input_parsers::{
         keypair_of, keypairs_of, parse_cpu_ranges, pubkey_of, value_of, values_of,
     },
-    solana_clock::{DEFAULT_SLOTS_PER_EPOCH, Slot},
+    solana_clock::{Slot, DEFAULT_SLOTS_PER_EPOCH},
     solana_core::{
         banking_stage::DEFAULT_BATCH_INTERVAL,
         banking_trace::DISABLED_BAKING_TRACE_DIR,
@@ -34,11 +34,13 @@ use {
         system_monitor_service::SystemMonitorService,
         tip_manager::{TipDistributionAccountConfig, TipManagerConfig},
         validator::{
-            BlockProductionMethod, BlockVerificationMethod, TransactionStructure, Validator, ValidatorConfig, ValidatorError, ValidatorStartProgress, ValidatorTpuConfig, is_snapshot_config_valid
+            is_snapshot_config_valid, BlockProductionMethod, BlockVerificationMethod,
+            TransactionStructure, Validator, ValidatorConfig, ValidatorError,
+            ValidatorStartProgress, ValidatorTpuConfig,
         },
     },
     solana_gossip::{
-        cluster_info::{DEFAULT_CONTACT_SAVE_INTERVAL_MILLIS, NodeConfig},
+        cluster_info::{NodeConfig, DEFAULT_CONTACT_SAVE_INTERVAL_MILLIS},
         contact_info::ContactInfo,
         node::Node,
     },
@@ -57,16 +59,16 @@ use {
         runtime_config::RuntimeConfig,
         snapshot_config::{SnapshotConfig, SnapshotUsage},
         snapshot_utils::{
-            self, ArchiveFormat, BANK_SNAPSHOTS_DIR, SnapshotInterval, SnapshotVersion
+            self, ArchiveFormat, SnapshotInterval, SnapshotVersion, BANK_SNAPSHOTS_DIR,
         },
     },
     solana_send_transaction_service::send_transaction_service,
     solana_signer::Signer,
-    solana_streamer::quic::{DEFAULT_TPU_COALESCE, QuicServerParams},
+    solana_streamer::quic::{QuicServerParams, DEFAULT_TPU_COALESCE},
     solana_tpu_client::tpu_client::DEFAULT_TPU_ENABLE_UDP,
     solana_turbine::{
         broadcast_stage::BroadcastStageType,
-        xdp::{XdpConfig, set_cpu_affinity},
+        xdp::{set_cpu_affinity, XdpConfig},
     },
     solana_validator_exit::Exit,
     std::{
@@ -77,7 +79,7 @@ use {
         path::{Path, PathBuf},
         process::exit,
         str::FromStr,
-        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         time::Duration,
     },
 };
@@ -573,6 +575,14 @@ pub fn execute(
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
+    let secondary_block_engine_urls = Arc::new(Mutex::new(
+        matches
+            .values_of("secondary_block_engines_urls")
+            .unwrap_or_default()
+            .map(ToString::to_string)
+            .collect(),
+    ));
+
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
         value_of(matches, "relayer_expected_heartbeat_interval_ms").unwrap();
@@ -750,8 +760,7 @@ pub fn execute(
         // paladin config
         batch_interval: if matches.is_present("batch_interval_ms") {
             Duration::from_millis(
-                value_of(matches, "batch_interval_ms")
-                    .expect("Couldn't parse --batch-interval-ms"),
+                value_of(matches, "batch_interval_ms").expect("Couldn't parse --batch-interval-ms"),
             )
         } else {
             DEFAULT_BATCH_INTERVAL
@@ -764,11 +773,7 @@ pub fn execute(
             Ipv4Addr::UNSPECIFIED,
             value_of(matches, "p3_mev_port").unwrap(),
         )),
-        secondary_block_engine_urls: matches
-            .values_of("secondary_block_engines_urls")
-            .unwrap_or_default()
-            .map(ToString::to_string)
-            .collect(),
+        secondary_block_engine_urls,
     };
 
     let reserved = validator_config

@@ -29,6 +29,7 @@ use {
     solana_pubkey::Pubkey,
     solana_signer::Signer,
     std::{
+        collections::HashMap,
         ops::AddAssign,
         str::FromStr,
         sync::{
@@ -95,19 +96,16 @@ pub struct BlockEngineStage {
 impl BlockEngineStage {
     pub fn new(
         block_engine_config: Arc<Mutex<BlockEngineConfig>>,
-        secondary_urls: Vec<String>,
-        // Channel that bundles get piped through.
+        secondary_urls: Arc<Mutex<Vec<String>>>,
         bundle_tx: Sender<Vec<PacketBundle>>,
-        // The keypair stored here is used to sign auth challenges.
         cluster_info: Arc<ClusterInfo>,
-        // Channel that non-trusted packets get piped through.
         packet_tx: Sender<PacketBatch>,
-        // Channel that trusted packets get piped through.
         banking_packet_sender: BankingPacketSender,
         exit: Arc<AtomicBool>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
-        // Setup all the futures.
+        let secondary_task_exits = Arc::new(Mutex::new(HashMap::new()));
+
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -116,31 +114,39 @@ impl BlockEngineStage {
         let mut set: JoinSet<_> = {
             let _rt_guard = rt.enter();
 
-            std::iter::once(Either::Left(block_engine_config))
-                .chain(secondary_urls.into_iter().map(Either::Right))
-                .enumerate()
-                .map(|(index, config)| {
-                    info!("starting block-engine-{}", index);
+            let mut tasks = JoinSet::new();
 
-                    Self::start(
-                        config,
-                        cluster_info.clone(),
-                        bundle_tx.clone(),
-                        packet_tx.clone(),
-                        banking_packet_sender.clone(),
-                        exit.clone(),
-                        block_builder_fee_info.clone(),
-                    )
-                })
-                .collect()
+            // Start primary task
+            info!("starting block-engine-primary");
+            tasks.spawn(Self::start(
+                Either::Left(block_engine_config.clone()),
+                cluster_info.clone(),
+                bundle_tx.clone(),
+                packet_tx.clone(),
+                banking_packet_sender.clone(),
+                exit.clone(),
+                block_builder_fee_info.clone(),
+            ));
+
+            // Start secondary URL manager task
+            tasks.spawn(Self::manage_secondary_urls(
+                secondary_urls.clone(),
+                cluster_info.clone(),
+                bundle_tx.clone(),
+                packet_tx.clone(),
+                banking_packet_sender.clone(),
+                exit.clone(),
+                block_builder_fee_info.clone(),
+                secondary_task_exits.clone(),
+            ));
+
+            tasks
         };
 
-        // Spawn off to a dedicated runtime.
         let thread = Builder::new()
             .name("block-engine-runtime".to_string())
             .spawn(move || {
                 rt.block_on(async move {
-                    // Wait for all tasks to complete
                     while let Some(res) = set.join_next().await {
                         match res {
                             Ok(_) => continue,
@@ -163,6 +169,106 @@ impl BlockEngineStage {
             t.join()?;
         }
         Ok(())
+    }
+
+    async fn manage_secondary_urls(
+        secondary_urls: Arc<Mutex<Vec<String>>>,
+        cluster_info: Arc<ClusterInfo>,
+        bundle_tx: Sender<Vec<PacketBundle>>,
+        packet_tx: Sender<PacketBatch>,
+        banking_packet_sender: BankingPacketSender,
+        exit: Arc<AtomicBool>,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+        secondary_task_exits: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    ) {
+        const CHECK_INTERVAL: Duration = Duration::from_secs(5);
+        let mut check_interval = interval(CHECK_INTERVAL);
+        let mut current_urls: Vec<String> = Vec::new();
+        let mut task_set: JoinSet<()> = JoinSet::new();
+
+        while !exit.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = check_interval.tick() => {
+                    // Get current secondary URLs
+                    let new_urls = {
+                        let secondary_urls = secondary_urls.clone();
+                        task::spawn_blocking(move || secondary_urls.lock().unwrap().clone())
+                            .await
+                            .unwrap()
+                    };
+
+                    if new_urls != current_urls {
+                        info!("Secondary URLs changed from {:#?} to {:#?}", current_urls, new_urls);
+
+                        let urls_to_remove: Vec<String> = current_urls
+                            .iter()
+                            .filter(|url| !new_urls.contains(url))
+                            .cloned()
+                            .collect();
+                        
+                        // Find URLs to add
+                        let urls_to_add: Vec<String> = new_urls
+                            .iter()
+                            .filter(|url| !current_urls.contains(url))
+                            .cloned()
+                            .collect();
+
+                        // Stop tasks for all current URLs
+                        for url in urls_to_remove {
+                            if let Some(task_exit) = {
+                                let mut exits = secondary_task_exits.lock().unwrap();
+                                exits.remove(&url)
+                            } {
+                                info!("Stopping task for removed URL: {}", url);
+                                task_exit.store(true, Ordering::Relaxed);
+                            }
+                        }
+
+                        // Start tasks for all new URLs
+                        for url in urls_to_add {
+                            let task_exit = Arc::new(AtomicBool::new(false));
+
+                            // Store the exit signal for this task
+                            {
+                                let mut exits = secondary_task_exits.lock().unwrap();
+                                exits.insert(url.clone(), task_exit.clone());
+                            }
+
+                            info!("Starting task for new URL: {}", url);
+                            task_set.spawn(Self::start(
+                                Either::Right(url.clone()),
+                                cluster_info.clone(),
+                                bundle_tx.clone(),
+                                packet_tx.clone(),
+                                banking_packet_sender.clone(),
+                                task_exit,
+                                block_builder_fee_info.clone(),
+                            ));
+                        }
+
+                        current_urls = new_urls;
+                    }
+                }
+                // Clean up completed tasks
+                Some(result) = task_set.join_next() => {
+                    if let Err(e) = result {
+                        error!("Secondary URL task failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Cleanup: stop all secondary tasks
+        {
+            let exits = secondary_task_exits.lock().unwrap();
+            for (url, task_exit) in exits.iter() {
+                info!("Stopping secondary task for URL: {}", url);
+                task_exit.store(true, Ordering::Relaxed);
+            }
+        }
+
+        // Wait for all secondary tasks to complete
+        while task_set.join_next().await.is_some() {}
     }
 
     #[allow(clippy::too_many_arguments)]
