@@ -15,6 +15,7 @@ pub mod set_public_address;
 pub mod shred;
 pub mod staked_nodes_overrides;
 pub mod wait_for_restart_window;
+pub mod secondary_block_engine_urls;
 
 use thiserror::Error;
 

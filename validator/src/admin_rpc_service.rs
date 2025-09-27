@@ -273,6 +273,13 @@ pub trait AdminRpc {
         trust_packets: bool,
     ) -> Result<()>;
 
+    #[rpc(meta, name = "setSecondaryBlockEngineUrls")]
+    fn set_secondary_block_engine_urls(
+        &self,
+        meta: Self::Metadata,
+        secondary_block_engine_urls: Vec<String>,
+    ) -> Result<()>;
+
     #[rpc(meta, name = "setRelayerConfig")]
     fn set_relayer_config(
         &self,
@@ -545,6 +552,19 @@ impl AdminRpc for AdminRpcImpl {
                 "failed to set block engine config. see logs for details.",
             ))
         }
+    }
+
+    fn set_secondary_block_engine_urls(
+        &self,
+        meta: Self::Metadata,
+        secondary_block_engine_urls: Vec<String>,
+    ) -> Result<()> {
+        debug!("set_secondary_block_engine_urls request received");
+
+        meta.with_post_init(|post_init| {
+            *post_init.secondary_block_engine_urls.lock().unwrap() = secondary_block_engine_urls;
+            Ok(())
+        })
     }
 
     fn set_identity(
@@ -1134,6 +1154,7 @@ mod tests {
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
+            let secondary_block_engine_urls = Arc::new(Mutex::new(vec![]));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
             let shred_receiver_address = Arc::new(RwLock::new(None));
             let shred_retransmit_receiver_address = Arc::new(RwLock::new(None));
@@ -1160,6 +1181,7 @@ mod tests {
                     ),
                     node: None,
                     block_engine_config,
+                    secondary_block_engine_urls,
                     relayer_config,
                     shred_receiver_address,
                     shred_retransmit_receiver_address,
