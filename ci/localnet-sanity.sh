@@ -156,7 +156,19 @@ startNodes() {
   initCompleteFiles=()
   maybeExpectedGenesisHash=
   for i in $(seq 0 $((${#nodes[@]} - 1))); do
-    # wait for bootstrap validator to boot before starting other validators
+    declare cmd=${nodes[$i]}
+
+    declare initCompleteFile="init-complete-node$i.log"
+    rm -f "$initCompleteFile"
+    initCompleteFiles+=("$initCompleteFile")
+
+    startNode "$i" "$cmd $maybeExpectedGenesisHash"
+    if $addLogs; then
+      logs+=("$(getNodeLogFile "$i" "$cmd")")
+    fi
+
+    # 1 == bootstrap validator, wait until it boots before starting
+    # other validators
     if [[ "$i" -eq 1 ]]; then
       SECONDS=
       waitForNodeToInit "$initCompleteFile"
@@ -167,17 +179,6 @@ startNodes() {
           --url http://127.0.0.1:8899 genesis-hash
       ) | tee genesis-hash.log
       maybeExpectedGenesisHash="--expected-genesis-hash $(tail -n1 genesis-hash.log)"
-    fi
-
-    declare cmd=${nodes[$i]}
-
-    declare initCompleteFile="init-complete-node$i.log"
-    rm -f "$initCompleteFile"
-    initCompleteFiles+=("$initCompleteFile")
-
-    startNode "$i" "$cmd $maybeExpectedGenesisHash"
-    if $addLogs; then
-      logs+=("$(getNodeLogFile "$i" "$cmd")")
     fi
   done
 

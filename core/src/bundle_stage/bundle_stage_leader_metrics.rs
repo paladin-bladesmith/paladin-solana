@@ -263,6 +263,9 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     bundle_stage_metrics.bad_argument.add_assign(Saturating(1));
                 }
+                Err(BundleExecutionError::FrontRun) => {
+                    bundle_stage_metrics.front_run.add_assign(Saturating(1));
+                }
             }
         }
     }
@@ -382,6 +385,7 @@ pub struct BundleStageStats {
     execution_results_max_retries: Saturating<u64>,
 
     bad_argument: Saturating<u64>,
+    front_run: Saturating<u64>,
 }
 
 impl BundleStageStats {
@@ -531,7 +535,8 @@ impl BundleStageStats {
                 self.execution_results_max_retries.0,
                 i64
             ),
-            ("bad_argument", self.bad_argument.0, i64)
+            ("bad_argument", self.bad_argument.0, i64),
+            ("front_run", self.front_run.0, i64),
         );
     }
 }
