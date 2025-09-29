@@ -79,7 +79,8 @@ conditional_vis_mod!(
     feature = "dev-context-only-utils",
     pub
 );
-conditional_vis_mod!(unified_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
+conditional_vis_mod!(bundle_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
+conditional_vis_mod!(unified_schedule, feature = "dev-context-only-utils", pub, pub(crate));
 
 /// The maximum number of worker threads that can be spawned by banking stage.
 /// 64 because `ThreadAwareAccountLocks` uses a `u64` as a bitmask to
@@ -1048,7 +1049,7 @@ mod tests {
                 Duration::ZERO,
             );
 
-            // wait for banking_stage to eat the packets
+            // wait for bankingStage to eat the packets
             const TIMEOUT: Duration = Duration::from_secs(10);
             let start = Instant::now();
             while bank.get_balance(&alice.pubkey()) < 1 {
