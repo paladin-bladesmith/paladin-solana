@@ -269,6 +269,7 @@ five8_const = "0.1.4"
 flate2 = "1.0.31"
 fnv = "1.0.7"
 fs_extra = "1.3.0"
+funnel = { path = "./paladin-programs/funnel/crates/funnel" }
 futures = "0.3.31"
 futures-util = "0.3.29"
 gag = "1.0.0"
@@ -276,6 +277,7 @@ gethostname = "0.2.3"
 getrandom = "0.3.3"
 goauth = "0.13.1"
 governor = "0.6.3"
+hashbrown = "0.15.2"
 hex = "0.4.3"
 hidapi = { version = "2.6.3", default-features = false }
 histogram = "0.6.9"
@@ -329,6 +331,7 @@ num-traits = "0.2"
 num_cpus = "1.17.0"
 num_enum = "0.7.3"
 openssl = "0.10"
+paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
 parking_lot = "0.12"
 pbkdf2 = { version = "0.11.0", default-features = false }
 pem = "1.1.1"
@@ -373,6 +376,7 @@ serde_yaml = "0.9.34"
 serial_test = "2.0.0"
 sha2 = "0.10.9"
 sha3 = "0.10.8"
+shank = "0.4.2"
 shuttle = "0.7.1"
 signal-hook = "0.3.18"
 siphasher = "1.0.1"
@@ -485,9 +489,9 @@ solana-poh-config = "2.2.1"
 solana-poseidon = { path = "poseidon", version = "=2.3.13" }
 solana-precompile-error = "2.2.2"
 solana-presigner = "2.2.1"
-solana-program = { version = "2.2.1", default-features = false }
+solana-program = { version = "=2.2.1", default-features = false }
 solana-program-entrypoint = "2.2.1"
-solana-program-error = "2.2.1"
+solana-program-error = "=2.2.1"
 solana-program-memory = "2.2.1"
 solana-program-option = "2.2.1"
 solana-program-pack = "2.2.1"
@@ -496,11 +500,12 @@ solana-program-test = { path = "program-test", version = "=2.3.13" }
 solana-pubkey = { version = "2.4.0", default-features = false }
 solana-pubsub-client = { path = "pubsub-client", version = "=2.3.13" }
 solana-quic-client = { path = "quic-client", version = "=2.3.13" }
+solana-sdk = "2.2.1"
 solana-quic-definitions = "2.2.1"
 solana-rayon-threadlimit = { path = "rayon-threadlimit", version = "=2.3.13" }
 solana-remote-wallet = { path = "remote-wallet", version = "=2.3.13", default-features = false }
 solana-rent = "2.2.1"
-solana-rent-collector = "2.2.1"
+solana-rent-collector = "=2.2.1"
 solana-rent-debits = "2.2.1"
 solana-reward-info = "2.2.1"
 solana-rpc = { path = "rpc", version = "=2.3.13" }
@@ -514,7 +519,7 @@ solana-runtime-transaction = { path = "runtime-transaction", version = "=2.3.13"
 solana-sanitize = "2.2.1"
 solana-sbpf = "=0.11.1"
 solana-sdk-ids = "2.2.1"
-solana-secp256k1-program = "2.2.1"
+solana-secp256k1-program = "=2.2.1"
 solana-secp256k1-recover = "2.2.1"
 solana-secp256r1-program = "2.2.3"
 solana-seed-derivable = "2.2.1"
@@ -577,6 +582,7 @@ solana-zk-sdk = { path = "zk-sdk", version = "=2.3.13" }
 solana-zk-token-proof-program = { path = "programs/zk-token-proof", version = "=2.3.13" }
 solana-zk-token-sdk = { path = "zk-token-sdk", version = "=2.3.13" }
 spl-associated-token-account = "7.0.0"
+spl-discriminator = "0.4.1"
 spl-generic-token = "1.0.1"
 spl-instruction-padding = "0.3.0"
 spl-memo = "6.0.0"

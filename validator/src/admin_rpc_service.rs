@@ -270,11 +270,19 @@ pub trait AdminRpc {
         trust_packets: bool,
     ) -> Result<()>;
 
+    #[rpc(meta, name = "setSecondaryBlockEngineUrls")]
+    fn set_secondary_block_engine_urls(
+        &self,
+        meta: Self::Metadata,
+        secondary_block_engine_urls: Vec<String>,
+    ) -> Result<()>;
+
     #[rpc(meta, name = "setRelayerConfig")]
     fn set_relayer_config(
         &self,
         meta: Self::Metadata,
         relayer_url: String,
+        trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
     ) -> Result<()>;
@@ -544,6 +552,19 @@ impl AdminRpc for AdminRpcImpl {
         }
     }
 
+    fn set_secondary_block_engine_urls(
+        &self,
+        meta: Self::Metadata,
+        secondary_block_engine_urls: Vec<String>,
+    ) -> Result<()> {
+        debug!("set_secondary_block_engine_urls request received");
+
+        meta.with_post_init(|post_init| {
+            *post_init.secondary_block_engine_urls.lock().unwrap() = secondary_block_engine_urls;
+            Ok(())
+        })
+    }
+
     fn set_identity(
         &self,
         meta: Self::Metadata,
@@ -582,6 +603,7 @@ impl AdminRpc for AdminRpcImpl {
         &self,
         meta: Self::Metadata,
         relayer_url: String,
+        trust_packets: bool,
         expected_heartbeat_interval_ms: u64,
         max_failed_heartbeats: u64,
     ) -> Result<()> {
@@ -593,6 +615,7 @@ impl AdminRpc for AdminRpcImpl {
             relayer_url,
             expected_heartbeat_interval,
             oldest_allowed_heartbeat,
+            trust_packets,
         };
         // Detailed log messages are printed inside validate function
         if RelayerStage::is_valid_relayer_config(&config) {
@@ -1040,6 +1063,7 @@ mod tests {
         solana_core::{
             admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
             consensus::tower_storage::NullTowerStorage,
+            proxy::block_engine_stage::BlockEngineConfig,
             validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
         },
         solana_gossip::cluster_info::{ClusterInfo, Node},
@@ -1109,6 +1133,7 @@ mod tests {
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
+            let secondary_block_engine_urls = Arc::new(Mutex::new(vec![]));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
             let shred_receiver_address = Arc::new(RwLock::new(None));
             let shred_retransmit_receiver_address = Arc::new(RwLock::new(None));
@@ -1134,6 +1159,7 @@ mod tests {
                         solana_core::cluster_slots_service::cluster_slots::ClusterSlots::default(),
                     ),
                     block_engine_config,
+                    secondary_block_engine_urls,
                     relayer_config,
                     shred_receiver_address,
                     shred_retransmit_receiver_address,
