@@ -586,6 +586,20 @@ fn main() {
         genesis.compute_unit_limit(compute_unit_limit);
     }
 
+    genesis.block_engine_url = matches
+        .value_of("block_engine_url")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    genesis.relayer_url = matches
+        .value_of("relayer_url")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    genesis.secondary_block_engine_urls = matches
+        .values_of("secondary_block_engines_urls")
+        .unwrap_or_default()
+        .map(ToString::to_string)
+        .collect();
+
     match genesis.start_with_mint_address_and_geyser_plugin_rpc(
         mint_address,
         socket_addr_space,
