@@ -1035,7 +1035,8 @@ pub(crate) mod tests {
             &leader_keypair.pubkey(),
             &voting_keypair.pubkey(),
             &solana_pubkey::new_rand(),
-            rent.minimum_balance(VoteState::size_of()) + sol_str_to_lamports("1_000_000.0").unwrap(),
+            rent.minimum_balance(VoteState::size_of())
+                + sol_str_to_lamports("1_000_000.0").unwrap(),
             sol_str_to_lamports("1_000_000.0").unwrap(),
             FeeRateGovernor {
                 // Initialize with a non-zero fee

@@ -1,6 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-#[cfg(feature = "dev-context-only-utils")]
+
 use {
     super::unified_scheduling_unit::UnifiedSchedulingUnit,
     prio_graph::TopLevelId,
@@ -12,18 +12,36 @@ use {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct UnifiedPriorityId {
     pub(crate) priority: u64,
-    pub(crate) unit: UnifiedSchedulingUnit,
+    pub(crate) id: UnifiedSchedulingUnit,
 }
 
 impl UnifiedPriorityId {
-    pub(crate) fn new(priority: u64, unit: UnifiedSchedulingUnit) -> Self {
-        Self { priority, unit }
+    pub(crate) fn new(priority: u64, id: UnifiedSchedulingUnit) -> Self {
+        Self { priority, id }
+    }
+
+    /// Extract the numeric ID (TransactionId or BundleId) from the id.
+    pub(crate) fn get_id(&self) -> usize {
+        match self.id {
+            UnifiedSchedulingUnit::Transaction(id) => id,
+            UnifiedSchedulingUnit::Bundle(id) => id,
+        }
+    }
+
+    /// Check if this priority ID represents a transaction.
+    pub(crate) fn is_transaction(&self) -> bool {
+        matches!(self.id, UnifiedSchedulingUnit::Transaction(_))
+    }
+
+    /// Check if this priority ID represents a bundle.
+    pub(crate) fn is_bundle(&self) -> bool {
+        matches!(self.id, UnifiedSchedulingUnit::Bundle(_))
     }
 }
 
 impl Hash for UnifiedPriorityId {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.unit.hash(state);
+        self.id.hash(state);
     }
 }
 

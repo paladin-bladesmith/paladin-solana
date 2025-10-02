@@ -39,12 +39,12 @@ use {
 };
 
 pub mod bundle_account_locker;
-mod bundle_consumer;
-mod bundle_packet_deserializer;
-mod bundle_packet_receiver;
+pub mod bundle_consumer;
+pub mod bundle_packet_deserializer;
+pub mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
 mod bundle_storage;
-mod committer;
+pub mod committer;
 mod front_run_identifier;
 
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
@@ -192,6 +192,7 @@ impl BundleStageLoopMetrics {
     }
 }
 
+#[allow(dead_code)]
 pub struct BundleStage {
     bundle_thread: JoinHandle<()>,
 }

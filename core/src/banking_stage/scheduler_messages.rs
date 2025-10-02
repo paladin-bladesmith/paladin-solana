@@ -1,4 +1,5 @@
 use {
+    solana_bundle::SanitizedBundle,
     solana_clock::{Epoch, Slot},
     std::fmt::Display,
 };
@@ -48,4 +49,21 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<usize>,
+}
+
+pub type BundleId = u64;
+
+/// Message: [Scheduler -> BundleWorker]
+/// Bundle to be consumed (i.e. executed, recorded, and committed)
+pub struct BundleConsumeWork {
+    pub bundle_id: BundleId,
+    pub bundle: SanitizedBundle,
+    pub max_age: MaxAge,
+}
+
+/// Message: [BundleWorker -> Scheduler]
+/// Processed bundle.
+pub struct FinishedBundleConsumeWork {
+    pub work: BundleConsumeWork,
+    pub retryable: bool,
 }

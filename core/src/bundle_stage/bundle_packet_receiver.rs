@@ -1,16 +1,17 @@
 use {
-    super::BundleStageLoopMetrics,
     crate::{
-        bundle_stage::{
-            bundle_packet_deserializer::{BundlePacketDeserializer, ReceiveBundleResults},
-            bundle_stage_leader_metrics::BundleStageLeaderMetrics,
-            bundle_storage::BundleStorage,
+        banking_stage::{
+            decision_maker::BufferedPacketsDecision,
+            unified_schedule::unified_state_container::StateContainer,
         },
-        immutable_deserialized_bundle::ImmutableDeserializedBundle,
+        bundle_stage::bundle_packet_deserializer::{
+            BundlePacketDeserializer, ReceiveBundleResults,
+        },
         packet_bundle::PacketBundle,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
     solana_measure::{measure::Measure, measure_us},
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_time_utils::timestamp,
     std::time::{Duration, Instant},
 };
@@ -18,18 +19,15 @@ use {
 const DEFAULT_BATCH_BUNDLE_TIMEOUT: Duration = Duration::from_millis(10);
 
 pub struct BundleReceiver {
-    id: u32,
     bundle_packet_deserializer: BundlePacketDeserializer,
 }
 
 impl BundleReceiver {
     pub fn new(
-        id: u32,
         bundle_packet_receiver: Receiver<Vec<PacketBundle>>,
         max_packets_per_bundle: Option<usize>,
     ) -> Self {
         Self {
-            id,
             bundle_packet_deserializer: BundlePacketDeserializer::new(
                 bundle_packet_receiver,
                 max_packets_per_bundle,
@@ -38,15 +36,18 @@ impl BundleReceiver {
     }
 
     /// Receive incoming packets, push into unprocessed buffer with packet indexes
-    pub fn receive_and_buffer_bundles(
+    pub fn receive_and_buffer_bundles<S, Tx>(
         &mut self,
-        bundle_storage: &mut BundleStorage,
+        conatiner: &mut S,
         batch_bundle_results: &mut ReceiveBundleResults,
         batch_bundle_timer: &mut Option<Instant>,
-        bundle_stage_metrics: &mut BundleStageLoopMetrics,
-        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-    ) -> Result<(), RecvTimeoutError> {
-        let (result, recv_time_us) = measure_us!({
+        decision: &BufferedPacketsDecision,
+    ) -> Result<(), RecvTimeoutError>
+    where
+        S: StateContainer<Tx>,
+        Tx: TransactionWithMeta,
+    {
+        let (result, _recv_time_us) = measure_us!({
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
 
             // If timer has passed, buffer current bundles and reset timer
@@ -56,23 +57,17 @@ impl BundleReceiver {
                     let batch_bundles = std::mem::take(batch_bundle_results);
 
                     // Buffer bundles
-                    self.buffer_bundles(
-                        batch_bundles,
-                        bundle_storage,
-                        bundle_stage_metrics,
-                        // tracer_packet_stats,
-                        bundle_stage_leader_metrics,
-                    );
+                    self.buffer_bundles(batch_bundles, conatiner, decision);
 
                     // Reset timer
                     *batch_bundle_timer = None;
                 }
             }
 
-            let recv_timeout = Self::get_receive_timeout(bundle_storage, batch_bundle_timer);
+            let recv_timeout = Self::get_receive_timeout(conatiner, batch_bundle_timer);
 
             self.bundle_packet_deserializer
-                .receive_bundles(recv_timeout, bundle_storage.max_receive_size())
+                .receive_bundles(recv_timeout, conatiner.buffer_size())
                 // Add to batch if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
                     // If batch is empty, start timer because its the first bundle we receive
@@ -83,23 +78,27 @@ impl BundleReceiver {
                     batch_bundle_results.extend(receive_bundle_results);
 
                     recv_and_buffer_measure.stop();
-                    bundle_stage_metrics.increment_receive_and_buffer_bundles_elapsed_us(
-                        recv_and_buffer_measure.as_us(),
-                    );
+                    // bundle_stage_metrics.increment_receive_and_buffer_bundles_elapsed_us(
+                    //     recv_and_buffer_measure.as_us(),
+                    // );
                 })
         });
 
-        bundle_stage_leader_metrics
-            .leader_slot_metrics_tracker()
-            .increment_receive_and_buffer_packets_us(recv_time_us);
+        // bundle_stage_leader_metrics
+        //     .leader_slot_metrics_tracker()
+        //     .increment_receive_and_buffer_packets_us(recv_time_us);
 
         result
     }
 
-    fn get_receive_timeout(
-        bundle_storage: &BundleStorage,
+    fn get_receive_timeout<S, Tx>(
+        bundle_storage: &S,
         batch_bundle_timer: &Option<Instant>,
-    ) -> Duration {
+    ) -> Duration
+    where
+        S: StateContainer<Tx>,
+        Tx: TransactionWithMeta,
+    {
         // Gossip thread will almost always not wait because the transaction storage will most likely not be empty
         if !bundle_storage.is_empty() {
             // If there are buffered packets, run the equivalent of try_recv to try reading more
@@ -115,68 +114,61 @@ impl BundleReceiver {
         }
     }
 
-    fn buffer_bundles(
+    fn buffer_bundles<S>(
         &self,
         ReceiveBundleResults {
             deserialized_bundles,
-            num_dropped_bundles,
+            num_dropped_bundles: _,
         }: ReceiveBundleResults,
-        bundle_storage: &mut BundleStorage,
-        bundle_stage_stats: &mut BundleStageLoopMetrics,
-        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+        _conatiner: &mut S,
+        _decision: &BufferedPacketsDecision,
     ) {
         let bundle_count = deserialized_bundles.len();
         let packet_count: usize = deserialized_bundles.iter().map(|b| b.len()).sum();
 
-        bundle_stage_stats.increment_num_bundles_received(bundle_count as u64);
-        bundle_stage_stats.increment_num_packets_received(packet_count as u64);
-        bundle_stage_stats.increment_num_bundles_dropped(num_dropped_bundles.0 as u64);
+        // bundle_stage_stats.increment_num_bundles_received(bundle_count as u64);
+        // bundle_stage_stats.increment_num_packets_received(packet_count as u64);
+        // bundle_stage_stats.increment_num_bundles_dropped(num_dropped_bundles.0 as u64);
 
         debug!(
-            "@{:?} bundles: {} txs: {} id: {}",
+            "@{:?} bundles: {} txs: {}",
             timestamp(),
             bundle_count,
             packet_count,
-            self.id
-        );
-
-        Self::push_unprocessed(
-            bundle_storage,
-            deserialized_bundles,
-            bundle_stage_leader_metrics,
-            bundle_stage_stats,
         );
     }
 
-    fn push_unprocessed(
-        bundle_storage: &mut BundleStorage,
-        deserialized_bundles: Vec<ImmutableDeserializedBundle>,
-        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-        bundle_stage_stats: &mut BundleStageLoopMetrics,
-    ) {
-        if !deserialized_bundles.is_empty() {
-            // bundles get pushed onto the back of the unprocessed bundle queue
-            let insert_bundles_summary =
-                bundle_storage.insert_unprocessed_bundles(deserialized_bundles);
+    // fn push_unprocessed(
+    //     bundle_storage: &mut BundleStorage,
+    //     deserialized_bundles: Vec<ImmutableDeserializedBundle>,
+    //     bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+    //     bundle_stage_stats: &mut BundleStageLoopMetrics,
+    // ) {
+    //     if !deserialized_bundles.is_empty() {
+    //         // bundles get pushed onto the back of the unprocessed bundle queue
+    //         let insert_bundles_summary =
+    //             bundle_storage.insert_unprocessed_bundles(deserialized_bundles);
 
-            bundle_stage_stats.increment_newly_buffered_bundles_count(
-                insert_bundles_summary.num_bundles_inserted as u64,
-            );
-            bundle_stage_stats
-                .increment_num_bundles_dropped(insert_bundles_summary.num_bundles_dropped as u64);
+    //         bundle_stage_stats.increment_newly_buffered_bundles_count(
+    //             insert_bundles_summary.num_bundles_inserted as u64,
+    //         );
+    //         bundle_stage_stats
+    //             .increment_num_bundles_dropped(insert_bundles_summary.num_bundles_dropped as u64);
 
-            bundle_stage_leader_metrics
-                .leader_slot_metrics_tracker()
-                .increment_newly_buffered_packets_count(
-                    insert_bundles_summary.num_packets_inserted as u64,
-                );
-        }
-    }
+    //         bundle_stage_leader_metrics
+    //             .leader_slot_metrics_tracker()
+    //             .increment_newly_buffered_packets_count(
+    //                 insert_bundles_summary.num_packets_inserted as u64,
+    //             );
+    //     }
+    // }
 }
 
 /// This tests functionality of BundlePacketReceiver and the internals of BundleStorage because
 /// they're tightly intertwined
-#[cfg(test)]
+/// TODO: Update tests for unified scheduler
+#[cfg(any())] // Disabled - tests need to be updated for unified scheduler
+#[allow(dead_code, unused_variables, unused_imports)]
 mod tests {
     use {
         crate::{

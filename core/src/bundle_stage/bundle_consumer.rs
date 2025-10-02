@@ -125,6 +125,39 @@ impl BundleConsumer {
     // payment program and set the tip receiver to themself.
     // A bundle is not allowed to touch consensus-related accounts
     //  - This is to avoid stalling the voting BankingStage threads.
+    /// Process a single bundle - used by unified scheduler's bundle worker
+    pub fn process_single_bundle(
+        &mut self,
+        bank: &Arc<Bank>,
+        sanitized_bundle: &SanitizedBundle,
+    ) -> Result<(), BundleExecutionError> {
+        // Lock the bundle
+        let locked_bundle = self
+            .bundle_account_locker
+            .prepare_locked_bundle(sanitized_bundle, bank)
+            .map_err(|_| BundleExecutionError::LockError)?;
+
+        // Create minimal metrics for single bundle execution
+        let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+
+        // Process the bundle
+        Self::process_bundle(
+            &self.bundle_account_locker,
+            &self.tip_manager,
+            &mut self.last_tip_update_slot,
+            &self.cluster_info,
+            &self.block_builder_fee_info,
+            &self.committer,
+            &self.transaction_recorder,
+            &self.qos_service,
+            &self.log_messages_bytes_limit,
+            self.max_bundle_retry_duration,
+            &locked_bundle,
+            bank,
+            &mut bundle_stage_leader_metrics,
+        )
+    }
+
     pub fn consume_buffered_bundles(
         &mut self,
         bank: &Arc<Bank>,

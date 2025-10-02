@@ -1,6 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-use crate::banking_stage::{bundle_scheduler::bundle_state::{BundleId, BundleState}, transaction_scheduler::transaction_state::TransactionState, unified_schedule::unified_scheduling_unit::UnifiedSchedulingUnit};
+use crate::banking_stage::{bundle_scheduler::bundle_state::{BundleId, BundleState}, unified_schedule::{transaction_state::TransactionState, unified_scheduling_unit::UnifiedSchedulingUnit}};
 
 use {
     super::{unified_priority_id::UnifiedPriorityId},
@@ -99,11 +99,23 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
         priority_ids: impl Iterator<Item = UnifiedPriorityId>,
     ) -> usize;
 
-    /// Remove transaction by id.
-    fn remove_by_transaction_id(&mut self, id: TransactionId);
+    /// Remove scheduling unit by priority id (handles both transactions and bundles).
+    fn remove_by_id(&mut self, id: UnifiedSchedulingUnit) {
+        match id {
+            UnifiedSchedulingUnit::Transaction(tx_id) => {
+                self.id_to_transaction_state_remove(tx_id);
+            }
+            UnifiedSchedulingUnit::Bundle(bundle_id) => {
+                self.id_to_bundle_state_remove(bundle_id);
+            }
+        }
+    }
 
-    /// Remove bundle by id.
-    fn remove_by_bundle_id(&mut self, id: BundleId);
+    /// Internal method to remove transaction state (to be implemented by container)
+    fn id_to_transaction_state_remove(&mut self, id: TransactionId);
+
+    /// Internal method to remove bundle state (to be implemented by container)
+    fn id_to_bundle_state_remove(&mut self, id: BundleId);
 
     fn get_min_max_priority(&self) -> MinMaxResult<u64>;
 
@@ -179,7 +191,7 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for UnifiedStateContainer<Tx> {
 
         for _ in 0..num_dropped {
             let priority_id = self.priority_queue.pop_min().expect("queue is not empty");
-            match priority_id.unit {
+            match priority_id.id {
                 UnifiedSchedulingUnit::Transaction(id) => {
                     self.id_to_transaction_state.remove(id);
                 }
@@ -192,11 +204,11 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for UnifiedStateContainer<Tx> {
         num_dropped
     }
 
-    fn remove_by_transaction_id(&mut self, id: TransactionId) {
+    fn id_to_transaction_state_remove(&mut self, id: TransactionId) {
         self.id_to_transaction_state.remove(id);
     }
 
-    fn remove_by_bundle_id(&mut self, id: BundleId) {
+    fn id_to_bundle_state_remove(&mut self, id: BundleId) {
         self.id_to_bundle_state.remove(id);
     }
 
@@ -377,13 +389,13 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
     }
 
     #[inline]
-    fn remove_by_transaction_id(&mut self, id: TransactionId) {
-        self.inner.remove_by_transaction_id(id);
+    fn id_to_transaction_state_remove(&mut self, id: TransactionId) {
+        self.inner.id_to_transaction_state_remove(id);
     }
 
     #[inline]
-    fn remove_by_bundle_id(&mut self,id:BundleId) {
-        self.inner.remove_by_bundle_id(id);
+    fn id_to_bundle_state_remove(&mut self, id: BundleId) {
+        self.inner.id_to_bundle_state_remove(id);
     }
 
     #[inline]
@@ -400,6 +412,18 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
     #[inline]
     fn clear(&mut self) {
         self.inner.clear();
+    }
+}
+
+impl TransactionViewStateContainer {
+    pub fn insert_new_bundle(
+        &mut self,
+        bundle: SanitizedBundle,
+        max_age: MaxAge,
+        priority: u64,
+        cost: u64,
+    ) -> bool {
+        self.inner.insert_new_bundle(bundle, max_age, priority, cost)
     }
 }
 
