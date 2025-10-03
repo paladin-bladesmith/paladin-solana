@@ -2,7 +2,9 @@
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
 
-use crate::{bundle_stage::bundle_consumer::BundleConsumer, packet_bundle::PacketBundle};
+use std::sync::Mutex;
+
+use crate::{bundle_stage::bundle_consumer::BundleConsumer, packet_bundle::PacketBundle, proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager};
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 
@@ -387,10 +389,8 @@ impl BankingStage {
         batch_interval: Duration,
         max_bundle_retry_duration: Duration,
         cluster_info: Arc<ClusterInfo>,
-        tip_manager: crate::tip_manager::TipManager,
-        block_builder_fee_info: Arc<
-            std::sync::Mutex<crate::proxy::block_engine_stage::BlockBuilderFeeInfo>,
-        >,
+        tip_manager: TipManager,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender.clone(),

@@ -1,6 +1,6 @@
 //! The `bundle_stage` processes bundles, which are list of transactions to be executed
 //! sequentially and atomically.
-
+#[allow(dead_code, unused_variables, unused_imports)]
 use {
     crate::{
         banking_stage::{
@@ -47,8 +47,8 @@ mod bundle_storage;
 pub mod committer;
 mod front_run_identifier;
 
-const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
-const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
+pub const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+pub const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 // Stats emitted periodically
 #[derive(Default)]
@@ -192,221 +192,221 @@ impl BundleStageLoopMetrics {
     }
 }
 
-#[allow(dead_code)]
-pub struct BundleStage {
-    bundle_thread: JoinHandle<()>,
-}
+// #[allow(dead_code)]
+// pub struct BundleStage {
+//     bundle_thread: JoinHandle<()>,
+// }
 
-impl BundleStage {
-    #[allow(clippy::new_ret_no_self)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        cluster_info: &Arc<ClusterInfo>,
-        poh_recorder: &Arc<RwLock<PohRecorder>>,
-        transaction_recorder: TransactionRecorder,
-        bundle_receiver: Receiver<Vec<PacketBundle>>,
-        transaction_status_sender: Option<TransactionStatusSender>,
-        replay_vote_sender: ReplayVoteSender,
-        log_messages_bytes_limit: Option<usize>,
-        exit: Arc<AtomicBool>,
-        tip_manager: TipManager,
-        bundle_account_locker: BundleAccountLocker,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
-    ) -> Self {
-        Self::start_bundle_thread(
-            cluster_info,
-            poh_recorder,
-            transaction_recorder,
-            bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            exit,
-            tip_manager,
-            bundle_account_locker,
-            MAX_BUNDLE_RETRY_DURATION,
-            block_builder_fee_info,
-            prioritization_fee_cache,
-        )
-    }
+// impl BundleStage {
+//     #[allow(clippy::new_ret_no_self)]
+//     #[allow(clippy::too_many_arguments)]
+//     pub fn new(
+//         cluster_info: &Arc<ClusterInfo>,
+//         poh_recorder: &Arc<RwLock<PohRecorder>>,
+//         transaction_recorder: TransactionRecorder,
+//         bundle_receiver: Receiver<Vec<PacketBundle>>,
+//         transaction_status_sender: Option<TransactionStatusSender>,
+//         replay_vote_sender: ReplayVoteSender,
+//         log_messages_bytes_limit: Option<usize>,
+//         exit: Arc<AtomicBool>,
+//         tip_manager: TipManager,
+//         bundle_account_locker: BundleAccountLocker,
+//         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+//         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+//     ) -> Self {
+//         Self::start_bundle_thread(
+//             cluster_info,
+//             poh_recorder,
+//             transaction_recorder,
+//             bundle_receiver,
+//             transaction_status_sender,
+//             replay_vote_sender,
+//             log_messages_bytes_limit,
+//             exit,
+//             tip_manager,
+//             bundle_account_locker,
+//             MAX_BUNDLE_RETRY_DURATION,
+//             block_builder_fee_info,
+//             prioritization_fee_cache,
+//         )
+//     }
 
-    pub fn join(self) -> thread::Result<()> {
-        self.bundle_thread.join()
-    }
+//     pub fn join(self) -> thread::Result<()> {
+//         self.bundle_thread.join()
+//     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn start_bundle_thread(
-        cluster_info: &Arc<ClusterInfo>,
-        poh_recorder: &Arc<RwLock<PohRecorder>>,
-        transaction_recorder: TransactionRecorder,
-        bundle_receiver: Receiver<Vec<PacketBundle>>,
-        transaction_status_sender: Option<TransactionStatusSender>,
-        replay_vote_sender: ReplayVoteSender,
-        log_message_bytes_limit: Option<usize>,
-        exit: Arc<AtomicBool>,
-        tip_manager: TipManager,
-        bundle_account_locker: BundleAccountLocker,
-        max_bundle_retry_duration: Duration,
-        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
-        prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
-    ) -> Self {
-        const BUNDLE_STAGE_ID: u32 = 10_000;
-        let poh_recorder = poh_recorder.clone();
-        let cluster_info = cluster_info.clone();
+//     #[allow(clippy::too_many_arguments)]
+//     fn start_bundle_thread(
+//         cluster_info: &Arc<ClusterInfo>,
+//         poh_recorder: &Arc<RwLock<PohRecorder>>,
+//         transaction_recorder: TransactionRecorder,
+//         bundle_receiver: Receiver<Vec<PacketBundle>>,
+//         transaction_status_sender: Option<TransactionStatusSender>,
+//         replay_vote_sender: ReplayVoteSender,
+//         log_message_bytes_limit: Option<usize>,
+//         exit: Arc<AtomicBool>,
+//         tip_manager: TipManager,
+//         bundle_account_locker: BundleAccountLocker,
+//         max_bundle_retry_duration: Duration,
+//         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
+//         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
+//     ) -> Self {
+//         const BUNDLE_STAGE_ID: u32 = 10_000;
+//         let poh_recorder = poh_recorder.clone();
+//         let cluster_info = cluster_info.clone();
 
-        let mut bundle_receiver = BundleReceiver::new(BUNDLE_STAGE_ID, bundle_receiver, Some(5));
+//         let mut bundle_receiver = BundleReceiver::new(BUNDLE_STAGE_ID, bundle_receiver, Some(5));
 
-        let committer = Committer::new(
-            transaction_status_sender,
-            replay_vote_sender,
-            prioritization_fee_cache.clone(),
-        );
-        let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
+//         let committer = Committer::new(
+//             transaction_status_sender,
+//             replay_vote_sender,
+//             prioritization_fee_cache.clone(),
+//         );
+//         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 
-        let unprocessed_bundle_storage = BundleStorage::default();
+//         let unprocessed_bundle_storage = BundleStorage::default();
 
-        let consumer = BundleConsumer::new(
-            committer,
-            transaction_recorder,
-            QosService::new(BUNDLE_STAGE_ID),
-            log_message_bytes_limit,
-            tip_manager,
-            bundle_account_locker,
-            block_builder_fee_info.clone(),
-            max_bundle_retry_duration,
-            cluster_info,
-        );
+//         let consumer = BundleConsumer::new(
+//             committer,
+//             transaction_recorder,
+//             QosService::new(BUNDLE_STAGE_ID),
+//             log_message_bytes_limit,
+//             tip_manager,
+//             bundle_account_locker,
+//             block_builder_fee_info.clone(),
+//             max_bundle_retry_duration,
+//             cluster_info,
+//         );
 
-        let bundle_thread = Builder::new()
-            .name("solBundleStgTx".to_string())
-            .spawn(move || {
-                Self::process_loop(
-                    &mut bundle_receiver,
-                    decision_maker,
-                    consumer,
-                    BUNDLE_STAGE_ID,
-                    unprocessed_bundle_storage,
-                    exit,
-                );
-            })
-            .unwrap();
+//         let bundle_thread = Builder::new()
+//             .name("solBundleStgTx".to_string())
+//             .spawn(move || {
+//                 Self::process_loop(
+//                     &mut bundle_receiver,
+//                     decision_maker,
+//                     consumer,
+//                     BUNDLE_STAGE_ID,
+//                     unprocessed_bundle_storage,
+//                     exit,
+//                 );
+//             })
+//             .unwrap();
 
-        Self { bundle_thread }
-    }
+//         Self { bundle_thread }
+//     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn process_loop(
-        bundle_receiver: &mut BundleReceiver,
-        mut decision_maker: DecisionMaker,
-        mut consumer: BundleConsumer,
-        id: u32,
-        mut bundle_storage: BundleStorage,
-        exit: Arc<AtomicBool>,
-    ) {
-        let mut last_metrics_update = Instant::now();
+//     #[allow(clippy::too_many_arguments)]
+//     fn process_loop(
+//         bundle_receiver: &mut BundleReceiver,
+//         mut decision_maker: DecisionMaker,
+//         mut consumer: BundleConsumer,
+//         id: u32,
+//         mut bundle_storage: BundleStorage,
+//         exit: Arc<AtomicBool>,
+//     ) {
+//         let mut last_metrics_update = Instant::now();
 
-        let mut bundle_stage_metrics = BundleStageLoopMetrics::new(id);
-        let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
+//         let mut bundle_stage_metrics = BundleStageLoopMetrics::new(id);
+//         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
-        let mut batch_bundle_results = ReceiveBundleResults::default();
-        let mut batch_bundle_timer: Option<Instant> = None;
+//         let mut batch_bundle_results = ReceiveBundleResults::default();
+//         let mut batch_bundle_timer: Option<Instant> = None;
 
-        while !exit.load(Ordering::Relaxed) {
-            if bundle_storage.unprocessed_bundles_len() > 0
-                || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
-            {
-                let (_, process_buffered_packets_time_us) =
-                    measure_us!(Self::process_buffered_bundles(
-                        &mut decision_maker,
-                        &mut consumer,
-                        &mut bundle_storage,
-                        &mut bundle_stage_leader_metrics,
-                    ));
-                bundle_stage_leader_metrics
-                    .leader_slot_metrics_tracker()
-                    .increment_process_buffered_packets_us(process_buffered_packets_time_us);
-                last_metrics_update = Instant::now();
-            }
+//         while !exit.load(Ordering::Relaxed) {
+//             if bundle_storage.unprocessed_bundles_len() > 0
+//                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
+//             {
+//                 let (_, process_buffered_packets_time_us) =
+//                     measure_us!(Self::process_buffered_bundles(
+//                         &mut decision_maker,
+//                         &mut consumer,
+//                         &mut bundle_storage,
+//                         &mut bundle_stage_leader_metrics,
+//                     ));
+//                 bundle_stage_leader_metrics
+//                     .leader_slot_metrics_tracker()
+//                     .increment_process_buffered_packets_us(process_buffered_packets_time_us);
+//                 last_metrics_update = Instant::now();
+//             }
 
-            match bundle_receiver.receive_and_buffer_bundles(
-                &mut bundle_storage,
-                &mut batch_bundle_results,
-                &mut batch_bundle_timer,
-                &mut bundle_stage_metrics,
-                &mut bundle_stage_leader_metrics,
-            ) {
-                Ok(_) | Err(RecvTimeoutError::Timeout) => (),
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
+//             match bundle_receiver.receive_and_buffer_bundles(
+//                 &mut bundle_storage,
+//                 &mut batch_bundle_results,
+//                 &mut batch_bundle_timer,
+//                 &mut bundle_stage_metrics,
+//                 &mut bundle_stage_leader_metrics,
+//             ) {
+//                 Ok(_) | Err(RecvTimeoutError::Timeout) => (),
+//                 Err(RecvTimeoutError::Disconnected) => break,
+//             }
 
-            bundle_stage_metrics.increment_current_buffered_bundles_count(
-                bundle_storage.unprocessed_bundles_len() as u64,
-            );
-            bundle_stage_metrics.increment_current_buffered_packets_count(
-                bundle_storage.unprocessed_packets_len() as u64,
-            );
-            bundle_stage_metrics.increment_cost_model_buffered_bundles_count(
-                bundle_storage.cost_model_buffered_bundles_len() as u64,
-            );
-            bundle_stage_metrics.increment_cost_model_buffered_packets_count(
-                bundle_storage.cost_model_buffered_packets_len() as u64,
-            );
-            bundle_stage_metrics.maybe_report(1_000);
-        }
-    }
+//             bundle_stage_metrics.increment_current_buffered_bundles_count(
+//                 bundle_storage.unprocessed_bundles_len() as u64,
+//             );
+//             bundle_stage_metrics.increment_current_buffered_packets_count(
+//                 bundle_storage.unprocessed_packets_len() as u64,
+//             );
+//             bundle_stage_metrics.increment_cost_model_buffered_bundles_count(
+//                 bundle_storage.cost_model_buffered_bundles_len() as u64,
+//             );
+//             bundle_stage_metrics.increment_cost_model_buffered_packets_count(
+//                 bundle_storage.cost_model_buffered_packets_len() as u64,
+//             );
+//             bundle_stage_metrics.maybe_report(1_000);
+//         }
+//     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn process_buffered_bundles(
-        decision_maker: &mut DecisionMaker,
-        consumer: &mut BundleConsumer,
-        bundle_storage: &mut BundleStorage,
-        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-    ) {
-        let (decision, make_decision_time_us) =
-            measure_us!(decision_maker.make_consume_or_forward_decision());
+//     #[allow(clippy::too_many_arguments)]
+//     fn process_buffered_bundles(
+//         decision_maker: &mut DecisionMaker,
+//         consumer: &mut BundleConsumer,
+//         bundle_storage: &mut BundleStorage,
+//         bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
+//     ) {
+//         let (decision, make_decision_time_us) =
+//             measure_us!(decision_maker.make_consume_or_forward_decision());
 
-        let (metrics_action, banking_stage_metrics_action) =
-            bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank());
-        bundle_stage_leader_metrics
-            .leader_slot_metrics_tracker()
-            .increment_make_decision_us(make_decision_time_us);
+//         let (metrics_action, banking_stage_metrics_action) =
+//             bundle_stage_leader_metrics.check_leader_slot_boundary(decision.bank());
+//         bundle_stage_leader_metrics
+//             .leader_slot_metrics_tracker()
+//             .increment_make_decision_us(make_decision_time_us);
 
-        match decision {
-            // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
-            // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
-            BufferedPacketsDecision::Consume(bank) => {
-                // Take metrics action before consume packets (potentially resetting the
-                // slot metrics tracker to the next slot) so that we don't count the
-                // packet processing metrics from the next slot towards the metrics
-                // of the previous slot
-                bundle_stage_leader_metrics
-                    .apply_action(metrics_action, banking_stage_metrics_action);
+//         match decision {
+//             // BufferedPacketsDecision::Consume means this leader is scheduled to be running at the moment.
+//             // Execute, record, and commit as many bundles possible given time, compute, and other constraints.
+//             BufferedPacketsDecision::Consume(bank) => {
+//                 // Take metrics action before consume packets (potentially resetting the
+//                 // slot metrics tracker to the next slot) so that we don't count the
+//                 // packet processing metrics from the next slot towards the metrics
+//                 // of the previous slot
+//                 bundle_stage_leader_metrics
+//                     .apply_action(metrics_action, banking_stage_metrics_action);
 
-                let (_, consume_buffered_packets_time_us) = measure_us!(consumer
-                    .consume_buffered_bundles(&bank, bundle_storage, bundle_stage_leader_metrics,));
-                bundle_stage_leader_metrics
-                    .leader_slot_metrics_tracker()
-                    .increment_consume_buffered_packets_us(consume_buffered_packets_time_us);
-            }
-            // BufferedPacketsDecision::Forward means the leader is slot is far away.
-            // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.
-            BufferedPacketsDecision::Forward => {
-                let (_num_bundles_cleared, _num_cost_model_buffered_bundles) =
-                    bundle_storage.reset();
+//                 let (_, consume_buffered_packets_time_us) = measure_us!(consumer
+//                     .consume_buffered_bundles(&bank, bundle_storage, bundle_stage_leader_metrics,));
+//                 bundle_stage_leader_metrics
+//                     .leader_slot_metrics_tracker()
+//                     .increment_consume_buffered_packets_us(consume_buffered_packets_time_us);
+//             }
+//             // BufferedPacketsDecision::Forward means the leader is slot is far away.
+//             // Bundles aren't forwarded because it breaks atomicity guarantees, so just drop them.
+//             BufferedPacketsDecision::Forward => {
+//                 let (_num_bundles_cleared, _num_cost_model_buffered_bundles) =
+//                     bundle_storage.reset();
 
-                // TODO (LB): add metrics here for how many bundles were cleared
+//                 // TODO (LB): add metrics here for how many bundles were cleared
 
-                bundle_stage_leader_metrics
-                    .apply_action(metrics_action, banking_stage_metrics_action);
-            }
-            // BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold means the validator
-            // is approaching the leader slot, hold bundles. Also, bundles aren't forwarded because it breaks
-            // atomicity guarantees
-            BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {
-                bundle_stage_leader_metrics
-                    .apply_action(metrics_action, banking_stage_metrics_action);
-            }
-        }
-    }
-}
+//                 bundle_stage_leader_metrics
+//                     .apply_action(metrics_action, banking_stage_metrics_action);
+//             }
+//             // BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold means the validator
+//             // is approaching the leader slot, hold bundles. Also, bundles aren't forwarded because it breaks
+//             // atomicity guarantees
+//             BufferedPacketsDecision::ForwardAndHold | BufferedPacketsDecision::Hold => {
+//                 bundle_stage_leader_metrics
+//                     .apply_action(metrics_action, banking_stage_metrics_action);
+//             }
+//         }
+//     }
+// }

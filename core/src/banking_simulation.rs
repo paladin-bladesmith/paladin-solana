@@ -830,6 +830,7 @@ impl BankingSimulator {
             non_vote_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            crossbeam_channel::unbounded().1, // for now ignore bundle packets
             BankingStage::default_num_workers(),
             None,
             replay_vote_sender,

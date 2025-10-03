@@ -9,14 +9,14 @@ use {
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         banking_stage::BankingStage,
         banking_trace::{Channels, TracerThread},
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        bundle_stage::{MAX_BUNDLE_RETRY_DURATION, bundle_account_locker::BundleAccountLocker},
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
         forwarding_stage::{
-            spawn_forwarding_stage, ForwardAddressGetter, SpawnForwardingStageResult,
+            ForwardAddressGetter, SpawnForwardingStageResult, spawn_forwarding_stage
         },
         p3_stage::p3_quic::P3Quic,
         proxy::{
@@ -33,7 +33,7 @@ use {
         vortexor_receiver_adapter::VortexorReceiverAdapter,
     },
     bytes::Bytes,
-    crossbeam_channel::{bounded, unbounded, Receiver},
+    crossbeam_channel::{Receiver, bounded, unbounded},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -59,7 +59,7 @@ use {
     },
     solana_signer::Signer,
     solana_streamer::{
-        quic::{spawn_server, QuicServerParams, SpawnServerResult},
+        quic::{QuicServerParams, SpawnServerResult, spawn_server},
         streamer::StakedNodes,
     },
     solana_turbine::{
@@ -70,7 +70,7 @@ use {
         collections::{HashMap, HashSet},
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
+        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
         thread::{self, JoinHandle},
         time::Duration,
     },
@@ -136,7 +136,7 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    // bundle_stage: BundleStage,
     p3_quic: std::thread::JoinHandle<()>,
 }
 
@@ -444,6 +444,7 @@ impl Tpu {
             banking_stage_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            bundle_receiver.clone(),
             block_production_num_workers,
             transaction_status_sender.clone(),
             replay_vote_sender.clone(),
@@ -460,6 +461,10 @@ impl Tpu {
                 )
             },
             batch_interval,
+            MAX_BUNDLE_RETRY_DURATION,
+            cluster_info.clone(),
+            tip_manager,
+            block_builder_fee_info,
         );
 
         let SpawnForwardingStageResult {
@@ -474,20 +479,20 @@ impl Tpu {
             DataBudget::default(),
         );
 
-        let bundle_stage = BundleStage::new(
-            cluster_info,
-            poh_recorder,
-            transaction_recorder,
-            bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            exit.clone(),
-            tip_manager,
-            bundle_account_locker,
-            &block_builder_fee_info,
-            prioritization_fee_cache,
-        );
+        // let bundle_stage = BundleStage::new(
+        //     cluster_info,
+        //     poh_recorder,
+        //     transaction_recorder,
+        //     bundle_receiver,
+        //     transaction_status_sender,
+        //     replay_vote_sender,
+        //     log_messages_bytes_limit,
+        //     exit.clone(),
+        //     tip_manager,
+        //     bundle_account_locker,
+        //     &block_builder_fee_info,
+        //     prioritization_fee_cache,
+        // );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -548,7 +553,7 @@ impl Tpu {
             block_engine_stage,
             relayer_stage,
             fetch_stage_manager,
-            bundle_stage,
+            // bundle_stage,
             p3_quic,
         }
     }
@@ -565,7 +570,7 @@ impl Tpu {
             self.tpu_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_forwards_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_vote_quic_t.join(),
-            self.bundle_stage.join(),
+            // self.bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),
