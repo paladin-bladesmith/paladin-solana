@@ -10,7 +10,6 @@ use {
             atomic::{AtomicBool, Ordering},
             Arc,
         },
-        time::{Duration, Instant},
     },
     thiserror::Error,
 };
@@ -134,18 +133,6 @@ impl BundleConsumeWorker {
         }
     }
 
-    /// Get the current poh working bank with a timeout
-    fn working_bank_with_timeout(&self) -> Option<Arc<Bank>> {
-        const TIMEOUT: Duration = Duration::from_millis(50);
-        let now = Instant::now();
-        while now.elapsed() < TIMEOUT {
-            if let Some(bank) = self.working_bank() {
-                return Some(bank);
-            }
-        }
-        None
-    }
-
     /// Get the current poh working bank without a timeout
     fn working_bank(&self) -> Option<Arc<Bank>> {
         self.shared_working_bank.load()
@@ -160,10 +147,4 @@ impl BundleConsumeWorker {
             })?;
         Ok(())
     }
-}
-
-/// Helper function to create a non-blocking iterator over work in the receiver,
-/// starting with the given work item.
-fn try_drain_iter<T>(work: T, receiver: &Receiver<T>) -> impl Iterator<Item = T> + '_ {
-    std::iter::once(work).chain(receiver.try_iter())
 }

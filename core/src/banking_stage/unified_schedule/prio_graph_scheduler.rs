@@ -173,7 +173,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                                     let _ = value.send(BundleConsumeWork {
                                         bundle_id: bundle_id as u64,
                                         bundle,
-                                        max_age,
+                                        _max_age: max_age,
                                     });
                                 }
                             }

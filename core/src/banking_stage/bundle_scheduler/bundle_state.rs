@@ -39,18 +39,6 @@ impl BundleState {
         }
     }
 
-    /// Return the priority of the bundle.
-    /// This is *not* the same as the `compute_unit_price` of the bundle.
-    /// The priority is used to order bundles for processing.
-    pub(crate) fn priority(&self) -> u64 {
-        self.priority
-    }
-
-    /// Return the cost of the bundle.
-    pub(crate) fn cost(&self) -> u64 {
-        self.cost
-    }
-
     /// Intended to be called when a bundle is consumed. This method
     /// takes ownership of the bundle from the state.
     ///
@@ -71,13 +59,5 @@ impl BundleState {
     /// This method will panic if the bundle is already in the state.
     pub(crate) fn retry_bundle(&mut self, bundle: SanitizedBundle) {
         assert!(self.bundle.replace(bundle).is_none(), "bundle already present");
-    }
-
-    /// Get a reference to the bundle.
-    ///
-    /// # Panics
-    /// This method will panic if the bundle is in the `Pending` state.
-    pub(crate) fn bundle(&self) -> &SanitizedBundle {
-        self.bundle.as_ref().expect("bundle is pending")
     }
 }

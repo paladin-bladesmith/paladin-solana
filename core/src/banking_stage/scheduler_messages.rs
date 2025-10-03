@@ -58,7 +58,7 @@ pub type BundleId = u64;
 pub struct BundleConsumeWork {
     pub bundle_id: BundleId,
     pub bundle: SanitizedBundle,
-    pub max_age: MaxAge,
+    pub _max_age: MaxAge,
 }
 
 /// Message: [BundleWorker -> Scheduler]
