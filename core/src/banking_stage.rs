@@ -4,7 +4,10 @@
 
 use std::sync::Mutex;
 
-use crate::{bundle_stage::bundle_consumer::BundleConsumer, packet_bundle::PacketBundle, proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager};
+use crate::{
+    bundle_stage::bundle_consumer::BundleConsumer, packet_bundle::PacketBundle,
+    proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager,
+};
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 

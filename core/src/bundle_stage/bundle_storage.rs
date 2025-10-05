@@ -79,14 +79,14 @@ impl BundleStorage {
         self.cost_model_buffered_bundle_storage.len()
     }
 
-    pub(crate) fn cost_model_buffered_packets_len(&self) -> usize {
+    pub(crate) fn _cost_model_buffered_packets_len(&self) -> usize {
         self.cost_model_buffered_bundle_storage
             .iter()
             .map(|b| b.len())
             .sum()
     }
 
-    pub(crate) fn max_receive_size(&self) -> usize {
+    pub(crate) fn _max_receive_size(&self) -> usize {
         self.unprocessed_bundle_storage.capacity() - self.unprocessed_bundle_storage.len()
     }
 

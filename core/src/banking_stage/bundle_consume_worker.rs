@@ -5,11 +5,9 @@ use {
     solana_bundle::BundleExecutionError,
     solana_poh::poh_recorder::SharedWorkingBank,
     solana_runtime::bank::Bank,
-    std::{
-        sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        },
+    std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
     },
     thiserror::Error,
 };

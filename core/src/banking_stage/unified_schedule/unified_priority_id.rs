@@ -34,7 +34,7 @@ impl UnifiedPriorityId {
     }
 
     /// Check if this priority ID represents a bundle.
-    pub(crate) fn is_bundle(&self) -> bool {
+    pub(crate) fn _is_bundle(&self) -> bool {
         matches!(self.id, UnifiedSchedulingUnit::Bundle(_))
     }
 }

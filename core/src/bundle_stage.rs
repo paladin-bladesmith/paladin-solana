@@ -53,8 +53,8 @@ pub const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 // Stats emitted periodically
 #[derive(Default)]
 pub struct BundleStageLoopMetrics {
-    last_report: AtomicInterval,
-    id: u32,
+    _last_report: AtomicInterval,
+    _id: u32,
 
     // total received
     num_bundles_received: AtomicU64,
@@ -80,9 +80,9 @@ pub struct BundleStageLoopMetrics {
 }
 
 impl BundleStageLoopMetrics {
-    fn new(id: u32) -> Self {
+    fn _new(_id: u32) -> Self {
         BundleStageLoopMetrics {
-            id,
+            _id,
             ..BundleStageLoopMetrics::default()
         }
     }
@@ -138,11 +138,11 @@ impl BundleStageLoopMetrics {
 }
 
 impl BundleStageLoopMetrics {
-    fn maybe_report(&mut self, report_interval_ms: u64) {
-        if self.last_report.should_update(report_interval_ms) {
+    fn _maybe_report(&mut self, report_interval_ms: u64) {
+        if self._last_report.should_update(report_interval_ms) {
             datapoint_info!(
                 "bundle_stage-loop_stats",
-                ("id", self.id, i64),
+                ("id", self._id, i64),
                 (
                     "num_bundles_received",
                     self.num_bundles_received.swap(0, Ordering::Acquire) as i64,

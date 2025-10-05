@@ -16,6 +16,7 @@ pub struct BundleStageLeaderMetrics {
     leader_slot_metrics_tracker: LeaderSlotMetricsTracker,
 }
 
+#[allow(dead_code)]
 pub(crate) enum MetricsTrackerAction {
     Noop,
     ReportAndResetTracker,
@@ -31,7 +32,7 @@ impl BundleStageLeaderMetrics {
         }
     }
 
-    pub(crate) fn check_leader_slot_boundary(
+    pub(crate) fn _check_leader_slot_boundary(
         &mut self,
         bank: Option<&Arc<Bank>>,
     ) -> (
@@ -43,11 +44,11 @@ impl BundleStageLeaderMetrics {
             .check_leader_slot_boundary(bank);
         let bundle_stage_metrics_action = self
             .bundle_stage_metrics_tracker
-            .check_leader_slot_boundary(bank);
+            ._check_leader_slot_boundary(bank);
         (banking_stage_metrics_action, bundle_stage_metrics_action)
     }
 
-    pub(crate) fn apply_action(
+    pub(crate) fn _apply_action(
         &mut self,
         banking_stage_metrics_action: leader_slot_metrics::MetricsTrackerAction,
         bundle_stage_metrics_action: MetricsTrackerAction,
@@ -55,7 +56,7 @@ impl BundleStageLeaderMetrics {
         self.leader_slot_metrics_tracker
             .apply_action(banking_stage_metrics_action);
         self.bundle_stage_metrics_tracker
-            .apply_action(bundle_stage_metrics_action)
+            ._apply_action(bundle_stage_metrics_action)
     }
 
     pub fn leader_slot_metrics_tracker(&mut self) -> &mut LeaderSlotMetricsTracker {
@@ -69,19 +70,19 @@ impl BundleStageLeaderMetrics {
 
 pub struct BundleStageStatsMetricsTracker {
     bundle_stage_metrics: Option<BundleStageStats>,
-    id: u32,
+    _id: u32,
 }
 
 impl BundleStageStatsMetricsTracker {
     pub fn new(id: u32) -> Self {
         Self {
             bundle_stage_metrics: None,
-            id,
+            _id: id,
         }
     }
 
     /// Similar to as LeaderSlotMetricsTracker::check_leader_slot_boundary
-    pub(crate) fn check_leader_slot_boundary(
+    pub(crate) fn _check_leader_slot_boundary(
         &mut self,
         bank: Option<&Arc<Bank>>,
     ) -> MetricsTrackerAction {
@@ -89,14 +90,15 @@ impl BundleStageStatsMetricsTracker {
             (None, None) => MetricsTrackerAction::Noop,
             (Some(_), None) => MetricsTrackerAction::ReportAndResetTracker,
             // Our leader slot has begun, time to create a new slot tracker
-            (None, Some(bank)) => {
-                MetricsTrackerAction::NewTracker(Some(BundleStageStats::new(self.id, bank.slot())))
-            }
+            (None, Some(bank)) => MetricsTrackerAction::NewTracker(Some(BundleStageStats::_new(
+                self._id,
+                bank.slot(),
+            ))),
             (Some(bundle_stage_metrics), Some(bank)) => {
-                if bundle_stage_metrics.slot != bank.slot() {
+                if bundle_stage_metrics._slot != bank.slot() {
                     // Last slot has ended, new slot has began
-                    MetricsTrackerAction::ReportAndNewTracker(Some(BundleStageStats::new(
-                        self.id,
+                    MetricsTrackerAction::ReportAndNewTracker(Some(BundleStageStats::_new(
+                        self._id,
                         bank.slot(),
                     )))
                 } else {
@@ -107,27 +109,27 @@ impl BundleStageStatsMetricsTracker {
     }
 
     /// Similar to LeaderSlotMetricsTracker::apply_action
-    pub(crate) fn apply_action(&mut self, action: MetricsTrackerAction) -> Option<Slot> {
+    pub(crate) fn _apply_action(&mut self, action: MetricsTrackerAction) -> Option<Slot> {
         match action {
             MetricsTrackerAction::Noop => None,
             MetricsTrackerAction::ReportAndResetTracker => {
                 let mut reported_slot = None;
                 if let Some(bundle_stage_metrics) = self.bundle_stage_metrics.as_mut() {
-                    bundle_stage_metrics.report();
-                    reported_slot = bundle_stage_metrics.reported_slot();
+                    bundle_stage_metrics._report();
+                    reported_slot = bundle_stage_metrics._reported_slot();
                 }
                 self.bundle_stage_metrics = None;
                 reported_slot
             }
             MetricsTrackerAction::NewTracker(new_bundle_stage_metrics) => {
                 self.bundle_stage_metrics = new_bundle_stage_metrics;
-                self.bundle_stage_metrics.as_ref().unwrap().reported_slot()
+                self.bundle_stage_metrics.as_ref().unwrap()._reported_slot()
             }
             MetricsTrackerAction::ReportAndNewTracker(new_bundle_stage_metrics) => {
                 let mut reported_slot = None;
                 if let Some(bundle_stage_metrics) = self.bundle_stage_metrics.as_mut() {
-                    bundle_stage_metrics.report();
-                    reported_slot = bundle_stage_metrics.reported_slot();
+                    bundle_stage_metrics._report();
+                    reported_slot = bundle_stage_metrics._reported_slot();
                 }
                 self.bundle_stage_metrics = new_bundle_stage_metrics;
                 reported_slot
@@ -348,9 +350,9 @@ impl BundleStageStatsMetricsTracker {
 
 #[derive(Default)]
 pub struct BundleStageStats {
-    id: u32,
-    slot: u64,
-    is_reported: bool,
+    _id: u32,
+    _slot: u64,
+    _is_reported: bool,
 
     sanitize_transaction_ok: Saturating<u64>,
     sanitize_transaction_vote_only_mode: Saturating<u64>,
@@ -386,7 +388,7 @@ pub struct BundleStageStats {
     execution_results_transaction_failures: Saturating<u64>,
     execution_results_exceeds_cost_model: Saturating<u64>,
     execution_results_tip_errors: Saturating<u64>,
-    execution_results_max_retries: Saturating<u64>,
+    _execution_results_max_retries: Saturating<u64>,
 
     bad_argument: Saturating<u64>,
 
@@ -396,31 +398,31 @@ pub struct BundleStageStats {
 }
 
 impl BundleStageStats {
-    pub fn new(id: u32, slot: Slot) -> BundleStageStats {
+    pub fn _new(_id: u32, _slot: Slot) -> BundleStageStats {
         BundleStageStats {
-            id,
-            slot,
-            is_reported: false,
+            _id,
+            _slot,
+            _is_reported: false,
             ..BundleStageStats::default()
         }
     }
 
     /// Returns `Some(self.slot)` if the metrics have been reported, otherwise returns None
-    fn reported_slot(&self) -> Option<Slot> {
-        if self.is_reported {
-            Some(self.slot)
+    fn _reported_slot(&self) -> Option<Slot> {
+        if self._is_reported {
+            Some(self._slot)
         } else {
             None
         }
     }
 
-    pub fn report(&mut self) {
-        self.is_reported = true;
+    pub fn _report(&mut self) {
+        self._is_reported = true;
 
         datapoint_info!(
             "bundle_stage-stats",
-            ("id", self.id, i64),
-            ("slot", self.slot, i64),
+            ("id", self._id, i64),
+            ("slot", self._slot, i64),
             ("num_sanitized_ok", self.sanitize_transaction_ok.0, i64),
             (
                 "sanitize_transaction_vote_only_mode",
@@ -538,7 +540,7 @@ impl BundleStageStats {
             ),
             (
                 "execution_results_max_retries",
-                self.execution_results_max_retries.0,
+                self._execution_results_max_retries.0,
                 i64
             ),
             (

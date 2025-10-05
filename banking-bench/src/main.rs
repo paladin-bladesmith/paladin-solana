@@ -2,30 +2,37 @@
 use {
     agave_banking_stage_ingress_types::BankingPacketBatch,
     assert_matches::assert_matches,
-    clap::{Arg, ArgEnum, Command, crate_description, crate_name},
-    crossbeam_channel::{Receiver, unbounded},
+    clap::{crate_description, crate_name, Arg, ArgEnum, Command},
+    crossbeam_channel::{unbounded, Receiver},
     log::*,
-    rand::{Rng, thread_rng},
+    rand::{thread_rng, Rng},
     rayon::prelude::*,
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::{
-        banking_stage::{BankingStage, DEFAULT_BATCH_INTERVAL, update_bank_forks_and_poh_recorder_for_new_tpu_bank},
-        banking_trace::{BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BankingTracer, Channels},
+        banking_stage::{
+            update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage,
+            DEFAULT_BATCH_INTERVAL,
+        },
+        banking_trace::{BankingTracer, Channels, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
         bundle_stage::bundle_account_locker::BundleAccountLocker,
+        packet_bundle::PacketBundle,
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        tip_manager::{TipManager, TipManagerConfig},
         validator::{BlockProductionMethod, TransactionStructure},
     },
+    solana_gossip::{cluster_info, contact_info::ContactInfo},
     solana_hash::Hash,
     solana_keypair::Keypair,
     solana_ledger::{
         blockstore::Blockstore,
-        genesis_utils::{GenesisConfigInfo, create_genesis_config},
+        genesis_utils::{create_genesis_config, GenesisConfigInfo},
         get_tmp_ledger_path_auto_delete,
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_measure::measure::Measure,
     solana_message::Message,
-    solana_perf::packet::{PacketBatch, to_packet_batches},
-    solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry, create_test_recorder},
+    solana_perf::packet::{to_packet_batches, PacketBatch},
+    solana_poh::poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
     solana_pubkey::{self as pubkey, Pubkey},
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
@@ -39,7 +46,7 @@ use {
     std::{
         collections::HashSet,
         num::NonZeroUsize,
-        sync::{Arc, RwLock, atomic::Ordering},
+        sync::{atomic::Ordering, Arc, Mutex, RwLock},
         thread::sleep,
         time::{Duration, Instant},
     },
@@ -440,7 +447,7 @@ fn main() {
             bank.clone(),
             blockstore.clone(),
             None,
-            Some(leader_schedule_cache),
+            Some(leader_schedule_cache.clone()),
         );
     let (banking_tracer, tracer_thread) =
         BankingTracer::new(matches.is_present("trace_banking").then_some((
@@ -466,6 +473,7 @@ fn main() {
         non_vote_receiver,
         tpu_vote_receiver,
         gossip_vote_receiver,
+        crossbeam_channel::unbounded::<Vec<PacketBundle>>().1, //unused bundle receiver
         block_production_num_workers,
         None,
         replay_vote_sender,
@@ -476,6 +484,21 @@ fn main() {
         BundleAccountLocker::default(),
         |_| 0,
         DEFAULT_BATCH_INTERVAL,
+        Duration::ZERO,
+        Arc::new(cluster_info::ClusterInfo::new(
+            ContactInfo::default(),
+            Arc::new(Keypair::new()),
+            solana_streamer::socket::SocketAddrSpace::new(true),
+        )),
+        TipManager::new(
+            blockstore.clone(),
+            leader_schedule_cache,
+            TipManagerConfig::default(),
+        ),
+        Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: Pubkey::new_unique(),
+            block_builder_commission: 0,
+        })),
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.

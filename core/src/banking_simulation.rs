@@ -9,6 +9,8 @@ use {
             TracerThread, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        tip_manager::TipManagerConfig,
         validator::{BlockProductionMethod, TransactionStructure},
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
@@ -51,7 +53,7 @@ use {
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, sleep, JoinHandle},
         time::{Duration, Instant, SystemTime},
@@ -819,6 +821,10 @@ impl BankingSimulator {
             None,
             Arc::new(RwLock::new(None)),
         );
+        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: cluster_info_for_broadcast.keypair().pubkey(),
+            block_builder_commission: 0,
+        }));
 
         info!("Start banking stage!...");
         let prioritization_fee_cache = &Arc::new(PrioritizationFeeCache::new(0u64));
@@ -830,7 +836,7 @@ impl BankingSimulator {
             non_vote_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
-            crossbeam_channel::unbounded().1, // for now ignore bundle packets
+            crossbeam_channel::unbounded().1,
             BankingStage::default_num_workers(),
             None,
             replay_vote_sender,
@@ -841,6 +847,14 @@ impl BankingSimulator {
             BundleAccountLocker::default(),
             |_| 0,
             Duration::ZERO,
+            Duration::ZERO,
+            cluster_info_for_broadcast,
+            crate::tip_manager::TipManager::new(
+                blockstore.clone(),
+                Arc::new(LeaderScheduleCache::default()),
+                TipManagerConfig::default(),
+            ),
+            block_builder_fee_info,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot
