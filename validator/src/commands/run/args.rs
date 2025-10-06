@@ -130,7 +130,6 @@ impl FromClapArgMatches for RunArgs {
 const DEFAULT_P3_PORT: &str = "4819";
 const DEFAULT_P3_MEV_PORT: &str = "4820";
 
-
 pub fn add_args<'a>(app: App<'a, 'a>, default_args: &'a DefaultArgs) -> App<'a, 'a> {
     app.arg(
         Arg::with_name(SKIP_SEED_PHRASE_VALIDATION_ARG.name)

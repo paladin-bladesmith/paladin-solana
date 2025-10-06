@@ -3,5 +3,6 @@ group_imports = "One"
 
 ignore = [
     "jito-programs",
-    "anchor"
+    "anchor",
+    "paladin-programs/*"
 ]

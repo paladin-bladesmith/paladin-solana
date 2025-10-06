@@ -92,12 +92,9 @@ impl<D: TransactionData> RuntimeTransaction<ResolvedTransactionView<D>> {
         // return generic sanitize failure error here.
         // these transactions should be immediately dropped, and we generally
         // will not care about the specific error at this point.
-        let transaction = ResolvedTransactionView::try_new(
-            transaction,
-            loaded_addresses,
-            reserved_account_keys,
-        )
-        .map_err(|_| TransactionError::SanitizeFailure)?;
+        let transaction =
+            ResolvedTransactionView::try_new(transaction, loaded_addresses, reserved_account_keys)
+                .map_err(|_| TransactionError::SanitizeFailure)?;
         let mut tx = Self { transaction, meta };
         tx.load_dynamic_metadata()?;
 
