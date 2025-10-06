@@ -1451,6 +1451,12 @@ pub struct ConnectionTable {
     total_size: usize,
 }
 
+impl Default for ConnectionTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // Prune the connection which has the oldest update
 // Return number pruned
 impl ConnectionTable {
@@ -1509,6 +1515,7 @@ impl ConnectionTable {
         num_pruned
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn try_add_connection(
         &mut self,
         key: ConnectionTableKey,
