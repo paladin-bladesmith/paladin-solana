@@ -99,14 +99,13 @@ impl From<&PohRecorder> for DecisionMaker {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub(crate) struct DecisionMakerWrapper {
     is_exited: Arc<AtomicBool>,
     decision_maker: DecisionMaker,
 }
 
 impl DecisionMakerWrapper {
-    pub(crate) fn _new(is_exited: Arc<AtomicBool>, decision_maker: DecisionMaker) -> Self {
+    pub(crate) fn new(is_exited: Arc<AtomicBool>, decision_maker: DecisionMaker) -> Self {
         Self {
             is_exited,
             decision_maker,

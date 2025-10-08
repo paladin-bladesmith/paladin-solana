@@ -145,7 +145,7 @@ impl PacketDeserializer {
         Ok((num_packets_received, messages))
     }
 
-    pub(crate) fn _deserialize_packets_for_unified_scheduler(
+    pub(crate) fn deserialize_packets_for_unified_scheduler(
         packet_batch: &PacketBatch,
     ) -> impl Iterator<Item = (ImmutableDeserializedPacket, usize, usize)> + '_ {
         packet_batch.iter().enumerate().filter_map(|(index, pkt)| {

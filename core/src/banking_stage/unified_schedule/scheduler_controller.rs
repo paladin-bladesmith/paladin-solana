@@ -390,6 +390,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use crate::bundle_stage::bundle_packet_receiver::BundleReceiver;
+
     use {
         super::*,
         crate::banking_stage::{
@@ -397,7 +399,7 @@ mod tests {
             packet_deserializer::PacketDeserializer,
             scheduler_messages::{ConsumeWork, FinishedConsumeWork, TransactionBatchId},
             tests::create_slow_genesis_config,
-            transaction_scheduler::{
+            unified_schedule::{
                 prio_graph_scheduler::{PrioGraphScheduler, PrioGraphSchedulerConfig},
                 receive_and_buffer::SanitizedTransactionReceiveAndBuffer,
             },
@@ -449,8 +451,10 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> SanitizedTransactionReceiveAndBuffer {
+        let (_bundle_sender, bundle_receiver) = unbounded();
         SanitizedTransactionReceiveAndBuffer::new(
             PacketDeserializer::new(receiver),
+            BundleReceiver::new(bundle_receiver, None),
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
@@ -528,6 +532,7 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
+            None,
         );
         let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
         let exit = Arc::new(AtomicBool::new(false));

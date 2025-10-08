@@ -82,6 +82,7 @@ mod read_write_account_set;
 conditional_vis_mod!(scheduler_messages, feature = "dev-context-only-utils", pub);
 conditional_vis_mod!(bundle_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
 conditional_vis_mod!(unified_schedule, feature = "dev-context-only-utils", pub, pub(crate));
+conditional_vis_mod!(unified_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
 
 /// The maximum number of worker threads that can be spawned by banking stage.
 /// 64 because `ThreadAwareAccountLocks` uses a `u64` as a bitmask to
@@ -776,11 +777,17 @@ pub(crate) fn update_bank_forks_and_poh_recorder_for_new_tpu_bank(
 mod tests {
     use {
         super::*,
-        crate::banking_trace::{BankingTracer, Channels},
+        crate::{
+            banking_trace::{BankingTracer, Channels},
+            proxy::block_engine_stage::BlockBuilderFeeInfo,
+            tip_manager::{ReadRewards, TipManagerConfig},
+        },
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
+        solana_clock::Slot,
         solana_entry::entry::{self, EntrySlice},
+        solana_gossip::node::Node,
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_ledger::{
@@ -802,6 +809,7 @@ mod tests {
         solana_runtime::{bank::Bank, genesis_utils::bootstrap_validator_stake_lamports},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
+        solana_streamer::socket::SocketAddrSpace,
         solana_system_transaction as system_transaction,
         solana_transaction::{sanitized::SanitizedTransaction, Transaction},
         solana_vote::vote_transaction::new_tower_sync_transaction,
@@ -814,6 +822,20 @@ mod tests {
         strum::IntoEnumIterator,
         test_case::test_case,
     };
+
+    #[derive(Default)]
+    pub(crate) struct MockBlockstore(pub(crate) Vec<u64>);
+
+    impl ReadRewards for RwLock<MockBlockstore> {
+        fn read_rewards(&self, slot: Slot) -> u64 {
+            self.read()
+                .unwrap()
+                .0
+                .get(slot as usize)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
 
     pub(crate) fn sanitize_transactions(
         txs: Vec<Transaction>,
@@ -846,6 +868,11 @@ mod tests {
             create_test_recorder(bank, blockstore, None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let (_bundle_sender, bundle_receiver) = unbounded();
+        let cluster_info = Arc::new({
+            let keypair = Arc::new(Keypair::new());
+            let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+            ClusterInfo::new(node.info, keypair, SocketAddrSpace::Unspecified)
+        });
 
         let banking_stage = BankingStage::new_num_threads(
             BlockProductionMethod::CentralScheduler,
@@ -867,17 +894,13 @@ mod tests {
             |_| 0,
             Duration::ZERO,
             Duration::from_millis(100),
-            Arc::new(ClusterInfo::new_with_invalid_keypair(
-                solana_gossip::contact_info::ContactInfo::default(),
-            )),
+            cluster_info,
             crate::tip_manager::TipManager::new(
-                Arc::new(crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default()),
+                Arc::new(RwLock::new(MockBlockstore::default())),
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
-            Arc::new(std::sync::Mutex::new(
-                crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default(),
-            )),
+            Arc::new(std::sync::Mutex::new(BlockBuilderFeeInfo::default())),
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -920,6 +943,11 @@ mod tests {
             create_test_recorder(bank.clone(), blockstore, Some(poh_config), None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let (_bundle_sender, bundle_receiver) = unbounded();
+        let cluster_info = Arc::new({
+            let keypair = Arc::new(Keypair::new());
+            let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+            ClusterInfo::new(node.info, keypair, SocketAddrSpace::Unspecified)
+        });
 
         let banking_stage = BankingStage::new_num_threads(
             BlockProductionMethod::CentralScheduler,
@@ -941,11 +969,9 @@ mod tests {
             |_| 0,
             Duration::ZERO,
             Duration::from_millis(100),
-            Arc::new(ClusterInfo::new_with_invalid_keypair(
-                solana_gossip::contact_info::ContactInfo::default(),
-            )),
+            cluster_info,
             crate::tip_manager::TipManager::new(
-                Arc::new(crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default()),
+                Arc::new(RwLock::new(MockBlockstore::default())),
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
@@ -1003,6 +1029,11 @@ mod tests {
             create_test_recorder(bank.clone(), blockstore, None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
         let (_bundle_sender, bundle_receiver) = unbounded();
+        let cluster_info = Arc::new({
+            let keypair = Arc::new(Keypair::new());
+            let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+            ClusterInfo::new(node.info, keypair, SocketAddrSpace::Unspecified)
+        });
 
         let banking_stage = BankingStage::new_num_threads(
             block_production_method,
@@ -1024,13 +1055,11 @@ mod tests {
             |_| 0,
             Duration::ZERO,
             Duration::from_millis(100),
-            Arc::new(ClusterInfo::new_with_invalid_keypair(
-                solana_gossip::contact_info::ContactInfo::default(),
-            )),
+            cluster_info,
             crate::tip_manager::TipManager::new(
-                Arc::new(crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default()),
-                Arc::new(LeaderScheduleCache::new_from_bank(&bank)),
-                crate::tip_manager::TipManagerConfig::default(),
+                Arc::new(RwLock::new(MockBlockstore::default())),
+                Arc::new(LeaderScheduleCache::default()),
+                TipManagerConfig::default(),
             ),
             Arc::new(std::sync::Mutex::new(
                 crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default(),
@@ -1167,6 +1196,11 @@ mod tests {
         );
 
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+        let cluster_info = Arc::new({
+            let keypair = Arc::new(Keypair::new());
+            let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+            ClusterInfo::new(node.info, keypair, SocketAddrSpace::Unspecified)
+        });
         let entry_receiver = {
             // start a banking_stage to eat verified receiver
             let (bank, bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
@@ -1193,13 +1227,11 @@ mod tests {
                 |_| 0,
                 Duration::ZERO,
                 Duration::from_millis(100),
-                Arc::new(ClusterInfo::new_with_invalid_keypair(
-                    solana_gossip::contact_info::ContactInfo::default(),
-                )),
+                cluster_info,
                 crate::tip_manager::TipManager::new(
-                    Arc::new(crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default()),
-                    Arc::new(LeaderScheduleCache::new_from_bank(&bank)),
-                    crate::tip_manager::TipManagerConfig::default(),
+                    Arc::new(RwLock::new(MockBlockstore::default())),
+                    Arc::new(LeaderScheduleCache::default()),
+                    TipManagerConfig::default(),
                 ),
                 Arc::new(std::sync::Mutex::new(
                     crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default(),
@@ -1377,7 +1409,12 @@ mod tests {
             create_test_recorder(bank.clone(), blockstore, None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
-        let (bundle_receiver, _bundle_sender) = unbounded();
+        let (_bundle_sender, bundle_receiver) = unbounded();
+        let cluster_info = Arc::new({
+            let keypair = Arc::new(Keypair::new());
+            let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+            ClusterInfo::new(node.info, keypair, SocketAddrSpace::Unspecified)
+        });
         let banking_stage = BankingStage::new_num_threads(
             BlockProductionMethod::CentralScheduler,
             transaction_struct,
@@ -1386,25 +1423,25 @@ mod tests {
             non_vote_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            bundle_receiver,
             DEFAULT_NUM_WORKERS,
             None,
             replay_vote_sender,
             None,
             bank_forks,
-            Arc::new(PrioritizationFeeCache::new(0u64)),
+            Arc::new(PrioritizationFeeCache::default()),
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
             Duration::ZERO,
-            bundle_receiver,
-            Arc::new(ClusterInfo::new(
-                ContactInfo::new_localhost(&Pubkey::new_unique(), /*wallclock=*/ 0),
-                Arc::new(Keypair::new()),
-                SocketAddrSpace::Unspecified,
-            )),
-            Arc::new(TipManager::new(TipManagerConfig::default())),
-            BlockBuilderFeeInfo::default(),
-            Duration::from_secs(1),
+            Duration::ZERO,
+            cluster_info,
+            crate::tip_manager::TipManager::new(
+                Arc::new(RwLock::new(MockBlockstore::default())),
+                Arc::new(LeaderScheduleCache::default()),
+                TipManagerConfig::default(),
+            ),
+            Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1518,6 +1555,12 @@ mod tests {
 
                     let blacklisted_keypair = Keypair::new();
 
+                    let cluster_info = Arc::new({
+                        let keypair = Arc::new(Keypair::new());
+                        let node = Node::new_localhost_with_pubkey(&keypair.pubkey());
+                        ClusterInfo::new(node.info, keypair, SocketAddrSpace::Unspecified)
+                    });
+
                     let banking_stage = BankingStage::new_num_threads(
                         block_production_method.clone(),
                         transaction_struct.clone(),
@@ -1526,6 +1569,7 @@ mod tests {
                         non_vote_receiver,
                         tpu_vote_receiver,
                         gossip_vote_receiver,
+                        crossbeam_channel::unbounded().1, // bundle_receiver
                         DEFAULT_NUM_WORKERS,
                         None,
                         replay_vote_sender,
@@ -1536,18 +1580,14 @@ mod tests {
                         BundleAccountLocker::default(),
                         |_| 0,
                         Duration::ZERO,
-                        bundle_receiver,
-                        Arc::new(ClusterInfo::new(
-                            ContactInfo::new_localhost(
-                                &Pubkey::new_unique(),
-                                /*wallclock=*/ 0,
-                            ),
-                            Arc::new(Keypair::new()),
-                            SocketAddrSpace::Unspecified,
-                        )),
-                        Arc::new(TipManager::new(TipManagerConfig::default())),
-                        BlockBuilderFeeInfo::default(),
-                        Duration::from_secs(1),
+                        Duration::ZERO,
+                        cluster_info,
+                        crate::tip_manager::TipManager::new(
+                            Arc::new(RwLock::new(MockBlockstore::default())),
+                            Arc::new(LeaderScheduleCache::default()),
+                            TipManagerConfig::default(),
+                        ),
+                        Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
                     );
 
                     // bad tx

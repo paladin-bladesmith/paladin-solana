@@ -75,6 +75,7 @@ impl BlockEngineStageStats {
     }
 }
 
+#[derive(Default)]
 pub struct BlockBuilderFeeInfo {
     pub block_builder: Pubkey,
     pub block_builder_commission: u64,
@@ -205,7 +206,7 @@ impl BlockEngineStage {
                             .filter(|url| !new_urls.contains(url))
                             .cloned()
                             .collect();
-                        
+
                         // Find URLs to add
                         let urls_to_add: Vec<String> = new_urls
                             .iter()

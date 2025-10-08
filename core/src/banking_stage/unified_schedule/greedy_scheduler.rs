@@ -306,7 +306,7 @@ mod test {
         super::*,
         crate::banking_stage::{
             scheduler_messages::{MaxAge, TransactionId},
-            transaction_scheduler::transaction_state_container::TransactionStateContainer,
+            unified_schedule::unified_state_container::UnifiedStateContainer,
         },
         crossbeam_channel::unbounded,
         itertools::Itertools,
@@ -372,8 +372,8 @@ mod test {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
-        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+        let mut container = UnifiedStateContainer::with_capacity(10 * 1024);
         for (from_keypair, to_pubkeys, lamports, compute_unit_price) in tx_infos.into_iter() {
             let transaction = prioritized_tranfers(
                 from_keypair.borrow(),

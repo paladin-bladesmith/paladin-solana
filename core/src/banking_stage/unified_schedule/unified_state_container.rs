@@ -550,7 +550,7 @@ mod tests {
                     packet_parser(data, priority, cost)
                 })
                 .unwrap();
-            let priority_id = UnifiedPriorityId::new(priority, id);
+            let priority_id = UnifiedPriorityId::new(priority, UnifiedSchedulingUnit::Transaction(id));
             assert_eq!(
                 container.push_ids_into_queue(std::iter::once(priority_id)),
                 0
@@ -567,7 +567,7 @@ mod tests {
                     packet_parser(data, priority, cost)
                 })
                 .unwrap();
-            let priority_id = UnifiedPriorityId::new(priority, id);
+            let priority_id = UnifiedPriorityId::new(priority, UnifiedSchedulingUnit::Transaction(id));
             priority_ids.push(priority_id);
         }
         assert_eq!(container.push_ids_into_queue(priority_ids.into_iter()), 5);
@@ -586,7 +586,7 @@ mod tests {
                 packet_parser(data, priority, cost)
             })
             .unwrap();
-        let priority_id = UnifiedPriorityId::new(priority, id);
+        let priority_id = UnifiedPriorityId::new(priority, UnifiedSchedulingUnit::Transaction(id));
         assert_eq!(
             container.push_ids_into_queue(std::iter::once(priority_id)),
             1

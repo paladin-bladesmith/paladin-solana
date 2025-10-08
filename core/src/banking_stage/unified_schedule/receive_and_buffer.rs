@@ -1318,7 +1318,7 @@ mod tests {
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         SanitizedTransactionReceiveAndBuffer,
-        TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+        UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>>,
     ) {
         let (bundle_sender, bundle_receiver_ch) = crossbeam_channel::unbounded();
         drop(bundle_sender); // We won't send any bundles in tests
@@ -1344,7 +1344,7 @@ mod tests {
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         SanitizedTransactionReceiveAndBuffer,
-        TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+        UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>>,
     ) {
         let (bundle_sender, bundle_receiver_ch) = crossbeam_channel::unbounded();
         drop(bundle_sender); // We won't send any bundles in tests
@@ -1360,7 +1360,7 @@ mod tests {
             batch_start: Instant::now(),
             batch_interval: BATCH_PERIOD,
         };
-        let container = TransactionStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
+        let container = UnifiedStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
     }
 
@@ -1425,10 +1425,10 @@ mod tests {
     ) {
         let mut actual_length: usize = 0;
         while let Some(id) = container.pop() {
-            let Some(_) = container.get_transaction(id.id) else {
+            let Some(_) = container.get_transaction(id.get_id()) else {
                 panic!(
                     "transaction in queue position {} with id {} must exist.",
-                    actual_length, id.id
+                    actual_length, id.get_id()
                 );
             };
             actual_length += 1;
@@ -1738,6 +1738,7 @@ mod tests {
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
+        
         assert_eq!(num_dropped_on_fee_payer, 1);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);

@@ -1330,7 +1330,7 @@ mod tests {
 
         // the first tip receiver + block builder are the initializer (keypair.pubkey()) as set by the
         // TipPayment program during initialization
-        
+
         // Build the tx to compare
         let ixs = tip_manager.build_change_tip_receiver_and_block_builder_tx(
             &keypair.pubkey(),
@@ -1360,7 +1360,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(transactions[3], tx.to_versioned_transaction());
-        
+
         assert_eq!(
             transactions[4],
             sanitized_bundle.transactions[0].to_versioned_transaction()
