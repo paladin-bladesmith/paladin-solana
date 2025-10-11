@@ -268,6 +268,9 @@ impl BundleStageStatsMetricsTracker {
                 )) => {
                     bundle_stage_metrics.bad_argument.add_assign(Saturating(1));
                 }
+                Err(BundleExecutionError::FrontRun) => {
+                    bundle_stage_metrics.front_run.add_assign(Saturating(1));
+                }
             }
         }
     }
@@ -389,6 +392,7 @@ pub struct BundleStageStats {
 
     sanitize_transaction_failed_too_many_account_locks: Saturating<u64>,
     sanitize_transaction_failed_invalid_compute_budget_limits: Saturating<u64>,
+    front_run: Saturating<u64>,
 }
 
 impl BundleStageStats {
@@ -548,6 +552,7 @@ impl BundleStageStats {
                     .0,
                 i64
             ),
+            ("front_run", self.front_run.0, i64),
             ("bad_argument", self.bad_argument.0, i64)
         );
     }
