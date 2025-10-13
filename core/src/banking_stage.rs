@@ -2,15 +2,8 @@
 //! to construct a software pipeline. The stage uses all available CPU cores and
 //! can do its processing in parallel with signature verification on the GPU.
 
-use std::sync::Mutex;
-
-use crate::{
-    bundle_stage::bundle_consumer::BundleConsumer, packet_bundle::PacketBundle,
-    proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::TipManager,
-};
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-
 use {
     self::{
         bundle_consume_worker::BundleConsumeWorker, committer::Committer, consumer::Consumer,
@@ -28,7 +21,12 @@ use {
                 scheduler_error::SchedulerError,
             },
         },
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
+        bundle_stage::{
+            bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
+        },
+        packet_bundle::PacketBundle,
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        tip_manager::TipManager,
         validator::{BlockProductionMethod, TransactionStructure},
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
@@ -51,7 +49,7 @@ use {
         ops::Deref,
         sync::{
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,

@@ -36,7 +36,7 @@ impl BundleReceiver {
     }
 
     /// Receive incoming packets, push into unprocessed buffer with packet indexes
-    pub fn receive_and_buffer_bundles<S, Tx>(
+    pub(crate) fn receive_and_buffer_bundles<S, Tx>(
         &mut self,
         conatiner: &mut S,
         batch_bundle_results: &mut ReceiveBundleResults,
@@ -114,6 +114,7 @@ impl BundleReceiver {
         }
     }
 
+    #[allow(dead_code)]
     fn buffer_bundles<S>(
         &self,
         ReceiveBundleResults {

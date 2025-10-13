@@ -1,3 +1,4 @@
+#![allow(clippy::used_underscore_binding)]
 //! The `bundle_stage` processes bundles, which are list of transactions to be executed
 //! sequentially and atomically.
 #[allow(dead_code, unused_variables, unused_imports)]

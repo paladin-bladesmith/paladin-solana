@@ -1,3 +1,4 @@
+#![allow(clippy::used_underscore_binding)]
 use {
     crate::{
         banking_stage::leader_slot_metrics::{self, LeaderSlotMetricsTracker},

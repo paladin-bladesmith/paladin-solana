@@ -23,19 +23,21 @@ pub (crate) struct BundleState {
     /// is valid for.
     max_age: MaxAge,
     /// Priority of the bundle.
-    _priority: u64,
+    #[allow(dead_code)]
+    priority: u64,
     /// Estimated cost of the bundle.
-    _cost: u64,
+    #[allow(dead_code)]
+    cost: u64,
 }
 
 impl BundleState {
     /// Creates a new `BundleState` in the `Unprocessed` state.
-    pub(crate) fn new(bundle: SanitizedBundle, max_age: MaxAge, _priority: u64, _cost: u64) -> Self {
+    pub(crate) fn new(bundle: SanitizedBundle, max_age: MaxAge, priority: u64, cost: u64) -> Self {
         Self {
             bundle: Some(bundle),
             max_age,
-            _priority,
-            _cost,
+            priority,
+            cost,
         }
     }
 
