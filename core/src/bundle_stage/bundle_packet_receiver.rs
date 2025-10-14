@@ -1,18 +1,18 @@
 use {
     super::BundleStageLoopMetrics,
     crate::{
+        banking_stage::StateContainer,
         bundle_stage::{
             bundle_packet_deserializer::{BundlePacketDeserializer, ReceiveBundleResults},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             bundle_storage::BundleStorage,
         },
-        banking_stage::StateContainer,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
-    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_measure::{measure::Measure, measure_us},
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_time_utils::timestamp,
     std::time::{Duration, Instant},
 };
@@ -45,8 +45,8 @@ impl BundleReceiver {
         container: &mut S,
         batch_bundle_results: &mut ReceiveBundleResults,
         batch_bundle_timer: &mut Option<Instant>,
-    ) -> Result<(), RecvTimeoutError> 
-    where 
+    ) -> Result<(), RecvTimeoutError>
+    where
         S: StateContainer<Tx>,
         Tx: TransactionWithMeta,
     {

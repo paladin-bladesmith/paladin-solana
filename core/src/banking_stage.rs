@@ -22,10 +22,8 @@ use {
             },
         },
         bundle_stage::{
-            bundle_account_locker::BundleAccountLocker,
-            bundle_consumer::BundleConsumer,
-            bundle_packet_receiver::BundleReceiver,
-            committer::Committer as BundleCommiter,
+            bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
+            bundle_packet_receiver::BundleReceiver, committer::Committer as BundleCommiter,
         },
         packet_bundle::PacketBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
@@ -88,7 +86,11 @@ conditional_vis_mod!(
 // Re-export the unified scheduler's StateContainer trait so other modules in this crate
 // can depend on it without accessing the private `transaction_scheduler` module directly.
 pub(crate) use self::transaction_scheduler::unified_state_container::StateContainer;
-conditional_vis_mod!(bundle_consumer_worker, feature = "dev-context-only-utils", pub);
+conditional_vis_mod!(
+    bundle_consumer_worker,
+    feature = "dev-context-only-utils",
+    pub
+);
 conditional_vis_mod!(unified_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
 
 /// The maximum number of worker threads that can be spawned by banking stage.
@@ -482,11 +484,7 @@ impl BankingStage {
                     PacketDeserializer::new(context.non_vote_receiver.clone());
                 let receive_and_buffer = SanitizedTransactionReceiveAndBuffer::new(
                     packet_deserializer,
-                    BundleReceiver::new(
-                        10_000,
-                        bundle_receiver,
-                        None,
-                    ),
+                    BundleReceiver::new(10_000, bundle_receiver, None),
                     context.bank_forks.clone(),
                     blacklisted_accounts.clone(),
                     batch_interval,
@@ -510,11 +508,7 @@ impl BankingStage {
             TransactionStructure::View => {
                 let receive_and_buffer = TransactionViewReceiveAndBuffer::new(
                     context.non_vote_receiver.clone(),
-                    BundleReceiver::new(
-                        10_000,
-                        bundle_receiver,
-                        None,
-                    ),
+                    BundleReceiver::new(10_000, bundle_receiver, None),
                     context.bank_forks.clone(),
                     blacklisted_accounts.clone(),
                     batch_interval,

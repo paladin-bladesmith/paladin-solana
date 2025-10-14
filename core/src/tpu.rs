@@ -9,14 +9,14 @@ use {
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         banking_stage::BankingStage,
         banking_trace::{Channels, TracerThread},
-        bundle_stage::{MAX_BUNDLE_RETRY_DURATION, bundle_account_locker::BundleAccountLocker},
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, MAX_BUNDLE_RETRY_DURATION},
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
         },
         fetch_stage::FetchStage,
         forwarding_stage::{
-            ForwardAddressGetter, SpawnForwardingStageResult, spawn_forwarding_stage
+            spawn_forwarding_stage, ForwardAddressGetter, SpawnForwardingStageResult,
         },
         p3_stage::p3_quic::P3Quic,
         proxy::{
@@ -33,7 +33,7 @@ use {
         vortexor_receiver_adapter::VortexorReceiverAdapter,
     },
     bytes::Bytes,
-    crossbeam_channel::{Receiver, bounded, unbounded},
+    crossbeam_channel::{bounded, unbounded, Receiver},
     solana_clock::Slot,
     solana_gossip::cluster_info::ClusterInfo,
     solana_keypair::Keypair,
@@ -59,7 +59,7 @@ use {
     },
     solana_signer::Signer,
     solana_streamer::{
-        quic::{QuicServerParams, SpawnServerResult, spawn_server},
+        quic::{spawn_server, QuicServerParams, SpawnServerResult},
         streamer::StakedNodes,
     },
     solana_turbine::{
@@ -70,7 +70,7 @@ use {
         collections::{HashMap, HashSet},
         net::{SocketAddr, UdpSocket},
         num::NonZeroUsize,
-        sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
+        sync::{atomic::AtomicBool, Arc, Mutex, RwLock},
         thread::{self, JoinHandle},
         time::Duration,
     },
