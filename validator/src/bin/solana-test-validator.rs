@@ -616,6 +616,9 @@ fn main() {
     genesis.secondary_block_engine_urls = matches
         .values_of("secondary_block_engines_urls")
         .unwrap_or_default()
+        .flat_map(|s| s.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect();
 
