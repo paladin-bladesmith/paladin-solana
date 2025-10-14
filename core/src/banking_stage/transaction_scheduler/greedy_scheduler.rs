@@ -1,5 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -8,14 +9,15 @@ use {
         },
         scheduler_error::SchedulerError,
         thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError},
-        transaction_priority_id::TransactionPriorityId,
+        unified_priority_id::UnifiedPriorityId,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
         transaction_state::TransactionState,
-        transaction_state_container::StateContainer,
+        unified_state_container::StateContainer,
     },
     crate::banking_stage::{
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork},
     },
     crossbeam_channel::{Receiver, Sender},
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
@@ -46,8 +48,9 @@ impl Default for GreedySchedulerConfig {
 pub struct GreedyScheduler<Tx: TransactionWithMeta> {
     common: SchedulingCommon<Tx>,
     working_account_set: ReadWriteAccountSet,
-    unschedulables: Vec<TransactionPriorityId>,
+    unschedulables: Vec<UnifiedPriorityId>,
     config: GreedySchedulerConfig,
+    bundle_work_sender: Option<Sender<BundleConsumeWork>>,
 }
 
 impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
@@ -56,6 +59,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: GreedySchedulerConfig,
+        bundle_work_sender: Option<Sender<BundleConsumeWork>>,
     ) -> Self {
         Self {
             working_account_set: ReadWriteAccountSet::default(),
@@ -66,6 +70,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
                 config.target_transactions_per_batch,
             ),
             config,
+            bundle_work_sender,
         }
     }
 }
@@ -124,8 +129,23 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
 
             // Should always be in the container, during initial testing phase panic.
             // Later, we can replace with a continue in case this does happen.
-            let Some(transaction_state) = container.get_mut_transaction_state(id.id) else {
-                panic!("transaction state must exist")
+            let transaction_state = match id.id {
+                UnifiedSchedulingUnit::Transaction(tx_id) => match container.get_mut_transaction_state(tx_id) {
+                    Some(transaction_state) => transaction_state,
+                    None => continue,
+                },
+                UnifiedSchedulingUnit::Bundle(bundle_id) => {
+                    // Fetch the bundle from the container and send it to the worker
+                    if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
+                        let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
+                        let _ = self.bundle_work_sender.as_ref().unwrap().send(BundleConsumeWork {
+                            bundle_id,
+                            bundle,
+                            _max_age: max_age,
+                        });
+                    }
+                    continue;
+                }
             };
 
             // If there is a conflict with any of the transactions in the current batches,
@@ -175,7 +195,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     num_scheduled += 1;
                     self.common.batches.add_transaction_to_batch(
                         thread_id,
-                        id.id,
+                        id.get_id(),
                         transaction,
                         max_age,
                         cost,
@@ -286,7 +306,7 @@ mod test {
         super::*,
         crate::banking_stage::{
             scheduler_messages::{MaxAge, TransactionId},
-            transaction_scheduler::transaction_state_container::TransactionStateContainer,
+            transaction_scheduler::unified_state_container::UnifiedStateContainer,
         },
         crossbeam_channel::unbounded,
         itertools::Itertools,
@@ -315,7 +335,7 @@ mod test {
             (0..num_threads).map(|_| unbounded()).unzip();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
         let scheduler =
-            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config);
+            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config, None);
         (
             scheduler,
             consume_work_receivers,
@@ -352,8 +372,8 @@ mod test {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
-        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+        let mut container = UnifiedStateContainer::with_capacity(10 * 1024);
         for (from_keypair, to_pubkeys, lamports, compute_unit_price) in tx_infos.into_iter() {
             let transaction = prioritized_tranfers(
                 from_keypair.borrow(),

@@ -2,22 +2,18 @@
 use {
     crate::{
         banking_stage::{
-            update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage, LikeClusterInfo,
-        },
-        banking_trace::{
-            BankingTracer, ChannelLabel, Channels, TimedTracedEvent, TracedEvent, TracedSender,
-            TracerThread, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME,
-        },
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
-        validator::{BlockProductionMethod, TransactionStructure},
+            BankingStage, LikeClusterInfo, update_bank_forks_and_poh_recorder_for_new_tpu_bank
+        }, banking_trace::{
+            BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME, BankingTracer, ChannelLabel, Channels, TimedTracedEvent, TracedEvent, TracedSender, TracerThread
+        }, bundle_stage::bundle_account_locker::BundleAccountLocker, proxy::block_engine_stage::BlockBuilderFeeInfo, tip_manager::{TipManager, TipManagerConfig}, validator::{BlockProductionMethod, TransactionStructure}
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
     assert_matches::assert_matches,
     bincode::deserialize_from,
-    crossbeam_channel::{unbounded, Sender},
+    crossbeam_channel::{Sender, unbounded},
     itertools::Itertools,
     log::*,
-    solana_clock::{Slot, DEFAULT_MS_PER_SLOT, HOLD_TRANSACTIONS_SLOT_OFFSET},
+    solana_clock::{DEFAULT_MS_PER_SLOT, HOLD_TRANSACTIONS_SLOT_OFFSET, Slot},
     solana_genesis_config::GenesisConfig,
     solana_gossip::{cluster_info::ClusterInfo, contact_info::ContactInfoQuery, node::Node},
     solana_keypair::Keypair,
@@ -25,10 +21,10 @@ use {
         blockstore::{Blockstore, PurgeType},
         leader_schedule_cache::LeaderScheduleCache,
     },
-    solana_net_utils::sockets::{bind_in_range_with_config, SocketConfiguration},
+    solana_net_utils::sockets::{SocketConfiguration, bind_in_range_with_config},
     solana_poh::{
-        poh_recorder::{PohRecorder, GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS},
-        poh_service::{PohService, DEFAULT_HASHES_PER_BATCH, DEFAULT_PINNED_CPU_CORE},
+        poh_recorder::{GRACE_TICKS_FACTOR, MAX_GRACE_SLOTS, PohRecorder},
+        poh_service::{DEFAULT_HASHES_PER_BATCH, DEFAULT_PINNED_CPU_CORE, PohService},
         transaction_recorder::TransactionRecorder,
     },
     solana_pubkey::Pubkey,
@@ -50,10 +46,9 @@ use {
         net::{IpAddr, Ipv4Addr},
         path::PathBuf,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}
         },
-        thread::{self, sleep, JoinHandle},
+        thread::{self, JoinHandle, sleep},
         time::{Duration, Instant, SystemTime},
     },
     thiserror::Error,
@@ -820,6 +815,13 @@ impl BankingSimulator {
             Arc::new(RwLock::new(None)),
         );
 
+        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: cluster_info_for_broadcast.keypair().pubkey(),
+            block_builder_commission: 0,
+        }));
+
+        let (_, bundle_receiver) = unbounded();
+
         info!("Start banking stage!...");
         let prioritization_fee_cache = &Arc::new(PrioritizationFeeCache::new(0u64));
         let banking_stage = BankingStage::new_num_threads(
@@ -830,6 +832,7 @@ impl BankingSimulator {
             non_vote_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            bundle_receiver,
             BankingStage::default_num_workers(),
             None,
             replay_vote_sender,
@@ -840,6 +843,10 @@ impl BankingSimulator {
             BundleAccountLocker::default(),
             |_| 0,
             Duration::ZERO,
+            Duration::ZERO,
+            cluster_info_for_broadcast,
+            TipManager::new(blockstore.clone(), Arc::new(LeaderScheduleCache::default()), TipManagerConfig::default()),
+            block_builder_fee_info,
         );
 
         let (&_slot, &raw_base_event_time) = freeze_time_by_slot

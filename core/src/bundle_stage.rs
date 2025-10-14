@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_variables, unused_imports, unused_mut)]
 //! The `bundle_stage` processes bundles, which are list of transactions to be executed
 //! sequentially and atomically.
 
@@ -39,15 +40,15 @@ use {
 };
 
 pub mod bundle_account_locker;
-mod bundle_consumer;
-mod bundle_packet_deserializer;
-mod bundle_packet_receiver;
+pub mod bundle_consumer;
+pub mod bundle_packet_deserializer;
+pub mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
 mod bundle_storage;
-mod committer;
+pub mod committer;
 mod front_run_identifier;
 
-const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
+pub const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
 // Stats emitted periodically
@@ -328,16 +329,17 @@ impl BundleStage {
                 last_metrics_update = Instant::now();
             }
 
-            match bundle_receiver.receive_and_buffer_bundles(
-                &mut bundle_storage,
-                &mut batch_bundle_results,
-                &mut batch_bundle_timer,
-                &mut bundle_stage_metrics,
-                &mut bundle_stage_leader_metrics,
-            ) {
-                Ok(_) | Err(RecvTimeoutError::Timeout) => (),
-                Err(RecvTimeoutError::Disconnected) => break,
-            }
+            // TODO: possibly remove bundle stage entirely and move the helpers like BundleConsumer outside
+            // match bundle_receiver.receive_and_buffer_bundles(
+            //     &mut bundle_storage,
+            //     &mut batch_bundle_results,
+            //     &mut batch_bundle_timer,
+            //     &mut bundle_stage_metrics,
+            //     &mut bundle_stage_leader_metrics,
+            // ) {
+            //     Ok(_) | Err(RecvTimeoutError::Timeout) => (),
+            //     Err(RecvTimeoutError::Disconnected) => break,
+            // }
 
             bundle_stage_metrics.increment_current_buffered_bundles_count(
                 bundle_storage.unprocessed_bundles_len() as u64,

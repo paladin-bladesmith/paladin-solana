@@ -1,17 +1,18 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         in_flight_tracker::InFlightTracker,
         scheduler_error::SchedulerError,
-        thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet},
-        transaction_state_container::StateContainer,
+        thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, MAX_THREADS},
+        unified_state_container::StateContainer,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
     },
     crate::banking_stage::{
         scheduler_messages::{
             ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
         },
-        transaction_scheduler::thread_aware_account_locks::MAX_THREADS,
     },
     crossbeam_channel::{Receiver, Sender, TryRecvError},
     itertools::izip,
@@ -249,7 +250,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                             continue;
                         }
                     }
-                    container.remove_by_id(id);
+                    container.remove_by_id(UnifiedSchedulingUnit::Transaction(id));
                 }
 
                 debug_assert!(
@@ -290,7 +291,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::transaction_scheduler::transaction_state_container::TransactionStateContainer,
+        crate::banking_stage::transaction_scheduler::unified_state_container::UnifiedStateContainer,
         crossbeam_channel::unbounded, solana_hash::Hash, solana_keypair::Keypair,
         solana_pubkey::Pubkey, solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_system_transaction as system_transaction,
@@ -310,7 +311,7 @@ mod tests {
     }
 
     fn add_transactions_to_container(
-        container: &mut TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+        container: &mut UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>>,
         count: usize,
     ) {
         for index in 0..count {
@@ -324,13 +325,13 @@ mod tests {
     }
 
     fn pop_and_add_transaction<Tx: TransactionWithMeta>(
-        container: &mut TransactionStateContainer<Tx>,
+        container: &mut UnifiedStateContainer<Tx>,
         common: &mut SchedulingCommon<Tx>,
         thread_id: ThreadId,
     ) {
         let tx_id = container.pop().unwrap();
         let (transaction, max_age) = container
-            .get_mut_transaction_state(tx_id.id)
+            .get_mut_transaction_state(tx_id.get_id())
             .unwrap()
             .take_transaction_for_scheduling();
 
@@ -355,7 +356,7 @@ mod tests {
             .unwrap();
         common.batches.add_transaction_to_batch(
             thread_id,
-            tx_id.id,
+            tx_id.get_id(),
             transaction,
             max_age,
             DUMMY_COST,
@@ -438,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_send_batches() {
-        let mut container = TransactionStateContainer::with_capacity(1024);
+        let mut container = UnifiedStateContainer::with_capacity(1024);
         add_transactions_to_container(&mut container, 3);
 
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
@@ -486,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_receive_completed() {
-        let mut container = TransactionStateContainer::with_capacity(1024);
+        let mut container = UnifiedStateContainer::with_capacity(1024);
         add_transactions_to_container(&mut container, 1);
 
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
@@ -537,7 +538,7 @@ mod tests {
     #[test]
     #[should_panic = "retryable indexes were not in order: [1, 0]"]
     fn test_receive_completed_out_of_order() {
-        let mut container = TransactionStateContainer::with_capacity(1024);
+        let mut container = UnifiedStateContainer::with_capacity(1024);
 
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
             (0..NUM_WORKERS).map(|_| unbounded()).unzip();

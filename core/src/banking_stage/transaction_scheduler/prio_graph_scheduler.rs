@@ -1,22 +1,23 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
         scheduler_common::{
-            SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo,
+            SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo, select_thread
         },
+        unified_state_container::StateContainer,
+        transaction_state::TransactionState,
         scheduler_error::SchedulerError,
         thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError},
+        unified_priority_id::UnifiedPriorityId,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
     },
     crate::banking_stage::{
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork},
-        transaction_scheduler::{
-            scheduler_common::select_thread, transaction_priority_id::TransactionPriorityId,
-            transaction_state::TransactionState, transaction_state_container::StateContainer,
-        },
+        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork},
     },
     crossbeam_channel::{Receiver, Sender},
     prio_graph::{AccessKind, GraphNode, PrioGraph},
@@ -30,17 +31,17 @@ use {
 
 #[inline(always)]
 fn passthrough_priority(
-    id: &TransactionPriorityId,
-    _graph_node: &GraphNode<TransactionPriorityId>,
-) -> TransactionPriorityId {
+    id: &UnifiedPriorityId,
+    _graph_node: &GraphNode<UnifiedPriorityId>,
+) -> UnifiedPriorityId {
     *id
 }
 
 type SchedulerPrioGraph = PrioGraph<
-    TransactionPriorityId,
+    UnifiedPriorityId,
     Pubkey,
-    TransactionPriorityId,
-    fn(&TransactionPriorityId, &GraphNode<TransactionPriorityId>) -> TransactionPriorityId,
+    UnifiedPriorityId,
+    fn(&UnifiedPriorityId, &GraphNode<UnifiedPriorityId>) -> UnifiedPriorityId,
 >;
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -67,6 +68,7 @@ pub(crate) struct PrioGraphScheduler<Tx> {
     common: SchedulingCommon<Tx>,
     prio_graph: SchedulerPrioGraph,
     config: PrioGraphSchedulerConfig,
+    bundle_work_sender: Option<Sender<BundleConsumeWork>>,
 }
 
 impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
@@ -75,6 +77,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: PrioGraphSchedulerConfig,
+        bundle_work_sender: Option<Sender<BundleConsumeWork>>,
     ) -> Self {
         Self {
             common: SchedulingCommon::new(
@@ -84,6 +87,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
             ),
             prio_graph: PrioGraph::new(passthrough_priority),
             config,
+            bundle_work_sender,
         }
     }
 }
@@ -153,29 +157,70 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                 let mut filter_array = [true; MAX_FILTER_CHUNK_SIZE];
                 let mut ids = Vec::with_capacity(MAX_FILTER_CHUNK_SIZE);
                 let mut txs = Vec::with_capacity(MAX_FILTER_CHUNK_SIZE);
+                let mut popped = 0usize;
+                let mut stalled_due_to_bundle = false;
 
                 let chunk_size = (*window_budget).min(MAX_FILTER_CHUNK_SIZE);
                 for _ in 0..chunk_size {
                     if let Some(id) = container.pop() {
-                        ids.push(id);
+                        match id.id {
+                            UnifiedSchedulingUnit::Transaction(_) => {
+                                popped += 1;
+                                ids.push(id);
+                            }
+                            UnifiedSchedulingUnit::Bundle(bundle_id) => {
+                                if let Some(bundle_state) =
+                                    container.get_mut_bundle_state(bundle_id)
+                                {
+                                    if let Some(bundle_sender) = self.bundle_work_sender.as_ref() {
+                                        let (bundle, max_age) =
+                                            bundle_state.take_bundle_for_consuming();
+                                        let _ = bundle_sender.send(BundleConsumeWork {
+                                            bundle_id,
+                                            bundle,
+                                            _max_age: max_age,
+                                        });
+                                        popped += 1;
+                                    } else {
+                                        container.push_ids_into_queue(std::iter::once(id));
+                                        stalled_due_to_bundle = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         break;
                     }
                 }
-                *window_budget = window_budget.saturating_sub(chunk_size);
+
+                *window_budget = window_budget.saturating_sub(popped);
+
+                if stalled_due_to_bundle {
+                    break;
+                }
+
+                if ids.is_empty() {
+                    if popped < chunk_size {
+                        break;
+                    } else {
+                        continue;
+                    }
+                }
 
                 ids.iter().for_each(|id| {
-                    let transaction = container.get_transaction(id.id).unwrap();
+                    let transaction = container.get_transaction(id.get_id()).unwrap();
                     txs.push(transaction);
                 });
 
+                let num_ids = ids.len();
                 let (_, filter_us) =
-                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..chunk_size]));
+                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..num_ids]));
                 total_filter_time_us += filter_us;
 
-                for (id, filter_result) in ids.iter().zip(&filter_array[..chunk_size]) {
+                for (id, filter_result) in ids.iter().zip(&filter_array[..num_ids]) {
                     if *filter_result {
-                        let transaction = container.get_transaction(id.id).unwrap();
+                        let transaction = container.get_transaction(id.get_id()).unwrap();
                         prio_graph.insert_transaction(
                             *id,
                             Self::get_transaction_account_access(transaction),
@@ -186,7 +231,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     }
                 }
 
-                if ids.len() != chunk_size {
+                if popped < chunk_size {
                     break;
                 }
             }
@@ -216,12 +261,18 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
             }
 
             while let Some(id) = self.prio_graph.pop() {
+                // Prio graph should only contain transactions, not bundles
+                // If somehow a bundle made it here, skip it
+                if !id.is_transaction() {
+                    continue;
+                }
+                
                 num_scanned += 1;
                 unblock_this_batch.push(id);
 
                 // Should always be in the container, during initial testing phase panic.
                 // Later, we can replace with a continue in case this does happen.
-                let Some(transaction_state) = container.get_mut_transaction_state(id.id) else {
+                let Some(transaction_state) = container.get_mut_transaction_state(id.get_id()) else {
                     panic!("transaction state must exist")
                 };
 
@@ -260,7 +311,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                         num_scheduled += 1;
                         self.common.batches.add_transaction_to_batch(
                             thread_id,
-                            id.id,
+                            id.get_id(),
                             transaction,
                             max_age,
                             cost,
@@ -429,7 +480,7 @@ mod tests {
         super::*,
         crate::banking_stage::{
             scheduler_messages::{MaxAge, TransactionId},
-            transaction_scheduler::transaction_state_container::TransactionStateContainer,
+            transaction_scheduler::unified_state_container::UnifiedStateContainer,
         },
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
@@ -460,6 +511,7 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
+            None, // No bundle worker in tests
         );
         (
             scheduler,
@@ -497,7 +549,7 @@ mod tests {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
         create_container_with_capacity(100 * 1024, tx_infos)
     }
 
@@ -511,8 +563,8 @@ mod tests {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
-        let mut container = TransactionStateContainer::with_capacity(capacity);
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+        let mut container = UnifiedStateContainer::with_capacity(capacity);
         for (from_keypair, to_pubkeys, lamports, compute_unit_price) in tx_infos.into_iter() {
             let transaction = prioritized_tranfers(
                 from_keypair.borrow(),

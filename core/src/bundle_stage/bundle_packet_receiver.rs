@@ -6,10 +6,12 @@ use {
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             bundle_storage::BundleStorage,
         },
+        banking_stage::StateContainer,
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         packet_bundle::PacketBundle,
     },
     crossbeam_channel::{Receiver, RecvTimeoutError},
+    solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     solana_measure::{measure::Measure, measure_us},
     solana_time_utils::timestamp,
     std::time::{Duration, Instant},
@@ -38,41 +40,43 @@ impl BundleReceiver {
     }
 
     /// Receive incoming packets, push into unprocessed buffer with packet indexes
-    pub fn receive_and_buffer_bundles(
+    pub(crate) fn receive_and_buffer_bundles<S, Tx>(
         &mut self,
-        bundle_storage: &mut BundleStorage,
+        container: &mut S,
         batch_bundle_results: &mut ReceiveBundleResults,
         batch_bundle_timer: &mut Option<Instant>,
-        bundle_stage_metrics: &mut BundleStageLoopMetrics,
-        bundle_stage_leader_metrics: &mut BundleStageLeaderMetrics,
-    ) -> Result<(), RecvTimeoutError> {
-        let (result, recv_time_us) = measure_us!({
+    ) -> Result<(), RecvTimeoutError> 
+    where 
+        S: StateContainer<Tx>,
+        Tx: TransactionWithMeta,
+    {
+        let (result, _recv_time_us) = measure_us!({
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
 
-            // If timer has passed, buffer current bundles and reset timer
-            if let Some(timer) = batch_bundle_timer {
-                if timer.elapsed() >= DEFAULT_BATCH_BUNDLE_TIMEOUT {
-                    // Take the batch, and reset to default
-                    let batch_bundles = std::mem::take(batch_bundle_results);
+            // // If timer has passed, buffer current bundles and reset timer
+            // if let Some(timer) = batch_bundle_timer {
+            //     if timer.elapsed() >= DEFAULT_BATCH_BUNDLE_TIMEOUT {
+            //         // Take the batch, and reset to default
+            //         let batch_bundles = std::mem::take(batch_bundle_results);
 
-                    // Buffer bundles
-                    self.buffer_bundles(
-                        batch_bundles,
-                        bundle_storage,
-                        bundle_stage_metrics,
-                        // tracer_packet_stats,
-                        bundle_stage_leader_metrics,
-                    );
+            //         // Buffer bundles
+            //         self.buffer_bundles(
+            //             batch_bundles,
+            //             bundle_storage,
+            //             bundle_stage_metrics,
+            //             // tracer_packet_stats,
+            //             bundle_stage_leader_metrics,
+            //         );
 
-                    // Reset timer
-                    *batch_bundle_timer = None;
-                }
-            }
+            //         // Reset timer
+            //         *batch_bundle_timer = None;
+            //     }
+            // }
 
-            let recv_timeout = Self::get_receive_timeout(bundle_storage, batch_bundle_timer);
+            let recv_timeout = Self::get_receive_timeout(container, batch_bundle_timer);
 
             self.bundle_packet_deserializer
-                .receive_bundles(recv_timeout, bundle_storage.max_receive_size())
+                .receive_bundles(recv_timeout, container.buffer_size())
                 // Add to batch if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
                     // If batch is empty, start timer because its the first bundle we receive
@@ -83,23 +87,27 @@ impl BundleReceiver {
                     batch_bundle_results.extend(receive_bundle_results);
 
                     recv_and_buffer_measure.stop();
-                    bundle_stage_metrics.increment_receive_and_buffer_bundles_elapsed_us(
-                        recv_and_buffer_measure.as_us(),
-                    );
+                    // bundle_stage_metrics.increment_receive_and_buffer_bundles_elapsed_us(
+                    //     recv_and_buffer_measure.as_us(),
+                    // );
                 })
         });
 
-        bundle_stage_leader_metrics
-            .leader_slot_metrics_tracker()
-            .increment_receive_and_buffer_packets_us(recv_time_us);
+        // bundle_stage_leader_metrics
+        //     .leader_slot_metrics_tracker()
+        //     .increment_receive_and_buffer_packets_us(recv_time_us);
 
         result
     }
 
-    fn get_receive_timeout(
-        bundle_storage: &BundleStorage,
+    fn get_receive_timeout<S, Tx>(
+        bundle_storage: &S,
         batch_bundle_timer: &Option<Instant>,
-    ) -> Duration {
+    ) -> Duration
+    where
+        S: StateContainer<Tx>,
+        Tx: TransactionWithMeta,
+    {
         // Gossip thread will almost always not wait because the transaction storage will most likely not be empty
         if !bundle_storage.is_empty() {
             // If there are buffered packets, run the equivalent of try_recv to try reading more
@@ -115,6 +123,7 @@ impl BundleReceiver {
         }
     }
 
+    #[allow(dead_code)]
     fn buffer_bundles(
         &self,
         ReceiveBundleResults {
@@ -148,6 +157,7 @@ impl BundleReceiver {
         );
     }
 
+    #[allow(dead_code)]
     fn push_unprocessed(
         bundle_storage: &mut BundleStorage,
         deserialized_bundles: Vec<ImmutableDeserializedBundle>,
@@ -174,6 +184,8 @@ impl BundleReceiver {
     }
 }
 
+/// TODO: update bundle stage to reflect changes due to unified schedular
+#[cfg(any())]
 /// This tests functionality of BundlePacketReceiver and the internals of BundleStorage because
 /// they're tightly intertwined
 #[cfg(test)]

@@ -5,18 +5,18 @@ use {
     super::{
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
         scheduler::{PreLockFilterAction, Scheduler},
-        scheduler_error::SchedulerError,
-        scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        scheduler_error::SchedulerError, scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        unified_state_container::StateContainer,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
+        receive_and_buffer::ReceivingStats,
     },
     crate::banking_stage::{
-        consume_worker::ConsumeWorkerMetrics,
+        TOTAL_BUFFERED_PACKETS, consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
-        transaction_scheduler::{
-            receive_and_buffer::ReceivingStats, transaction_state_container::StateContainer,
-        },
-        TOTAL_BUFFERED_PACKETS,
+        scheduler_messages::{FinishedBundleConsumeWork}
     },
+    crossbeam_channel::{Receiver, TryRecvError},
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -24,8 +24,7 @@ use {
     std::{
         num::Saturating,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, RwLock, atomic::{AtomicBool, Ordering}
         },
     },
 };
@@ -57,6 +56,8 @@ where
     worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
     /// Detailed scheduling metrics.
     scheduling_details: SchedulingDetails,
+    /// Receiver for finished bundle work from bundle worker.
+    finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -71,6 +72,7 @@ where
         bank_forks: Arc<RwLock<BankForks>>,
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
+        finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
     ) -> Self {
         Self {
             exit,
@@ -83,6 +85,7 @@ where
             timing_metrics: SchedulerTimingMetrics::default(),
             worker_metrics,
             scheduling_details: SchedulingDetails::default(),
+            finished_bundle_work_receiver,
         }
     }
 
@@ -110,7 +113,16 @@ where
                 .maybe_report_and_reset_slot(new_leader_slot);
 
             self.receive_completed()?;
+            self.receive_completed_bundles()?;
             self.process_transactions(&decision)?;
+            // Receive bundles into the receive_and_buffer's bundle store.
+            // If the bundle receiver is disconnected, treat it as zero bundles received
+            // and continue; a disconnected bundle channel should not terminate scheduling.
+            if self
+                .receive_and_buffer
+                .receive_and_buffer_bundles(&mut self.container, &decision).is_err() {
+
+            }
             self.receive_and_buffer
                 .maybe_queue_batch(&mut self.container, &decision);
             if self.receive_and_buffer_packets(&decision).is_err() {
@@ -237,7 +249,13 @@ where
             let Some(id) = self.container.pop() else {
                 break;
             };
-            transaction_ids.push(id);
+            // Only clean transactions, push bundles back immediately
+            if id.is_transaction() {
+                transaction_ids.push(id);
+            } else {
+                // Bundle - push back, don't clean
+                self.container.push_ids_into_queue(std::iter::once(id));
+            }
         }
 
         let bank = self.bank_forks.read().unwrap().working_bank();
@@ -251,7 +269,7 @@ where
                 .iter()
                 .map(|id| {
                     self.container
-                        .get_transaction(id.id)
+                        .get_transaction(id.get_id())
                         .expect("transaction must exist")
                 })
                 .collect();
@@ -302,6 +320,35 @@ where
         Ok(())
     }
 
+    /// Receives completed bundles from the bundle worker.
+    /// If retryable, puts bundle back in container. Otherwise removes it.
+    fn receive_completed_bundles(&mut self) -> Result<(), SchedulerError> {
+        loop {
+            match self.finished_bundle_work_receiver.try_recv() {
+                Ok(FinishedBundleConsumeWork { work, retryable }) => {
+                    let bundle_id = work.bundle_id;
+                    
+                    if retryable {
+                        // Put the bundle back in the container for retry
+                        if let Some(bundle_state) = self.container.get_mut_bundle_state(bundle_id) {
+                            bundle_state.retry_bundle(work.bundle);
+                        }
+                    } else {
+                        // Remove the bundle from the container
+                        self.container.remove_by_id(UnifiedSchedulingUnit::Bundle(bundle_id));
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    return Err(SchedulerError::DisconnectedRecvChannel(
+                        "finished bundle work",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Returns whether the packet receiver is still connected.
     fn receive_and_buffer_packets(
         &mut self,
@@ -326,6 +373,10 @@ where
                 num_dropped_on_blacklisted_account,
                 receive_time_us: _,
                 buffer_time_us: _,
+                num_bundles_buffered: _,
+                num_bundles_dropped_on_capacity: _,
+                num_bundles_dropped_on_sanitization: _,
+                num_bundles_received: _,
             } = &receiving_stats;
 
             count_metrics.num_received += *num_received;
@@ -355,6 +406,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use crate::bundle_stage::bundle_packet_receiver::BundleReceiver;
+
     use {
         super::*,
         crate::banking_stage::{
@@ -414,8 +467,10 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> SanitizedTransactionReceiveAndBuffer {
+        let (_bundle_sender, bundle_receiver) = unbounded();
         SanitizedTransactionReceiveAndBuffer::new(
             PacketDeserializer::new(receiver),
+            BundleReceiver::new(10_000, bundle_receiver, None),
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
@@ -427,7 +482,18 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts, Duration::ZERO)
+        let (_bundle_sender, bundle_receiver) = unbounded();
+        TransactionViewReceiveAndBuffer::new(
+            receiver,
+            BundleReceiver::new(
+                10_000,
+                bundle_receiver,
+                None,
+            ),
+            bank_forks,
+            blacklisted_accounts,
+            Duration::ZERO,
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -483,7 +549,9 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
+            None,
         );
+        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
             exit,
@@ -492,6 +560,7 @@ mod tests {
             bank_forks,
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
+            finished_bundle_work_receiver,
         );
 
         (test_frame, scheduler_controller)
@@ -552,7 +621,10 @@ mod tests {
             .map(|n| n.num_received > 0)
             .unwrap_or_default()
         {}
-        scheduler_controller.receive_and_buffer.maybe_queue_batch(&mut scheduler_controller.container, &decision);
+        // Ensure batches are queued into the container before processing
+        scheduler_controller
+            .receive_and_buffer
+            .maybe_queue_batch(&mut scheduler_controller.container, &decision);
         assert!(scheduler_controller.process_transactions(&decision).is_ok());
     }
 

@@ -1,6 +1,5 @@
 use {
-    solana_clock::{Epoch, Slot},
-    std::fmt::Display,
+    solana_bundle::SanitizedBundle, solana_clock::{Epoch, Slot}, std::fmt::Display
 };
 
 /// A unique identifier for a transaction batch.
@@ -48,4 +47,21 @@ pub struct ConsumeWork<Tx> {
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
     pub retryable_indexes: Vec<usize>,
+}
+
+pub type BundleId = usize;
+
+/// Message: [Scheduler -> BundleWorker]
+/// Bundle to be consumed (i.e. executed, recorded, and committed)
+pub struct BundleConsumeWork {
+    pub bundle_id: BundleId,
+    pub bundle: SanitizedBundle,
+    pub _max_age: MaxAge,
+}
+
+/// Message: [BundleWorker -> Scheduler]
+/// Processed bundle.
+pub struct FinishedBundleConsumeWork {
+    pub work: BundleConsumeWork,
+    pub retryable: bool,
 }
