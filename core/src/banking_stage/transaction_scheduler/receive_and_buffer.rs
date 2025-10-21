@@ -584,7 +584,7 @@ impl TransactionViewReceiveAndBuffer {
             if self.batch_start.elapsed() >= self.batch_interval {
                 Duration::ZERO
             } else {
-                self.batch_interval - self.batch_start.elapsed()
+                self.batch_interval.saturating_sub(self.batch_start.elapsed())
             }
         } else {
             Duration::from_millis(10)
