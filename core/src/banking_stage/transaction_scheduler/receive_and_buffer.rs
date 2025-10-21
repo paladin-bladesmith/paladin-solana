@@ -28,6 +28,7 @@ use {
         transaction_version::TransactionVersion, transaction_view::SanitizedTransactionView,
     },
     arrayvec::ArrayVec,
+    arrayref::array_ref,
     core::time::Duration,
     crossbeam_channel::{RecvTimeoutError, TryRecvError},
     solana_accounts_db::account_locks::validate_account_locks,
@@ -36,6 +37,7 @@ use {
     solana_cost_model::cost_model::CostModel,
     solana_fee_structure::FeeBudgetLimits,
     solana_measure::measure_us,
+    solana_message::compiled_instruction::CompiledInstruction,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::{
@@ -145,6 +147,7 @@ pub(crate) struct SanitizedTransactionReceiveAndBuffer {
 
     bank_forks: Arc<RwLock<BankForks>>,
     blacklisted_accounts: HashSet<Pubkey>,
+    tip_accounts: HashSet<Pubkey>,
 
     batch: Vec<ImmutableDeserializedPacket>,
     bundle_store: Vec<ImmutableDeserializedBundle>,
@@ -346,6 +349,7 @@ impl SanitizedTransactionReceiveAndBuffer {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
         batch_interval: Duration,
+        tip_accounts: HashSet<Pubkey>,
     ) -> Self {
         Self {
             packet_receiver,
@@ -357,6 +361,7 @@ impl SanitizedTransactionReceiveAndBuffer {
             bundle_store: Vec::default(),
             batch_start: Instant::now(),
             batch_interval,
+            tip_accounts,
         }
     }
 
@@ -559,6 +564,7 @@ impl SanitizedTransactionReceiveAndBuffer {
             let (priority, total_cost) = calculate_bundle_priority_and_cost(
                 &sanitized_bundle.transactions,
                 &working_bank,
+                &self.tip_accounts,
             );
 
             // Calculate max_age for the bundle
@@ -609,6 +615,7 @@ pub(crate) struct TransactionViewReceiveAndBuffer {
     pub bundle_receiver: BundleReceiver,
     pub bank_forks: Arc<RwLock<BankForks>>,
     pub blacklisted_accounts: HashSet<Pubkey>,
+    pub tip_accounts: HashSet<Pubkey>,
 
     // Batching
     batch: Vec<BankingPacketBatch>,
@@ -745,6 +752,7 @@ impl TransactionViewReceiveAndBuffer {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
         batch_interval: Duration,
+        tip_accounts: HashSet<Pubkey>,
     ) -> Self {
         Self {
             receiver,
@@ -755,6 +763,7 @@ impl TransactionViewReceiveAndBuffer {
             bundle_store: Vec::default(),
             batch_start: Instant::now(),
             batch_interval,
+            tip_accounts,
         }
     }
 
@@ -810,6 +819,7 @@ impl TransactionViewReceiveAndBuffer {
             let (priority, total_cost) = calculate_bundle_priority_and_cost(
                 &sanitized_bundle.transactions,
                 &working_bank,
+                &self.tip_accounts,
             );
 
             // Calculate max_age for the bundle
@@ -1181,6 +1191,7 @@ impl TransactionViewReceiveAndBuffer {
 fn calculate_bundle_priority_and_cost(
     transactions: &[RuntimeTransaction<SanitizedTransaction>],
     bank: &Bank,
+    tip_accounts: &HashSet<Pubkey>,
 ) -> (u64, u64) {
     let mut total_reward = 0u128;
     let mut total_cost = 0u128;
@@ -1197,8 +1208,17 @@ fn calculate_bundle_priority_and_cost(
         let fee_budget_limits = FeeBudgetLimits::from(compute_budget_limits);
         let cost = CostModel::calculate_cost(tx, &bank.feature_set).sum();
         let reward = bank.calculate_reward_for_transaction(tx, &fee_budget_limits);
+
+        // Calculate tip rewards
+        let account_keys = tx.message().static_account_keys();
+        let message = tx.message();
+        let tips = message.program_instructions_iter().filter_map(|(pid, ix)| extract_transfer(account_keys, pid, ix))
+            .filter(|(dest, _)| tip_accounts.contains(dest))
+            .map(|(_, amount)| amount)
+            .sum::<u64>();
         
         total_reward += reward as u128;
+        total_reward += tips as u128;
         total_cost += cost as u128;
     }
 
@@ -1210,6 +1230,25 @@ fn calculate_bundle_priority_and_cost(
     
     (priority as u64, total_cost as u64)
 }
+
+fn extract_transfer<'a>(
+        account_keys: &'a [Pubkey],
+        program_id: &Pubkey,
+        ix: &CompiledInstruction,
+    ) -> Option<(&'a Pubkey, u64)> {
+        if program_id == &solana_sdk_ids::system_program::ID
+            && ix.data.len() >= 12
+            && u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) == 2
+        {
+            let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
+            let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+
+            Some((destination, amount))
+        } else {
+            None
+        }
+    }
+
 
 /// Calculate priority and cost for a transaction:
 ///
@@ -1334,6 +1373,7 @@ mod tests {
             bundle_store: Vec::default(),
             batch_start: Instant::now(),
             batch_interval: Duration::ZERO,
+            tip_accounts: HashSet::new(),
         };
         let container = UnifiedStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -1360,6 +1400,7 @@ mod tests {
             bundle_store: Vec::default(),
             batch_start: Instant::now(),
             batch_interval: BATCH_PERIOD,
+            tip_accounts: HashSet::new(),
         };
         let container = UnifiedStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -1386,6 +1427,7 @@ mod tests {
             bundle_store: Vec::default(),
             batch_start: Instant::now(),
             batch_interval: Duration::ZERO,
+            tip_accounts: HashSet::new(),
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
@@ -1412,6 +1454,7 @@ mod tests {
             bundle_store: Vec::default(),
             batch_start: Instant::now(),
             batch_interval: BATCH_PERIOD,
+            tip_accounts: HashSet::new(),
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)

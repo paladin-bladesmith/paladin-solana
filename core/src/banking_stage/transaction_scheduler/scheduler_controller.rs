@@ -474,6 +474,7 @@ mod tests {
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
+            HashSet::new(),
         )
     }
 
@@ -493,6 +494,7 @@ mod tests {
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
+            HashSet::new(),
         )
     }
 

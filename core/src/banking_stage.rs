@@ -478,6 +478,7 @@ impl BankingStage {
         >,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Vec<JoinHandle<()>> {
+        let tip_accounts = tip_manager.get_tip_accounts();
         match transaction_struct {
             TransactionStructure::Sdk => {
                 let packet_deserializer =
@@ -488,6 +489,7 @@ impl BankingStage {
                     context.bank_forks.clone(),
                     blacklisted_accounts.clone(),
                     batch_interval,
+                    tip_accounts,
                 );
                 Self::spawn_scheduler_and_workers(
                     receive_and_buffer,
@@ -512,6 +514,7 @@ impl BankingStage {
                     context.bank_forks.clone(),
                     blacklisted_accounts.clone(),
                     batch_interval,
+                    tip_accounts,
                 );
                 Self::spawn_scheduler_and_workers(
                     receive_and_buffer,
