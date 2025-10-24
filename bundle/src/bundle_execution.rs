@@ -90,6 +90,7 @@ pub struct BundleTransactionsOutput<'a> {
 }
 
 impl<'a> BundleTransactionsOutput<'a> {
+    #[allow(clippy::filter_map_bool_then)]
     pub fn executed_versioned_transactions(&self) -> Vec<VersionedTransaction> {
         self.transactions
             .iter()
