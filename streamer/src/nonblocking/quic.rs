@@ -2,12 +2,9 @@ use {
     crate::{
         nonblocking::{
             connection_rate_limiter::{ConnectionRateLimiter, TotalConnectionRateLimiter},
-            stream_throttle::{
-                ConnectionStreamCounter, StakedStreamLoadEMA, STREAM_THROTTLING_INTERVAL,
-                STREAM_THROTTLING_INTERVAL_MS,
-            },
+            stream_throttle::{ConnectionStreamCounter, StakedStreamLoadEMA, P3_PER_SECOND},
         },
-        quic::{configure_server, QuicServerError, QuicServerParams, StreamerStats},
+        quic::{configure_server, QuicServerError, QuicServerParams, QuicVariant, StreamerStats},
         streamer::StakedNodes,
     },
     bytes::{BufMut, Bytes, BytesMut},
@@ -125,11 +122,16 @@ impl PacketAccumulator {
 pub enum ConnectionPeerType {
     Unstaked,
     Staked(u64),
+    P3(u64),
+    Mev(u64),
 }
 
 impl ConnectionPeerType {
     pub(crate) fn is_staked(&self) -> bool {
-        matches!(self, ConnectionPeerType::Staked(_))
+        matches!(
+            self,
+            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_)
+        )
     }
 }
 
@@ -174,6 +176,7 @@ pub fn spawn_server(
     let sockets: Vec<_> = sockets.into_iter().collect();
     info!("Start {name} quic server on {sockets:?}");
     let QuicServerParams {
+        variant,
         max_unstaked_connections,
         max_staked_connections,
         max_connections_per_peer,
@@ -183,7 +186,9 @@ pub fn spawn_server(
         coalesce,
         coalesce_channel_size,
         num_threads: _,
+        stream_throttling_interval_ms,
     } = quic_server_params;
+    let stream_throttling_interval = Duration::from_millis(stream_throttling_interval_ms);
     let concurrent_connections = max_staked_connections + max_unstaked_connections;
     let max_concurrent_connections = concurrent_connections + concurrent_connections / 4;
     let (config, _) = configure_server(keypair)?;
@@ -217,6 +222,8 @@ pub fn spawn_server(
         coalesce,
         coalesce_channel_size,
         max_concurrent_connections,
+        (stream_throttling_interval, stream_throttling_interval_ms),
+        variant,
     ));
     Ok(SpawnNonBlockingServerResult {
         endpoints,
@@ -288,6 +295,8 @@ async fn run_server(
     coalesce: Duration,
     coalesce_channel_size: usize,
     max_concurrent_connections: usize,
+    (stream_throttling_interval, stream_throttling_interval_ms): (Duration, u64),
+    variant: QuicVariant,
 ) {
     let rate_limiter = Arc::new(ConnectionRateLimiter::new(
         max_connections_per_ipaddr_per_min,
@@ -305,6 +314,7 @@ async fn run_server(
         stats.clone(),
         max_unstaked_connections,
         max_streams_per_ms,
+        stream_throttling_interval_ms,
     ));
     stats
         .quic_endpoints_count
@@ -405,6 +415,8 @@ async fn run_server(
                         stats.clone(),
                         wait_for_chunk_timeout,
                         stream_load_ema.clone(),
+                        (stream_throttling_interval, stream_throttling_interval_ms),
+                        variant,
                     ));
                 }
                 Err(err) => {
@@ -464,7 +476,9 @@ fn get_connection_stake(
 
 fn compute_max_allowed_uni_streams(peer_type: ConnectionPeerType, total_stake: u64) -> usize {
     match peer_type {
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake)
+        | ConnectionPeerType::P3(peer_stake)
+        | ConnectionPeerType::Mev(peer_stake) => {
             // No checked math for f64 type. So let's explicitly check for 0 here
             if total_stake == 0 || peer_stake > total_stake {
                 warn!(
@@ -504,6 +518,7 @@ struct NewConnectionHandlerParams {
     stats: Arc<StreamerStats>,
     max_stake: u64,
     min_stake: u64,
+    stream_throttling_interval: Duration,
 }
 
 impl NewConnectionHandlerParams {
@@ -511,6 +526,7 @@ impl NewConnectionHandlerParams {
         packet_sender: Sender<PacketAccumulator>,
         max_connections_per_peer: usize,
         stats: Arc<StreamerStats>,
+        stream_throttling_interval: Duration,
     ) -> NewConnectionHandlerParams {
         NewConnectionHandlerParams {
             packet_sender,
@@ -521,6 +537,7 @@ impl NewConnectionHandlerParams {
             stats,
             max_stake: 0,
             min_stake: 0,
+            stream_throttling_interval,
         }
     }
 }
@@ -559,8 +576,10 @@ fn handle_and_cache_new_connection(
                 client_connection_tracker,
                 Some(connection.clone()),
                 params.peer_type,
+                params.remote_pubkey.unwrap_or_default(),
                 timing::timestamp(),
                 params.max_connections_per_peer,
+                params.stream_throttling_interval,
             )
         {
             drop(connection_table_l);
@@ -669,7 +688,9 @@ fn compute_recieve_window(
         ConnectionPeerType::Unstaked => {
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * QUIC_UNSTAKED_RECEIVE_WINDOW_RATIO)
         }
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake)
+        | ConnectionPeerType::P3(peer_stake)
+        | ConnectionPeerType::Mev(peer_stake) => {
             let ratio =
                 compute_receive_window_ratio_for_staked_node(max_stake, min_stake, peer_stake);
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * ratio)
@@ -694,6 +715,8 @@ async fn setup_connection(
     stats: Arc<StreamerStats>,
     wait_for_chunk_timeout: Duration,
     stream_load_ema: Arc<StakedStreamLoadEMA>,
+    (stream_throttling_interval, stream_throttling_interval_ms): (Duration, u64),
+    variant: QuicVariant,
 ) {
     const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
     let from = connecting.remote_address();
@@ -738,19 +761,33 @@ async fn setup_connection(
                         packet_sender.clone(),
                         max_connections_per_peer,
                         stats.clone(),
+                        stream_throttling_interval,
                     ),
                     |(pubkey, stake, total_stake, max_stake, min_stake)| {
                         // The heuristic is that the stake should be large engouh to have 1 stream pass throuh within one throttle
-                        // interval during which we allow max (MAX_STREAMS_PER_MS * STREAM_THROTTLING_INTERVAL_MS) streams.
+                        // interval during which we allow max (MAX_STREAMS_PER_MS * stream_throttling_interval_ms) streams.
                         let min_stake_ratio =
-                            1_f64 / (max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS) as f64;
+                            1_f64 / (max_streams_per_ms * stream_throttling_interval_ms) as f64;
                         let stake_ratio = stake as f64 / total_stake as f64;
-                        let peer_type = if stake_ratio < min_stake_ratio {
+                        let peer_type = if variant != QuicVariant::Regular {
+                            if stake_ratio >= 1.0 / P3_PER_SECOND as f64 {
+                                match variant {
+                                    QuicVariant::P3 => ConnectionPeerType::P3(stake),
+                                    QuicVariant::Mev => ConnectionPeerType::Mev(stake),
+                                    // NB: Unreachable.
+                                    QuicVariant::Regular => ConnectionPeerType::Unstaked,
+                                }
+                            } else {
+                                // The peer will never be able to send so treat as unstaked (and thus close connection).
+                                ConnectionPeerType::Unstaked
+                            }
+                        } else if stake_ratio < min_stake_ratio {
                             // If it is a staked connection with ultra low stake ratio, treat it as unstaked.
                             ConnectionPeerType::Unstaked
                         } else {
                             ConnectionPeerType::Staked(stake)
                         };
+
                         NewConnectionHandlerParams {
                             packet_sender,
                             remote_pubkey: Some(pubkey),
@@ -760,12 +797,15 @@ async fn setup_connection(
                             stats: stats.clone(),
                             max_stake,
                             min_stake,
+                            stream_throttling_interval,
                         }
                     },
                 );
 
                 match params.peer_type {
-                    ConnectionPeerType::Staked(stake) => {
+                    ConnectionPeerType::Staked(stake)
+                    | ConnectionPeerType::P3(stake)
+                    | ConnectionPeerType::Mev(stake) => {
                         let mut connection_table_l = staked_connection_table.lock().await;
 
                         if connection_table_l.total_size >= max_staked_connections {
@@ -1056,6 +1096,7 @@ async fn handle_connection(
         remote_pubkey,
         stats,
         total_stake,
+        stream_throttling_interval,
         ..
     } = params;
 
@@ -1090,7 +1131,7 @@ async fn handle_connection(
             // The peer is sending faster than we're willing to read. Sleep for what's
             // left of this read interval so the peer backs off.
             let throttle_duration =
-                STREAM_THROTTLING_INTERVAL.saturating_sub(throttle_interval_start.elapsed());
+                stream_throttling_interval.saturating_sub(throttle_interval_start.elapsed());
 
             if !throttle_duration.is_zero() {
                 debug!(
@@ -1106,7 +1147,9 @@ async fn handle_connection(
                             .throttled_unstaked_streams
                             .fetch_add(1, Ordering::Relaxed);
                     }
-                    ConnectionPeerType::Staked(_) => {
+                    ConnectionPeerType::Staked(_)
+                    | ConnectionPeerType::P3(_)
+                    | ConnectionPeerType::Mev(_) => {
                         stats
                             .throttled_staked_streams
                             .fetch_add(1, Ordering::Relaxed);
@@ -1311,7 +1354,9 @@ async fn handle_chunks(
                     .total_unstaked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
             }
-            ConnectionPeerType::Staked(_) => {
+            ConnectionPeerType::Staked(_)
+            | ConnectionPeerType::P3(_)
+            | ConnectionPeerType::Mev(_) => {
                 stats
                     .total_staked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
@@ -1325,9 +1370,10 @@ async fn handle_chunks(
 }
 
 #[derive(Debug)]
-struct ConnectionEntry {
-    cancel: CancellationToken,
-    peer_type: ConnectionPeerType,
+pub struct ConnectionEntry {
+    pub cancel: CancellationToken,
+    pub peer_type: ConnectionPeerType,
+    pub identity: Pubkey,
     last_update: Arc<AtomicU64>,
     port: u16,
     // We do not explicitly use it, but its drop is triggered when ConnectionEntry is dropped.
@@ -1340,6 +1386,7 @@ impl ConnectionEntry {
     fn new(
         cancel: CancellationToken,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: Arc<AtomicU64>,
         port: u16,
         client_connection_tracker: ClientConnectionTracker,
@@ -1349,6 +1396,7 @@ impl ConnectionEntry {
         Self {
             cancel,
             peer_type,
+            identity,
             last_update,
             port,
             _client_connection_tracker: client_connection_tracker,
@@ -1364,7 +1412,9 @@ impl ConnectionEntry {
     fn stake(&self) -> u64 {
         match self.peer_type {
             ConnectionPeerType::Unstaked => 0,
-            ConnectionPeerType::Staked(stake) => stake,
+            ConnectionPeerType::Staked(stake)
+            | ConnectionPeerType::P3(stake)
+            | ConnectionPeerType::Mev(stake) => stake,
         }
     }
 }
@@ -1382,7 +1432,7 @@ impl Drop for ConnectionEntry {
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
-enum ConnectionTableKey {
+pub enum ConnectionTableKey {
     IP(IpAddr),
     Pubkey(Pubkey),
 }
@@ -1396,7 +1446,7 @@ impl ConnectionTableKey {
 }
 
 // Map of IP to list of connection entries
-struct ConnectionTable {
+pub struct ConnectionTable {
     table: IndexMap<ConnectionTableKey, Vec<ConnectionEntry>>,
     total_size: usize,
 }
@@ -1404,11 +1454,15 @@ struct ConnectionTable {
 // Prune the connection which has the oldest update
 // Return number pruned
 impl ConnectionTable {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             table: IndexMap::default(),
             total_size: 0,
         }
+    }
+
+    pub fn table(&self) -> &IndexMap<ConnectionTableKey, Vec<ConnectionEntry>> {
+        &self.table
     }
 
     fn prune_oldest(&mut self, max_size: usize) -> usize {
@@ -1462,8 +1516,10 @@ impl ConnectionTable {
         client_connection_tracker: ClientConnectionTracker,
         connection: Option<Connection>,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: u64,
         max_connections_per_peer: usize,
+        stream_throttling_interval: Duration,
     ) -> Option<(
         Arc<AtomicU64>,
         CancellationToken,
@@ -1481,10 +1537,13 @@ impl ConnectionTable {
             let stream_counter = connection_entry
                 .first()
                 .map(|entry| entry.stream_counter.clone())
-                .unwrap_or(Arc::new(ConnectionStreamCounter::new()));
+                .unwrap_or(Arc::new(ConnectionStreamCounter::new(
+                    stream_throttling_interval,
+                )));
             connection_entry.push(ConnectionEntry::new(
                 cancel.clone(),
                 peer_type,
+                identity,
                 last_update.clone(),
                 port,
                 client_connection_tracker,
@@ -1562,6 +1621,7 @@ pub mod test {
         crate::{
             nonblocking::{
                 quic::compute_max_allowed_uni_streams,
+                stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL,
                 testing_utilities::{
                     check_multiple_streams, get_client_config, make_client_endpoint,
                     setup_quic_server, SpawnTestServerResult,
@@ -2079,8 +2139,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2092,8 +2154,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 5,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
             .unwrap();
 
@@ -2134,8 +2198,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2169,8 +2235,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         });
@@ -2184,8 +2252,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 10,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL
             )
             .is_none());
 
@@ -2199,8 +2269,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 10,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL
             )
             .is_some());
 
@@ -2237,8 +2309,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Staked((i + 1) as u64),
+                    Pubkey::default(),
                     i as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2279,8 +2353,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     (i * 2) as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
 
@@ -2291,8 +2367,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     (i * 2 + 1) as u64,
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2306,8 +2384,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 (num_ips * 2) as u64,
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
             .unwrap();
 

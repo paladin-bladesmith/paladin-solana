@@ -87,6 +87,8 @@ conditional_vis_mod!(unified_scheduler, feature = "dev-context-only-utils", pub,
 const MAX_NUM_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 const DEFAULT_NUM_WORKERS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
+pub const DEFAULT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
+
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 const TOTAL_BUFFERED_PACKETS: usize = 100_000;
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
@@ -379,6 +381,7 @@ impl BankingStage {
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
+        batch_interval: Duration,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -419,6 +422,7 @@ impl BankingStage {
             bundle_account_locker.clone(),
             block_cost_limit_reservation_cb.clone(),
             blacklisted_accounts,
+            batch_interval,
         );
 
         Self {
@@ -437,6 +441,7 @@ impl BankingStage {
         bundle_account_locker: BundleAccountLocker,
         block_cost_limit_reservation_cb: impl Fn(&Bank) -> u64 + Clone + Send + 'static,
         blacklisted_accounts: HashSet<Pubkey>,
+        batch_interval: Duration,
     ) -> Vec<JoinHandle<()>> {
         match transaction_struct {
             TransactionStructure::Sdk => {
@@ -444,6 +449,7 @@ impl BankingStage {
                     PacketDeserializer::new(context.non_vote_receiver.clone()),
                     context.bank_forks.clone(),
                     blacklisted_accounts,
+                    batch_interval,
                 );
                 Self::spawn_scheduler_and_workers(
                     receive_and_buffer,
@@ -455,11 +461,12 @@ impl BankingStage {
                 )
             }
             TransactionStructure::View => {
-                let receive_and_buffer = TransactionViewReceiveAndBuffer {
-                    receiver: context.non_vote_receiver.clone(),
-                    bank_forks: context.bank_forks.clone(),
+                let receive_and_buffer = TransactionViewReceiveAndBuffer::new(
+                    context.non_vote_receiver.clone(),
+                    context.bank_forks.clone(),
                     blacklisted_accounts,
-                };
+                    batch_interval,
+                );
                 Self::spawn_scheduler_and_workers(
                     receive_and_buffer,
                     use_greedy_scheduler,
@@ -754,6 +761,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            Duration::ZERO,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -813,6 +821,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            Duration::ZERO,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -881,6 +890,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            Duration::ZERO,
         );
 
         // good tx, and no verify
@@ -1035,6 +1045,7 @@ mod tests {
                 HashSet::default(),
                 BundleAccountLocker::default(),
                 |_| 0,
+                Duration::ZERO,
             );
 
             // wait for banking_stage to eat the packets
@@ -1225,6 +1236,7 @@ mod tests {
             HashSet::default(),
             BundleAccountLocker::default(),
             |_| 0,
+            Duration::ZERO,
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1355,6 +1367,7 @@ mod tests {
                         HashSet::from_iter([blacklisted_keypair.pubkey()]),
                         BundleAccountLocker::default(),
                         |_| 0,
+                        Duration::ZERO,
                     );
 
                     // bad tx
