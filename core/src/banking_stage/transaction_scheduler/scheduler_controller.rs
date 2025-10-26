@@ -115,6 +115,11 @@ where
             self.receive_completed()?;
             self.receive_completed_bundles()?;
             self.process_transactions(&decision)?;
+            self.receive_and_buffer
+                .maybe_queue_batch(&mut self.container, &decision);
+            if self.receive_and_buffer_packets(&decision).is_err() {
+                break;
+            }
             // Receive bundles into the receive_and_buffer's bundle store.
             // If the bundle receiver is disconnected, treat it as zero bundles received
             // and continue; a disconnected bundle channel should not terminate scheduling.
@@ -122,11 +127,6 @@ where
                 .receive_and_buffer
                 .receive_and_buffer_bundles(&mut self.container, &decision).is_err() {
 
-            }
-            self.receive_and_buffer
-                .maybe_queue_batch(&mut self.container, &decision);
-            if self.receive_and_buffer_packets(&decision).is_err() {
-                break;
             }
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.

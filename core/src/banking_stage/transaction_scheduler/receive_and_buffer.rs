@@ -266,17 +266,29 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
         &mut self,
         container: &mut Self::Container,
         _decision: &BufferedPacketsDecision
-    ) -> Result<usize,DisconnectedError> {
+    ) -> Result<usize, DisconnectedError> {
         let mut batch_bundle_results = ReceiveBundleResults::default();
-        let mut batch_bundle_timer: Option<Instant> = None;
 
-        match self.bundle_receiver.receive_and_buffer_bundles(container, &mut batch_bundle_results, &mut batch_bundle_timer){
+        match self.bundle_receiver.receive_and_buffer_bundles(
+            container,
+            &mut batch_bundle_results,
+        ) {
             Ok(_) | Err(RecvTimeoutError::Timeout) => (),
             Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError),
         }
 
         let num_bundles = batch_bundle_results.deserialized_bundles.len();
-        self.bundle_store.extend(batch_bundle_results.deserialized_bundles);
+        
+        // Add bundles to the store and start/update the unified timer
+        if !batch_bundle_results.deserialized_bundles.is_empty() {
+            // If this is the first item in the batch (both transactions and bundles),
+            // set the start timestamp for the batch.
+            if self.batch.is_empty() && self.bundle_store.is_empty() {
+                self.batch_start = Instant::now();
+            }
+            self.bundle_store.extend(batch_bundle_results.deserialized_bundles);
+        }
+        
         Ok(num_bundles)
     }
 
@@ -287,14 +299,20 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
     ) -> BufferStats {
         let mut stats = BufferStats::default();
         
-        // Process transaction packets
-        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
-            stats.accumulate(self.buffer_packets(container));
-        }
-        
-        // Process bundles
-        if !self.bundle_store.is_empty() {
-            stats.accumulate(self.buffer_bundles(container));
+        // Check unified batch timer for BOTH transactions and bundles
+        if self.batch_start.elapsed() >= self.batch_interval {
+            // Process transaction packets
+            if !self.batch.is_empty() {
+                stats.accumulate(self.buffer_packets(container));
+            }
+            
+            // Process bundles
+            if !self.bundle_store.is_empty() {
+                stats.accumulate(self.buffer_bundles(container));
+            }
+            
+            // Reset the unified batch timer after processing
+            self.batch_start = Instant::now();
         }
         
         stats
@@ -366,9 +384,9 @@ impl SanitizedTransactionReceiveAndBuffer {
     }
 
     fn batch_packets(&mut self, packets: Vec<ImmutableDeserializedPacket>) {
-        // If this is the first packet in the batch, set the start timestamp for
-        // the batch.
-        if self.batch.is_empty() {
+        // If this is the first item in the batch (both transactions and bundles),
+        // set the start timestamp for the batch.
+        if self.batch.is_empty() && self.bundle_store.is_empty() {
             self.batch_start = Instant::now();
         }
 
@@ -689,19 +707,27 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         _decision: &BufferedPacketsDecision,
     ) -> Result<usize, DisconnectedError> {
         let mut batch_bundle_results = ReceiveBundleResults::default();
-        let mut batch_bundle_timer: Option<Instant> = None;
 
         match self.bundle_receiver.receive_and_buffer_bundles(
             container,
             &mut batch_bundle_results,
-            &mut batch_bundle_timer,
         ) {
             Ok(_) | Err(RecvTimeoutError::Timeout) => (),
             Err(RecvTimeoutError::Disconnected) => return Err(DisconnectedError),
         }
 
         let num_bundles = batch_bundle_results.deserialized_bundles.len();
-        self.bundle_store.extend(batch_bundle_results.deserialized_bundles);
+        
+        // Add bundles to the store and start/update the unified timer
+        if !batch_bundle_results.deserialized_bundles.is_empty() {
+            // If this is the first item in the batch (both transactions and bundles),
+            // set the start timestamp for the batch.
+            if self.batch.is_empty() && self.bundle_store.is_empty() {
+                self.batch_start = Instant::now();
+            }
+            self.bundle_store.extend(batch_bundle_results.deserialized_bundles);
+        }
+        
         Ok(num_bundles)
     }
 
@@ -712,26 +738,32 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
     ) -> BufferStats {
         let mut stats = BufferStats::default();
         
-        // Process transaction packets
-        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
-            let (root_bank, working_bank) = {
-                let bank_forks = self.bank_forks.read().unwrap();
-                let root_bank = bank_forks.root_bank();
-                let working_bank = bank_forks.working_bank();
-                (root_bank, working_bank)
-            };
+        // Check unified batch timer for BOTH transactions and bundles
+        if self.batch_start.elapsed() >= self.batch_interval {
+            // Process transaction packets
+            if !self.batch.is_empty() {
+                let (root_bank, working_bank) = {
+                    let bank_forks = self.bank_forks.read().unwrap();
+                    let root_bank = bank_forks.root_bank();
+                    let working_bank = bank_forks.working_bank();
+                    (root_bank, working_bank)
+                };
 
-            stats.accumulate(self.handle_batch_of_packet_batch_messages(
-                container,
-                decision,
-                &root_bank,
-                &working_bank,
-            ));
-        }
-        
-        // Process bundles
-        if !self.bundle_store.is_empty() {
-            stats.accumulate(self.buffer_bundles(container));
+                stats.accumulate(self.handle_batch_of_packet_batch_messages(
+                    container,
+                    decision,
+                    &root_bank,
+                    &working_bank,
+                ));
+            }
+            
+            // Process bundles
+            if !self.bundle_store.is_empty() {
+                stats.accumulate(self.buffer_bundles(container));
+            }
+            
+            // Reset the unified batch timer after processing
+            self.batch_start = Instant::now();
         }
         
         stats
@@ -876,9 +908,9 @@ impl TransactionViewReceiveAndBuffer {
             return stats;
         }
 
-        // If this is the first packet in the batch, set the start timestamp for
-        // the batch.
-        if self.batch.is_empty() {
+        // If this is the first item in the batch (both transactions and bundles),
+        // set the start timestamp for the batch.
+        if self.batch.is_empty() && self.bundle_store.is_empty() {
             self.batch_start = Instant::now();
         }
 

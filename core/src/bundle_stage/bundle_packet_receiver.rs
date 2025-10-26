@@ -40,11 +40,12 @@ impl BundleReceiver {
     }
 
     /// Receive incoming packets, push into unprocessed buffer with packet indexes
+    /// Note: This no longer manages its own timer - the unified batch timer is managed
+    /// by ReceiveAndBuffer::maybe_queue_batch()
     pub(crate) fn receive_and_buffer_bundles<S, Tx>(
         &mut self,
         container: &mut S,
         batch_bundle_results: &mut ReceiveBundleResults,
-        batch_bundle_timer: &mut Option<Instant>,
     ) -> Result<(), RecvTimeoutError>
     where
         S: StateContainer<Tx>,
@@ -53,37 +54,12 @@ impl BundleReceiver {
         let (result, _recv_time_us) = measure_us!({
             let mut recv_and_buffer_measure = Measure::start("recv_and_buffer");
 
-            // // If timer has passed, buffer current bundles and reset timer
-            // if let Some(timer) = batch_bundle_timer {
-            //     if timer.elapsed() >= DEFAULT_BATCH_BUNDLE_TIMEOUT {
-            //         // Take the batch, and reset to default
-            //         let batch_bundles = std::mem::take(batch_bundle_results);
-
-            //         // Buffer bundles
-            //         self.buffer_bundles(
-            //             batch_bundles,
-            //             bundle_storage,
-            //             bundle_stage_metrics,
-            //             // tracer_packet_stats,
-            //             bundle_stage_leader_metrics,
-            //         );
-
-            //         // Reset timer
-            //         *batch_bundle_timer = None;
-            //     }
-            // }
-
-            let recv_timeout = Self::get_receive_timeout(container, batch_bundle_timer);
+            let recv_timeout = Self::get_receive_timeout(container);
 
             self.bundle_packet_deserializer
                 .receive_bundles(recv_timeout, container.buffer_size())
                 // Add to batch if Ok, otherwise we keep the Err
                 .map(|receive_bundle_results| {
-                    // If batch is empty, start timer because its the first bundle we receive
-                    if batch_bundle_results.is_empty() {
-                        *batch_bundle_timer = Some(Instant::now());
-                    }
-
                     batch_bundle_results.extend(receive_bundle_results);
 
                     recv_and_buffer_measure.stop();
@@ -102,24 +78,20 @@ impl BundleReceiver {
 
     fn get_receive_timeout<S, Tx>(
         bundle_storage: &S,
-        batch_bundle_timer: &Option<Instant>,
     ) -> Duration
     where
         S: StateContainer<Tx>,
         Tx: TransactionWithMeta,
     {
-        // Gossip thread will almost always not wait because the transaction storage will most likely not be empty
+        // If there are buffered packets, run the equivalent of try_recv to try reading more
+        // packets. This prevents starving BankingStage::consume_buffered_packets due to
+        // buffered_packet_batches containing transactions that exceed the cost model for
+        // the current bank.
         if !bundle_storage.is_empty() {
-            // If there are buffered packets, run the equivalent of try_recv to try reading more
-            // packets. This prevents starving BankingStage::consume_buffered_packets due to
-            // buffered_packet_batches containing transactions that exceed the cost model for
-            // the current bank.
             Duration::from_millis(0)
-        } else if let Some(timer) = batch_bundle_timer {
-            DEFAULT_BATCH_BUNDLE_TIMEOUT.saturating_sub(timer.elapsed())
         } else {
-            // BundleStage should pick up a working_bank as fast as possible
-            Duration::from_millis(100)
+            // Use same timeout as transaction receive to keep loop responsive
+            Duration::from_millis(10)
         }
     }
 
