@@ -552,6 +552,7 @@ mod tests {
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
             None,
+            None,
         );
         let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
         let exit = Arc::new(AtomicBool::new(false));

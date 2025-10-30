@@ -121,7 +121,8 @@ impl BundleConsumerWorker {
             // Retryable errors - temporary conditions
             BundleExecutionError::PohRecordError(_)
             | BundleExecutionError::BankProcessingTimeLimitReached
-            | BundleExecutionError::ExceedsCostModel => true,
+            | BundleExecutionError::ExceedsCostModel
+            | BundleExecutionError::ReservationConflict => true,
 
             // Non-retryable errors - bundle is invalid or failed execution
             BundleExecutionError::TransactionFailure(_)

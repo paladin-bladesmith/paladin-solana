@@ -26,6 +26,8 @@ use {
 pub enum BundleAccountLockerError {
     #[error("locking error")]
     LockingError,
+    #[error("reservation conflict - accounts reserved by scheduled transactions")]
+    ReservationConflict,
 }
 
 pub type BundleAccountLockerResult<T> = Result<T, BundleAccountLockerError>;
@@ -67,6 +69,9 @@ impl Drop for LockedBundle<'_, '_> {
 pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
+    // Tracks accounts reserved by scheduled transactions that haven't been executed yet.
+    // This prevents bundles from locking accounts that higher-priority transactions need.
+    reserved_accounts: HashMap<Pubkey, u64>,
 }
 
 impl BundleAccountLocks {
@@ -76,6 +81,47 @@ impl BundleAccountLocks {
 
     pub fn write_locks(&self) -> &HashMap<Pubkey, u64> {
         &self.write_locks
+    }
+
+    /// Reserve accounts for scheduled transactions.
+    /// Called when scheduler sends a batch of transactions to workers.
+    pub fn reserve_accounts(&mut self, accounts: impl IntoIterator<Item = Pubkey>) {
+        for acc in accounts {
+            *self.reserved_accounts.entry(acc).or_insert(0) += 1;
+        }
+    }
+
+    /// Release account reservations after transactions complete.
+    /// Called when transaction batch finishes execution.
+    pub fn release_accounts(&mut self, accounts: impl IntoIterator<Item = Pubkey>) {
+        for acc in accounts {
+            if let Entry::Occupied(mut entry) = self.reserved_accounts.entry(acc) {
+                let val = entry.get_mut();
+                *val = val.saturating_sub(1);
+                if *val == 0 {
+                    entry.remove();
+                }
+            }
+        }
+    }
+
+    /// Check if any account in the bundle conflicts with reserved accounts.
+    /// Returns true if there's a reservation conflict.
+    pub fn has_reservation_conflict(
+        &self,
+        read_locks: &HashMap<Pubkey, u64>,
+        write_locks: &HashMap<Pubkey, u64>,
+    ) -> bool {
+        // A bundle write conflicts with any reservation (read or write)
+        if write_locks.keys().any(|k| self.reserved_accounts.contains_key(k)) {
+            return true;
+        }
+        // A bundle read conflicts with write reservations
+        // Note: We're conservative here - any read/write overlap is a conflict
+        if read_locks.keys().any(|k| self.reserved_accounts.contains_key(k)) {
+            return true;
+        }
+        false
     }
 
     pub fn lock_accounts(
@@ -134,7 +180,8 @@ impl BundleAccountLocker {
     }
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
-    /// When a LockedBundle is dropped, the accounts are automatically unlocked
+    /// When a LockedBundle is dropped, the accounts are automatically unlocked.
+    /// Returns ReservationConflict error if accounts are reserved by scheduled transactions.
     pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
@@ -142,10 +189,17 @@ impl BundleAccountLocker {
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks
-            .lock()
-            .unwrap()
-            .lock_accounts(read_locks, write_locks);
+        let mut locks = self.account_locks.lock().unwrap();
+        
+        // Check for reservation conflicts BEFORE locking.
+        // If higher-priority transactions have reserved these accounts, bundle must wait.
+        if locks.has_reservation_conflict(&read_locks, &write_locks) {
+            return Err(BundleAccountLockerError::ReservationConflict);
+        }
+
+        locks.lock_accounts(read_locks, write_locks);
+        drop(locks);
+        
         Ok(LockedBundle::new(self, sanitized_bundle, bank))
     }
 

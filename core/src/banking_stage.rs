@@ -679,6 +679,7 @@ impl BankingStage {
                 finished_work_receiver,
                 GreedySchedulerConfig::default(),
                 Some(bundle_work_sender),
+                Some(bundle_account_locker.clone()),
             );
             spawn_scheduler!(scheduler);
         } else {
@@ -687,6 +688,7 @@ impl BankingStage {
                 finished_work_receiver,
                 PrioGraphSchedulerConfig::default(),
                 Some(bundle_work_sender),
+                Some(bundle_account_locker.clone()),
             );
             spawn_scheduler!(scheduler);
         }

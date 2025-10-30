@@ -15,6 +15,7 @@ use {
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
+        bundle_stage::bundle_account_locker::BundleAccountLockerError
     },
     itertools::Itertools,
     solana_bundle::{
@@ -136,7 +137,10 @@ impl BundleConsumer {
         let locked_bundle = self
             .bundle_account_locker
             .prepare_locked_bundle(sanitized_bundle, bank)
-            .map_err(|_| BundleExecutionError::LockError)?;
+            .map_err(|e| match e {
+                BundleAccountLockerError::ReservationConflict => BundleExecutionError::ReservationConflict,
+                BundleAccountLockerError::LockingError => BundleExecutionError::LockError,
+            })?;
 
         // Create minimal metrics for single bundle execution
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);

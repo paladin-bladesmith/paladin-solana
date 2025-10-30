@@ -19,6 +19,7 @@ use {
         read_write_account_set::ReadWriteAccountSet,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork},
     },
+    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     crossbeam_channel::{Receiver, Sender},
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -60,6 +61,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: GreedySchedulerConfig,
         bundle_work_sender: Option<Sender<BundleConsumeWork>>,
+        bundle_account_locker: Option<BundleAccountLocker>,
     ) -> Self {
         Self {
             working_account_set: ReadWriteAccountSet::default(),
@@ -68,6 +70,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
                 consume_work_senders,
                 finished_consume_work_receiver,
                 config.target_transactions_per_batch,
+                bundle_account_locker,
             ),
             config,
             bundle_work_sender,
@@ -135,8 +138,33 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     None => continue,
                 },
                 UnifiedSchedulingUnit::Bundle(bundle_id) => {
-                    // Fetch the bundle from the container and send it to the worker
+                    // Fetch the bundle from the container
                     if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
+                        // CRITICAL: Before scheduling ANY bundle, we must ALWAYS flush ALL pending transaction batches.
+                        // This creates a "reservation fence" that ensures proper priority ordering.
+                        //
+                        // The problem: Transactions are batched and only sent when send_batches() is called.
+                        // Until sent, transactions don't have their accounts reserved, so bundles won't see
+                        // reservation conflicts even if those transactions have higher priority.
+                        //
+                        // Timeline without flush:
+                        // 1. Transaction X scheduled (priority 100) - not in batch yet
+                        // 2. Bundle Y checked (priority 50) - no conflict seen because X not sent
+                        // 3. Bundle Y locks accounts immediately
+                        // 4. Transaction X tries to batch - hits AccountInUse error
+                        // 5. Result: Lower-priority bundle executes before higher-priority transaction (WRONG!)
+                        //
+                        // Timeline with flush:
+                        // 1. Transaction X scheduled (priority 100) - not in batch yet
+                        // 2. Bundle Y about to be scheduled - FLUSH all pending batches first
+                        // 3. Transaction X's batch sent, accounts reserved
+                        // 4. Bundle Y tries to lock - hits ReservationConflict (correct!)
+                        // 5. Bundle Y retries later after Transaction X completes
+                        // 6. Result: Higher-priority transaction executes first (CORRECT!)
+                        self.working_account_set.clear();
+                        num_sent += self.common.send_batches()?;
+                        
+                        // Take the bundle and send it to the worker
                         let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
                         let _ = self.bundle_work_sender.as_ref().unwrap().send(BundleConsumeWork {
                             bundle_id,
@@ -335,7 +363,7 @@ mod test {
             (0..num_threads).map(|_| unbounded()).unzip();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
         let scheduler =
-            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config, None);
+            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config, None, None);
         (
             scheduler,
             consume_work_receivers,
