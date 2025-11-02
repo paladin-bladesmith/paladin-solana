@@ -369,7 +369,7 @@ impl BundleConsumer {
             );
 
             let locked_init_tip_programs_bundle = bundle_account_locker
-                .prepare_locked_bundle(&bundle, bank)
+                .prepare_locked_bundle_force(&bundle, bank)
                 .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
             Self::update_qos_and_execute_record_commit_bundle(
@@ -421,7 +421,7 @@ impl BundleConsumer {
             );
 
             let locked_tip_crank_bundle = bundle_account_locker
-                .prepare_locked_bundle(&bundle, bank)
+                .prepare_locked_bundle_force(&bundle, bank)
                 .map_err(|_| BundleExecutionError::TipError(TipError::LockError))?;
 
             Self::update_qos_and_execute_record_commit_bundle(

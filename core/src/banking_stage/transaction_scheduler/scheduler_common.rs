@@ -154,6 +154,7 @@ pub(crate) struct SchedulingCommon<Tx> {
     pub(crate) in_flight_tracker: InFlightTracker,
     pub(crate) account_locks: ThreadAwareAccountLocks,
     pub(crate) batches: Batches<Tx>,
+    #[allow(dead_code)]
     pub(crate) bundle_account_locker: Option<crate::bundle_stage::bundle_account_locker::BundleAccountLocker>,
 }
 
@@ -191,24 +192,6 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
         }
 
         let (ids, transactions, max_ages, total_cus) = self.batches.take_batch(thread_index);
-
-        // Reserve WRITABLE accounts only for bundle conflict detection
-        // Rationale: read-read overlaps are safe; we fence only accounts that
-        // scheduled transactions intend to write, so bundles won't read/write
-        // them ahead of higher-priority scheduled transactions.
-        if let Some(bundle_account_locker) = &self.bundle_account_locker {
-            let writable_accounts: Vec<_> = transactions
-                .iter()
-                .flat_map(|tx| {
-                    let keys = tx.account_keys();
-                    keys.iter()
-                        .enumerate()
-                        .filter_map(move |(i, k)| tx.is_writable(i).then_some(*k))
-                })
-                .collect();
-            let mut locks = bundle_account_locker.account_locks();
-            locks.reserve_accounts(writable_accounts);
-        }
 
         let batch_id = self
             .in_flight_tracker
@@ -292,21 +275,6 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
     /// This will update the internal tracking, including account locks.
     fn complete_batch(&mut self, batch_id: TransactionBatchId, transactions: &[Tx]) {
         let thread_id = self.in_flight_tracker.complete_batch(batch_id);
-        
-        // Release reservations (only the WRITABLE accounts reserved earlier)
-        if let Some(bundle_account_locker) = &self.bundle_account_locker {
-            let writable_accounts: Vec<_> = transactions
-                .iter()
-                .flat_map(|tx| {
-                    let keys = tx.account_keys();
-                    keys.iter()
-                        .enumerate()
-                        .filter_map(move |(i, k)| tx.is_writable(i).then_some(*k))
-                })
-                .collect();
-            let mut locks = bundle_account_locker.account_locks();
-            locks.release_accounts(writable_accounts);
-        }
         
         for transaction in transactions {
             let account_keys = transaction.account_keys();

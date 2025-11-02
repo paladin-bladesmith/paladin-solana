@@ -140,31 +140,6 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 UnifiedSchedulingUnit::Bundle(bundle_id) => {
                     // Fetch the bundle from the container
                     if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
-                        // CRITICAL: Before scheduling ANY bundle, we must ALWAYS flush ALL pending transaction batches.
-                        // This creates a "reservation fence" that ensures proper priority ordering.
-                        //
-                        // The problem: Transactions are batched and only sent when send_batches() is called.
-                        // Until sent, transactions don't have their accounts reserved, so bundles won't see
-                        // reservation conflicts even if those transactions have higher priority.
-                        //
-                        // Timeline without flush:
-                        // 1. Transaction X scheduled (priority 100) - not in batch yet
-                        // 2. Bundle Y checked (priority 50) - no conflict seen because X not sent
-                        // 3. Bundle Y locks accounts immediately
-                        // 4. Transaction X tries to batch - hits AccountInUse error
-                        // 5. Result: Lower-priority bundle executes before higher-priority transaction (WRONG!)
-                        //
-                        // Timeline with flush:
-                        // 1. Transaction X scheduled (priority 100) - not in batch yet
-                        // 2. Bundle Y about to be scheduled - FLUSH all pending batches first
-                        // 3. Transaction X's batch sent, accounts reserved
-                        // 4. Bundle Y tries to lock - hits ReservationConflict (correct!)
-                        // 5. Bundle Y retries later after Transaction X completes
-                        // 6. Result: Higher-priority transaction executes first (CORRECT!)
-                        self.working_account_set.clear();
-                        num_sent += self.common.send_batches()?;
-                        
-                        // Take the bundle and send it to the worker
                         let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
                         let _ = self.bundle_work_sender.as_ref().unwrap().send(BundleConsumeWork {
                             bundle_id,
@@ -191,6 +166,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 transaction_state,
                 &pre_lock_filter,
                 &mut self.common.account_locks,
+                self.common.bundle_account_locker.as_ref(),
                 schedulable_threads,
                 |thread_set| {
                     select_thread(
@@ -283,11 +259,34 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     transaction_state: &mut TransactionState<Tx>,
     pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     account_locks: &mut ThreadAwareAccountLocks,
+    bundle_account_locker: Option<&BundleAccountLocker>,
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
     match pre_lock_filter(transaction_state) {
         PreLockFilterAction::AttemptToSchedule => {}
+    }
+
+    // Check if any accounts are locked by bundles BEFORE trying to schedule
+    if let Some(locker) = bundle_account_locker {
+        let transaction = transaction_state.transaction();
+        let account_keys = transaction.account_keys();
+        let writable_keys: Vec<_> = account_keys
+            .iter()
+            .enumerate()
+            .filter_map(|(index, key)| transaction.is_writable(index).then_some(*key))
+            .collect();
+        
+        let bundle_locks = locker.account_locks();
+        let has_conflict = writable_keys.iter().any(|key| {
+            bundle_locks.read_locks().contains_key(key) || bundle_locks.write_locks().contains_key(key)
+        });
+        drop(bundle_locks);
+        
+        if has_conflict {
+            // Bundle has these accounts locked, can't schedule
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
     }
 
     // Schedule the transaction if it can be.

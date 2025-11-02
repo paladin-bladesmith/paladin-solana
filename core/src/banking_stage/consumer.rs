@@ -191,7 +191,21 @@ impl Consumer {
         // Once accounts are locked, other threads cannot encode transactions that will modify the
         // same account state.
         // BundleAccountLocker is used to prevent race conditions with bundled transactions from bundle stage
-        let bundle_account_locks = self.bundle_account_locker.account_locks();
+        let mut bundle_account_locks = self.bundle_account_locker.account_locks();
+        
+        // Reserve writable accounts BEFORE locking to prevent bundles from locking them
+        // This is the correct place to reserve - after QoS check, right before bank locking
+        let writable_accounts: Vec<_> = txs
+            .iter()
+            .flat_map(|tx| {
+                let keys = tx.account_keys();
+                keys.iter()
+                    .enumerate()
+                    .filter_map(move |(i, k)| tx.is_writable(i).then_some(*k))
+            })
+            .collect();
+        bundle_account_locks.reserve_accounts(writable_accounts.iter().copied());
+        
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
             transaction_qos_cost_results.iter().map(|r| match r {
@@ -211,6 +225,11 @@ impl Consumer {
 
         // Once the accounts are new transactions can enter the pipeline to process them
         let (_, unlock_us) = measure_us!(drop(batch));
+
+        // Release account reservations after batch execution completes
+        let mut bundle_account_locks = self.bundle_account_locker.account_locks();
+        bundle_account_locks.release_accounts(writable_accounts.iter().copied());
+        drop(bundle_account_locks);
 
         let ExecuteAndCommitTransactionsOutput {
             ref commit_transactions_result,
