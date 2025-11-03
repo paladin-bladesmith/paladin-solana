@@ -264,7 +264,6 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     &pre_lock_filter,
                     &mut blocking_locks,
                     &mut self.common.account_locks,
-                    self.common.bundle_account_locker.as_ref(),
                     num_threads,
                     |thread_set| {
                         select_thread(
@@ -405,7 +404,6 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     blocking_locks: &mut ReadWriteAccountSet,
     account_locks: &mut ThreadAwareAccountLocks,
-    bundle_account_locker: Option<&BundleAccountLocker>,
     num_threads: usize,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
@@ -420,33 +418,16 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         return Err(TransactionSchedulingError::UnschedulableConflicts);
     }
 
-    // Get account keys and extract writable/readable keys in single iteration
+    // Schedule the transaction if it can be.
     let account_keys = transaction.account_keys();
-    let mut writable_keys = Vec::new();
-    let mut readable_keys = Vec::new();
-    
-    for (index, key) in account_keys.iter().enumerate() {
-        if transaction.is_writable(index) {
-            writable_keys.push(*key);
-        } else {
-            readable_keys.push(key);
-        }
-    }
-    
-    // Try to reserve accounts in bundle locker (single check handles both conflict detection and reservation)
-    if let Some(locker) = bundle_account_locker {
-        let mut bundle_locks = locker.account_locks();
-        if !bundle_locks.try_reserve_accounts(writable_keys.iter().copied()) {
-            drop(bundle_locks);
-            blocking_locks.take_locks(transaction);
-            return Err(TransactionSchedulingError::UnschedulableConflicts);
-        }
-        drop(bundle_locks);
-    }
-
-    // Use pre-collected iterators for thread-aware lock acquisition
-    let write_account_locks = writable_keys.iter();
-    let read_account_locks = readable_keys.iter().copied();
+    let write_account_locks = account_keys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, key)| transaction.is_writable(index).then_some(key));
+    let read_account_locks = account_keys
+        .iter()
+        .enumerate()
+        .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,

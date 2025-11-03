@@ -141,7 +141,6 @@ impl BundleAccountLocks {
             return true;
         }
         // A bundle read conflicts with write reservations
-        // Note: We're conservative here - any read/write overlap is a conflict
         if read_locks.keys().any(|k| self.reserved_accounts.contains_key(k)) {
             return true;
         }

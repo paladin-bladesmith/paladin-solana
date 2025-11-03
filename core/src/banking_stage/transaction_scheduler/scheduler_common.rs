@@ -278,21 +278,6 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
     fn complete_batch(&mut self, batch_id: TransactionBatchId, transactions: &[Tx]) {
         let thread_id = self.in_flight_tracker.complete_batch(batch_id);
         
-        // Release reservations for the writable accounts
-        if let Some(bundle_account_locker) = &self.bundle_account_locker {
-            let writable_accounts: Vec<_> = transactions
-                .iter()
-                .flat_map(|tx| {
-                    let keys = tx.account_keys();
-                    keys.iter()
-                        .enumerate()
-                        .filter_map(move |(i, k)| tx.is_writable(i).then_some(*k))
-                })
-                .collect();
-            let mut locks = bundle_account_locker.account_locks();
-            locks.release_accounts(writable_accounts.iter().copied());
-        }
-        
         for transaction in transactions {
             let account_keys = transaction.account_keys();
             let write_account_locks = account_keys
