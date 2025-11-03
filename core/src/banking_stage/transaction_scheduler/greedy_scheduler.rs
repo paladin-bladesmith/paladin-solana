@@ -262,7 +262,6 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     account_locks: &mut ThreadAwareAccountLocks,
     bundle_account_locker: Option<&BundleAccountLocker>,
-    bundle_account_locker: Option<&BundleAccountLocker>,
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
@@ -270,38 +269,21 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         PreLockFilterAction::AttemptToSchedule => {}
     }
 
-    // Check if any accounts are locked by bundles BEFORE trying to schedule
-    if let Some(locker) = bundle_account_locker {
-        let transaction = transaction_state.transaction();
-        let account_keys = transaction.account_keys();
-        let writable_keys: Vec<_> = account_keys
-            .iter()
-            .enumerate()
-            .filter_map(|(index, key)| transaction.is_writable(index).then_some(*key))
-            .collect();
-        
-        let bundle_locks = locker.account_locks();
-        let has_conflict = writable_keys.iter().any(|key| {
-            bundle_locks.read_locks().contains_key(key) || bundle_locks.write_locks().contains_key(key)
-        });
-        drop(bundle_locks);
-        
-        if has_conflict {
-            // Bundle has these accounts locked, can't schedule
-            return Err(TransactionSchedulingError::UnschedulableConflicts);
-        }
-    }
-
-    // Get transaction and extract account keys once
+    // Schedule the transaction if it can be.
     let transaction = transaction_state.transaction();
     let account_keys = transaction.account_keys();
     
-    // Extract writable keys (single iteration)
-    let writable_keys: Vec<_> = account_keys
-        .iter()
-        .enumerate()
-        .filter_map(|(index, key)| transaction.is_writable(index).then_some(*key))
-        .collect();
+    // Extract writable and readable keys in single iteration
+    let mut writable_keys = Vec::new();
+    let mut readable_keys = Vec::new();
+    
+    for (index, key) in account_keys.iter().enumerate() {
+        if transaction.is_writable(index) {
+            writable_keys.push(*key);
+        } else {
+            readable_keys.push(key);
+        }
+    }
     
     // Try to reserve accounts in bundle locker (single check handles both conflict detection and reservation)
     if let Some(locker) = bundle_account_locker {
@@ -313,12 +295,9 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         drop(bundle_locks);
     }
 
-    // Prepare iterators for thread-aware lock acquisition
+    // Use pre-collected iterators for thread-aware lock acquisition
     let write_account_locks = writable_keys.iter();
-    let read_account_locks = account_keys
-        .iter()
-        .enumerate()
-        .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
+    let read_account_locks = readable_keys.iter().copied();
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,

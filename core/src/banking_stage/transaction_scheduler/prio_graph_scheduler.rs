@@ -160,8 +160,6 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                 let mut filter_array = [true; MAX_FILTER_CHUNK_SIZE];
                 let mut ids = Vec::with_capacity(MAX_FILTER_CHUNK_SIZE);
                 let mut txs = Vec::with_capacity(MAX_FILTER_CHUNK_SIZE);
-                let mut popped = 0usize;
-                let mut stalled_due_to_bundle = false;
 
                 let chunk_size = (*window_budget).min(MAX_FILTER_CHUNK_SIZE);
                 for _ in 0..chunk_size {
@@ -422,13 +420,18 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         return Err(TransactionSchedulingError::UnschedulableConflicts);
     }
 
-    // Get account keys and extract writable keys once
+    // Get account keys and extract writable/readable keys in single iteration
     let account_keys = transaction.account_keys();
-    let writable_keys: Vec<_> = account_keys
-        .iter()
-        .enumerate()
-        .filter_map(|(index, key)| transaction.is_writable(index).then_some(*key))
-        .collect();
+    let mut writable_keys = Vec::new();
+    let mut readable_keys = Vec::new();
+    
+    for (index, key) in account_keys.iter().enumerate() {
+        if transaction.is_writable(index) {
+            writable_keys.push(*key);
+        } else {
+            readable_keys.push(key);
+        }
+    }
     
     // Try to reserve accounts in bundle locker (single check handles both conflict detection and reservation)
     if let Some(locker) = bundle_account_locker {
@@ -441,12 +444,9 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         drop(bundle_locks);
     }
 
-    // Prepare iterators for thread-aware lock acquisition
+    // Use pre-collected iterators for thread-aware lock acquisition
     let write_account_locks = writable_keys.iter();
-    let read_account_locks = account_keys
-        .iter()
-        .enumerate()
-        .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
+    let read_account_locks = readable_keys.iter().copied();
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,
