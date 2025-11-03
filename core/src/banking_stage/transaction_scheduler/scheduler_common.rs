@@ -9,10 +9,13 @@ use {
         unified_state_container::StateContainer,
         unified_scheduling_unit::UnifiedSchedulingUnit,
     },
-    crate::banking_stage::{
-        scheduler_messages::{
-            ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
+    crate::{
+        banking_stage::{
+            scheduler_messages::{
+                ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
+            },
         },
+        bundle_stage::bundle_account_locker::BundleAccountLocker,
     },
     crossbeam_channel::{Receiver, Sender, TryRecvError},
     itertools::izip,
@@ -154,8 +157,7 @@ pub(crate) struct SchedulingCommon<Tx> {
     pub(crate) in_flight_tracker: InFlightTracker,
     pub(crate) account_locks: ThreadAwareAccountLocks,
     pub(crate) batches: Batches<Tx>,
-    #[allow(dead_code)]
-    pub(crate) bundle_account_locker: Option<crate::bundle_stage::bundle_account_locker::BundleAccountLocker>,
+    pub(crate) bundle_account_locker: Option<BundleAccountLocker>,
 }
 
 impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
@@ -163,7 +165,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         target_num_transactions_per_batch: usize,
-        bundle_account_locker: Option<crate::bundle_stage::bundle_account_locker::BundleAccountLocker>,
+        bundle_account_locker: Option<BundleAccountLocker>,
     ) -> Self {
         let num_threads = consume_work_senders.len();
         assert!(num_threads > 0, "must have at least one worker");
@@ -275,6 +277,21 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
     /// This will update the internal tracking, including account locks.
     fn complete_batch(&mut self, batch_id: TransactionBatchId, transactions: &[Tx]) {
         let thread_id = self.in_flight_tracker.complete_batch(batch_id);
+        
+        // Release reservations for the writable accounts
+        if let Some(bundle_account_locker) = &self.bundle_account_locker {
+            let writable_accounts: Vec<_> = transactions
+                .iter()
+                .flat_map(|tx| {
+                    let keys = tx.account_keys();
+                    keys.iter()
+                        .enumerate()
+                        .filter_map(move |(i, k)| tx.is_writable(i).then_some(*k))
+                })
+                .collect();
+            let mut locks = bundle_account_locker.account_locks();
+            locks.release_accounts(writable_accounts.iter().copied());
+        }
         
         for transaction in transactions {
             let account_keys = transaction.account_keys();

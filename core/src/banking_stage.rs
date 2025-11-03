@@ -472,9 +472,9 @@ impl BankingStage {
         replay_vote_sender: ReplayVoteSender,
         max_bundle_retry_duration: Duration,
         cluster_info: Arc<ClusterInfo>,
-        tip_manager: crate::tip_manager::TipManager,
+        tip_manager: TipManager,
         block_builder_fee_info: Arc<
-            std::sync::Mutex<crate::proxy::block_engine_stage::BlockBuilderFeeInfo>,
+            std::sync::Mutex<BlockBuilderFeeInfo>,
         >,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Vec<JoinHandle<()>> {
@@ -547,9 +547,9 @@ impl BankingStage {
         replay_vote_sender: ReplayVoteSender,
         max_bundle_retry_duration: Duration,
         cluster_info: Arc<ClusterInfo>,
-        tip_manager: crate::tip_manager::TipManager,
+        tip_manager: TipManager,
         block_builder_fee_info: Arc<
-            std::sync::Mutex<crate::proxy::block_engine_stage::BlockBuilderFeeInfo>,
+            std::sync::Mutex<BlockBuilderFeeInfo>,
         >,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Vec<JoinHandle<()>> {
@@ -788,7 +788,7 @@ mod tests {
         crate::{
             banking_trace::{BankingTracer, Channels},
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{ReadRewards, TipManagerConfig},
+            tip_manager::{TipManager, ReadRewards, TipManagerConfig},
         },
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::{unbounded, Receiver},
@@ -903,12 +903,12 @@ mod tests {
             Duration::ZERO,
             Duration::from_millis(100),
             cluster_info,
-            crate::tip_manager::TipManager::new(
+            TipManager::new(
                 Arc::new(RwLock::new(MockBlockstore::default())),
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
-            Arc::new(std::sync::Mutex::new(BlockBuilderFeeInfo::default())),
+            Arc::new(Mutex::new(BlockBuilderFeeInfo::default())),
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -978,13 +978,13 @@ mod tests {
             Duration::ZERO,
             Duration::from_millis(100),
             cluster_info,
-            crate::tip_manager::TipManager::new(
+            TipManager::new(
                 Arc::new(RwLock::new(MockBlockstore::default())),
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
             Arc::new(std::sync::Mutex::new(
-                crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default(),
+                BlockBuilderFeeInfo::default(),
             )),
         );
         trace!("sending bank");
@@ -1064,13 +1064,13 @@ mod tests {
             Duration::ZERO,
             Duration::from_millis(100),
             cluster_info,
-            crate::tip_manager::TipManager::new(
+            TipManager::new(
                 Arc::new(RwLock::new(MockBlockstore::default())),
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
             Arc::new(std::sync::Mutex::new(
-                crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default(),
+                BlockBuilderFeeInfo::default(),
             )),
         );
 
@@ -1236,13 +1236,13 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_millis(100),
                 cluster_info,
-                crate::tip_manager::TipManager::new(
+                TipManager::new(
                     Arc::new(RwLock::new(MockBlockstore::default())),
                     Arc::new(LeaderScheduleCache::default()),
                     TipManagerConfig::default(),
                 ),
                 Arc::new(std::sync::Mutex::new(
-                    crate::proxy::block_engine_stage::BlockBuilderFeeInfo::default(),
+                    BlockBuilderFeeInfo::default(),
                 )),
             );
 
@@ -1444,7 +1444,7 @@ mod tests {
             Duration::ZERO,
             Duration::ZERO,
             cluster_info,
-            crate::tip_manager::TipManager::new(
+            TipManager::new(
                 Arc::new(RwLock::new(MockBlockstore::default())),
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
@@ -1590,7 +1590,7 @@ mod tests {
                         Duration::ZERO,
                         Duration::ZERO,
                         cluster_info,
-                        crate::tip_manager::TipManager::new(
+                        TipManager::new(
                             Arc::new(RwLock::new(MockBlockstore::default())),
                             Arc::new(LeaderScheduleCache::default()),
                             TipManagerConfig::default(),

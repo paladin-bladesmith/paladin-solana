@@ -479,6 +479,7 @@ impl Tpu {
             DataBudget::default(),
         );
 
+        // TODO: Remove bundle stage entirely
         // Processing bundles in banking stage
         // let bundle_stage = BundleStage::new(
         //     cluster_info,

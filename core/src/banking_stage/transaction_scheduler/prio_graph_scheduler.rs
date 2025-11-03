@@ -168,28 +168,21 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     if let Some(id) = container.pop() {
                         match id.id {
                             UnifiedSchedulingUnit::Transaction(_) => {
-                                popped += 1;
                                 ids.push(id);
                             }
                             UnifiedSchedulingUnit::Bundle(bundle_id) => {
-                                if let Some(bundle_state) =
-                                    container.get_mut_bundle_state(bundle_id)
-                                {
+                                // Send bundles immediately, don't add to prio graph
+                                if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
                                     if let Some(bundle_sender) = self.bundle_work_sender.as_ref() {
-                                        let (bundle, max_age) =
-                                            bundle_state.take_bundle_for_consuming();
+                                        let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
                                         let _ = bundle_sender.send(BundleConsumeWork {
                                             bundle_id,
                                             bundle,
                                             _max_age: max_age,
                                         });
-                                        popped += 1;
-                                    } else {
-                                        container.push_ids_into_queue(std::iter::once(id));
-                                        stalled_due_to_bundle = true;
-                                        break;
                                     }
                                 }
+                                continue;
                             }
                         }
                     } else {
@@ -197,31 +190,22 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     }
                 }
 
-                *window_budget = window_budget.saturating_sub(popped);
+                let num_transactions = ids.len();
+                *window_budget = window_budget.saturating_sub(num_transactions);
 
-                if stalled_due_to_bundle {
-                    break;
-                }
-
-                if ids.is_empty() {
-                    if popped < chunk_size {
-                        break;
-                    } else {
-                        continue;
-                    }
-                }
-
+                // Collect transactions for filtering
                 ids.iter().for_each(|id| {
                     let transaction = container.get_transaction(id.get_id()).unwrap();
                     txs.push(transaction);
                 });
 
-                let num_ids = ids.len();
+                // Apply pre-graph filter
                 let (_, filter_us) =
-                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..num_ids]));
+                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..num_transactions]));
                 total_filter_time_us += filter_us;
 
-                for (id, filter_result) in ids.iter().zip(&filter_array[..num_ids]) {
+                // Insert passing transactions into prio graph
+                for (id, filter_result) in ids.iter().zip(&filter_array[..num_transactions]) {
                     if *filter_result {
                         let transaction = container.get_transaction(id.get_id()).unwrap();
                         prio_graph.insert_transaction(
@@ -234,7 +218,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     }
                 }
 
-                if popped < chunk_size {
+                // If we got fewer transactions than requested, we've exhausted the container
+                if num_transactions < chunk_size {
                     break;
                 }
             }
@@ -265,10 +250,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
 
             while let Some(id) = self.prio_graph.pop() {
                 // Prio graph should only contain transactions, not bundles
-                // If somehow a bundle made it here, skip it
-                if !id.is_transaction() {
-                    continue;
-                }
+                assert!(id.is_transaction(), "Prio-graph should only schedule transactions not bundles");
                 
                 num_scanned += 1;
                 unblock_this_batch.push(id);
@@ -284,6 +266,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     &pre_lock_filter,
                     &mut blocking_locks,
                     &mut self.common.account_locks,
+                    self.common.bundle_account_locker.as_ref(),
                     num_threads,
                     |thread_set| {
                         select_thread(
@@ -424,6 +407,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     blocking_locks: &mut ReadWriteAccountSet,
     account_locks: &mut ThreadAwareAccountLocks,
+    bundle_account_locker: Option<&BundleAccountLocker>,
     num_threads: usize,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
@@ -438,12 +422,27 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         return Err(TransactionSchedulingError::UnschedulableConflicts);
     }
 
-    // Schedule the transaction if it can be.
+    // Get account keys and extract writable keys once
     let account_keys = transaction.account_keys();
-    let write_account_locks = account_keys
+    let writable_keys: Vec<_> = account_keys
         .iter()
         .enumerate()
-        .filter_map(|(index, key)| transaction.is_writable(index).then_some(key));
+        .filter_map(|(index, key)| transaction.is_writable(index).then_some(*key))
+        .collect();
+    
+    // Try to reserve accounts in bundle locker (single check handles both conflict detection and reservation)
+    if let Some(locker) = bundle_account_locker {
+        let mut bundle_locks = locker.account_locks();
+        if !bundle_locks.try_reserve_accounts(writable_keys.iter().copied()) {
+            drop(bundle_locks);
+            blocking_locks.take_locks(transaction);
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+        drop(bundle_locks);
+    }
+
+    // Prepare iterators for thread-aware lock acquisition
+    let write_account_locks = writable_keys.iter();
     let read_account_locks = account_keys
         .iter()
         .enumerate()

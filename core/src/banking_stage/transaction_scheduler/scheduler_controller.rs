@@ -123,11 +123,9 @@ where
             // Receive bundles into the receive_and_buffer's bundle store.
             // If the bundle receiver is disconnected, treat it as zero bundles received
             // and continue; a disconnected bundle channel should not terminate scheduling.
-            if self
+            let _ = self
                 .receive_and_buffer
-                .receive_and_buffer_bundles(&mut self.container, &decision).is_err() {
-
-            }
+                .receive_and_buffer_bundles(&mut self.container, &decision);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();

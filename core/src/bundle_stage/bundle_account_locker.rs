@@ -102,10 +102,7 @@ impl BundleAccountLocks {
             return false;
         }
         
-        // Safe to reserve
-        for acc in accounts_vec {
-            *self.reserved_accounts.entry(acc).or_insert(0) += 1;
-        }
+        self.reserve_accounts(accounts_vec);
         true
     }
 
@@ -359,6 +356,7 @@ mod tests {
 
         let kp0 = Keypair::new();
         let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
 
         let tx0 = VersionedTransaction::from(transfer(
             &mint_keypair,
@@ -367,7 +365,7 @@ mod tests {
             genesis_config.hash(),
         ));
         let tx1 = VersionedTransaction::from(transfer(
-            &mint_keypair,
+            &kp2,
             &kp1.pubkey(),
             1,
             genesis_config.hash(),
@@ -426,7 +424,7 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp1.pubkey()])
+            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp2.pubkey(), kp1.pubkey()])
         );
         assert_eq!(
             bundle_account_locker
@@ -446,7 +444,7 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
+            HashSet::from_iter([kp2.pubkey(), kp1.pubkey()])
         );
         assert_eq!(
             bundle_account_locker

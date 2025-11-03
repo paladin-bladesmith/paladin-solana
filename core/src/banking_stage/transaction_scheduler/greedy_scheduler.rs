@@ -135,7 +135,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
             let transaction_state = match id.id {
                 UnifiedSchedulingUnit::Transaction(tx_id) => match container.get_mut_transaction_state(tx_id) {
                     Some(transaction_state) => transaction_state,
-                    None => continue,
+                    None => panic!("transaction state must exist"),
                 },
                 UnifiedSchedulingUnit::Bundle(bundle_id) => {
                     // Fetch the bundle from the container
@@ -146,6 +146,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                             bundle,
                             _max_age: max_age,
                         });
+                    } else {
+                        panic!("bundle state must exist");
                     }
                     continue;
                 }
@@ -260,6 +262,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
     account_locks: &mut ThreadAwareAccountLocks,
     bundle_account_locker: Option<&BundleAccountLocker>,
+    bundle_account_locker: Option<&BundleAccountLocker>,
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
 ) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
@@ -289,13 +292,29 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         }
     }
 
-    // Schedule the transaction if it can be.
+    // Get transaction and extract account keys once
     let transaction = transaction_state.transaction();
     let account_keys = transaction.account_keys();
-    let write_account_locks = account_keys
+    
+    // Extract writable keys (single iteration)
+    let writable_keys: Vec<_> = account_keys
         .iter()
         .enumerate()
-        .filter_map(|(index, key)| transaction.is_writable(index).then_some(key));
+        .filter_map(|(index, key)| transaction.is_writable(index).then_some(*key))
+        .collect();
+    
+    // Try to reserve accounts in bundle locker (single check handles both conflict detection and reservation)
+    if let Some(locker) = bundle_account_locker {
+        let mut bundle_locks = locker.account_locks();
+        if !bundle_locks.try_reserve_accounts(writable_keys.iter().copied()) {
+            drop(bundle_locks);
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+        drop(bundle_locks);
+    }
+
+    // Prepare iterators for thread-aware lock acquisition
+    let write_account_locks = writable_keys.iter();
     let read_account_locks = account_keys
         .iter()
         .enumerate()
