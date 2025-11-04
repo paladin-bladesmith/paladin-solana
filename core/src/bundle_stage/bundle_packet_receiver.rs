@@ -76,9 +76,7 @@ impl BundleReceiver {
         result
     }
 
-    fn get_receive_timeout<S, Tx>(
-        bundle_storage: &S,
-    ) -> Duration
+    fn get_receive_timeout<S, Tx>(bundle_storage: &S) -> Duration
     where
         S: StateContainer<Tx>,
         Tx: TransactionWithMeta,

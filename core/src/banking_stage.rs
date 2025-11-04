@@ -473,9 +473,7 @@ impl BankingStage {
         max_bundle_retry_duration: Duration,
         cluster_info: Arc<ClusterInfo>,
         tip_manager: TipManager,
-        block_builder_fee_info: Arc<
-            std::sync::Mutex<BlockBuilderFeeInfo>,
-        >,
+        block_builder_fee_info: Arc<std::sync::Mutex<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Vec<JoinHandle<()>> {
         let tip_accounts = tip_manager.get_tip_accounts();
@@ -548,9 +546,7 @@ impl BankingStage {
         max_bundle_retry_duration: Duration,
         cluster_info: Arc<ClusterInfo>,
         tip_manager: TipManager,
-        block_builder_fee_info: Arc<
-            std::sync::Mutex<BlockBuilderFeeInfo>,
-        >,
+        block_builder_fee_info: Arc<std::sync::Mutex<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: &Arc<PrioritizationFeeCache>,
     ) -> Vec<JoinHandle<()>> {
         assert!(num_workers <= BankingStage::max_num_workers());
@@ -786,7 +782,7 @@ mod tests {
         crate::{
             banking_trace::{BankingTracer, Channels},
             proxy::block_engine_stage::BlockBuilderFeeInfo,
-            tip_manager::{TipManager, ReadRewards, TipManagerConfig},
+            tip_manager::{ReadRewards, TipManager, TipManagerConfig},
         },
         agave_banking_stage_ingress_types::BankingPacketBatch,
         crossbeam_channel::{unbounded, Receiver},
@@ -981,9 +977,7 @@ mod tests {
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
-            Arc::new(std::sync::Mutex::new(
-                BlockBuilderFeeInfo::default(),
-            )),
+            Arc::new(std::sync::Mutex::new(BlockBuilderFeeInfo::default())),
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -1067,9 +1061,7 @@ mod tests {
                 Arc::new(LeaderScheduleCache::default()),
                 TipManagerConfig::default(),
             ),
-            Arc::new(std::sync::Mutex::new(
-                BlockBuilderFeeInfo::default(),
-            )),
+            Arc::new(std::sync::Mutex::new(BlockBuilderFeeInfo::default())),
         );
 
         // good tx, and no verify
@@ -1239,9 +1231,7 @@ mod tests {
                     Arc::new(LeaderScheduleCache::default()),
                     TipManagerConfig::default(),
                 ),
-                Arc::new(std::sync::Mutex::new(
-                    BlockBuilderFeeInfo::default(),
-                )),
+                Arc::new(std::sync::Mutex::new(BlockBuilderFeeInfo::default())),
             );
 
             // wait for bankingStage to eat the packets

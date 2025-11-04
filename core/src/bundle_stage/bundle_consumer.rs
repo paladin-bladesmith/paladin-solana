@@ -7,7 +7,7 @@ use {
             qos_service::QosService,
         },
         bundle_stage::{
-            bundle_account_locker::{BundleAccountLocker, LockedBundle},
+            bundle_account_locker::{BundleAccountLocker, BundleAccountLockerError, LockedBundle},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             bundle_storage::BundleStorage,
             committer::Committer,
@@ -15,7 +15,6 @@ use {
         immutable_deserialized_bundle::ImmutableDeserializedBundle,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
         tip_manager::TipManager,
-        bundle_stage::bundle_account_locker::BundleAccountLockerError
     },
     itertools::Itertools,
     solana_bundle::{
@@ -138,7 +137,9 @@ impl BundleConsumer {
             .bundle_account_locker
             .prepare_locked_bundle(sanitized_bundle, bank)
             .map_err(|e| match e {
-                BundleAccountLockerError::ReservationConflict => BundleExecutionError::ReservationConflict,
+                BundleAccountLockerError::ReservationConflict => {
+                    BundleExecutionError::ReservationConflict
+                }
                 BundleAccountLockerError::LockingError => BundleExecutionError::LockError,
             })?;
 
