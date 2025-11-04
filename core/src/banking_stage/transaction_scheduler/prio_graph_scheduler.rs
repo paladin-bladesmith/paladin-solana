@@ -19,7 +19,6 @@ use {
         read_write_account_set::ReadWriteAccountSet,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork},
     },
-    crate::bundle_stage::bundle_account_locker::BundleAccountLocker,
     crossbeam_channel::{Receiver, Sender},
     prio_graph::{AccessKind, GraphNode, PrioGraph},
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
@@ -79,14 +78,12 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: PrioGraphSchedulerConfig,
         bundle_work_sender: Option<Sender<BundleConsumeWork>>,
-        bundle_account_locker: Option<BundleAccountLocker>,
     ) -> Self {
         Self {
             common: SchedulingCommon::new(
                 consume_work_senders,
                 finished_consume_work_receiver,
                 config.target_transactions_per_batch,
-                bundle_account_locker,
             ),
             prio_graph: PrioGraph::new(passthrough_priority),
             config,
@@ -495,7 +492,6 @@ mod tests {
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
             None, // No bundle worker in tests
-            None, // No bundle account locker in tests
         );
         (
             scheduler,

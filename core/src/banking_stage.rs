@@ -613,7 +613,7 @@ impl BankingStage {
             QosService::new(0),
             context.log_messages_bytes_limit,
             tip_manager,
-            bundle_account_locker.clone(),
+            bundle_account_locker,
             block_builder_fee_info,
             max_bundle_retry_duration,
             cluster_info,
@@ -679,7 +679,6 @@ impl BankingStage {
                 finished_work_receiver,
                 GreedySchedulerConfig::default(),
                 Some(bundle_work_sender),
-                Some(bundle_account_locker.clone()),
             );
             spawn_scheduler!(scheduler);
         } else {
@@ -688,7 +687,6 @@ impl BankingStage {
                 finished_work_receiver,
                 PrioGraphSchedulerConfig::default(),
                 Some(bundle_work_sender),
-                Some(bundle_account_locker.clone()),
             );
             spawn_scheduler!(scheduler);
         }
@@ -716,7 +714,7 @@ impl BankingStage {
             transaction_recorder,
             QosService::new(0),
             log_messages_bytes_limit,
-            bundle_account_locker.clone(),
+            bundle_account_locker,
         );
         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 
