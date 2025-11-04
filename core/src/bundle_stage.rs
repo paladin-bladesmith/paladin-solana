@@ -9,6 +9,7 @@ use {
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
+            bundle_packet_deserializer::ReceiveBundleResults,
             bundle_packet_receiver::BundleReceiver,
             bundle_stage_leader_metrics::BundleStageLeaderMetrics, bundle_storage::BundleStorage,
             committer::Committer,
@@ -44,6 +45,8 @@ mod bundle_packet_receiver;
 pub(crate) mod bundle_stage_leader_metrics;
 mod bundle_storage;
 mod committer;
+mod front_run_identifier;
+
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
@@ -305,6 +308,9 @@ impl BundleStage {
         let mut bundle_stage_metrics = BundleStageLoopMetrics::new(id);
         let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(id);
 
+        let mut batch_bundle_results = ReceiveBundleResults::default();
+        let mut batch_bundle_timer: Option<Instant> = None;
+
         while !exit.load(Ordering::Relaxed) {
             if bundle_storage.unprocessed_bundles_len() > 0
                 || last_metrics_update.elapsed() >= SLOT_BOUNDARY_CHECK_PERIOD
@@ -324,6 +330,8 @@ impl BundleStage {
 
             match bundle_receiver.receive_and_buffer_bundles(
                 &mut bundle_storage,
+                &mut batch_bundle_results,
+                &mut batch_bundle_timer,
                 &mut bundle_stage_metrics,
                 &mut bundle_stage_leader_metrics,
             ) {
