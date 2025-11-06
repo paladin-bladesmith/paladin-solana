@@ -9,7 +9,10 @@ use {
     rayon::prelude::*,
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::{
-        banking_stage::{update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage},
+        banking_stage::{
+            update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage,
+            DEFAULT_BATCH_INTERVAL,
+        },
         banking_trace::{BankingTracer, Channels, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
         bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::{BlockProductionMethod, TransactionStructure},
@@ -475,6 +478,7 @@ fn main() {
         HashSet::default(),
         BundleAccountLocker::default(),
         |_| 0,
+        DEFAULT_BATCH_INTERVAL,
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.
