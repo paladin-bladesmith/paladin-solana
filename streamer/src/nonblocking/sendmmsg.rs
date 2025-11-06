@@ -202,7 +202,7 @@ mod tests {
         match batch_send(&sender, &packet_refs[..]).await {
             Ok(()) => panic!(),
             Err(SendPktsError::IoError(ioerror, num_failed)) => {
-                assert_matches!(ioerror.kind(), ErrorKind::PermissionDenied);
+                assert_matches!(ioerror.kind(), ErrorKind::HostUnreachable);
                 assert_eq!(num_failed, 2);
             }
         }
@@ -218,7 +218,7 @@ mod tests {
         match batch_send(&sender, &packet_refs[..]).await {
             Ok(()) => panic!(),
             Err(SendPktsError::IoError(ioerror, num_failed)) => {
-                assert_matches!(ioerror.kind(), ErrorKind::PermissionDenied);
+                assert_matches!(ioerror.kind(), ErrorKind::HostUnreachable);
                 assert_eq!(num_failed, 3);
             }
         }
@@ -234,7 +234,7 @@ mod tests {
         match batch_send(&sender, &packet_refs[..]).await {
             Ok(()) => panic!(),
             Err(SendPktsError::IoError(ioerror, num_failed)) => {
-                assert_matches!(ioerror.kind(), ErrorKind::PermissionDenied);
+                assert_matches!(ioerror.kind(), ErrorKind::HostUnreachable);
                 assert_eq!(num_failed, 2);
             }
         }
@@ -250,7 +250,7 @@ mod tests {
         match multi_target_send(&sender, &packets[0], &dest_refs).await {
             Ok(()) => panic!(),
             Err(SendPktsError::IoError(ioerror, num_failed)) => {
-                assert_matches!(ioerror.kind(), ErrorKind::PermissionDenied);
+                assert_matches!(ioerror.kind(), ErrorKind::HostUnreachable);
                 assert_eq!(num_failed, 2);
             }
         }
@@ -266,7 +266,7 @@ mod tests {
         match multi_target_send(&sender, &packets[0], &dest_refs).await {
             Ok(()) => panic!(),
             Err(SendPktsError::IoError(ioerror, num_failed)) => {
-                assert_matches!(ioerror.kind(), ErrorKind::PermissionDenied);
+                assert_matches!(ioerror.kind(), ErrorKind::HostUnreachable);
                 assert_eq!(num_failed, 3);
             }
         }
