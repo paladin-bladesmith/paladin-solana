@@ -1,17 +1,14 @@
 //! The `validator` module hosts all the validator microservices.
 
-pub use solana_perf::report_target_features;
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
-        banking_stage::BankingStage,
+        banking_stage::{BankingStage, DEFAULT_BATCH_INTERVAL},
         banking_trace::{self, BankingTracer, TraceError},
         cluster_info_vote_listener::VoteTracker,
         completed_data_sets_service::CompletedDataSetsService,
         consensus::{
-            reconcile_blockstore_roots_with_external_source,
-            tower_storage::{NullTowerStorage, TowerStorage},
-            ExternalRootSource, Tower,
+            ExternalRootSource, Tower, reconcile_blockstore_roots_with_external_source, tower_storage::{NullTowerStorage, TowerStorage}
         },
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
         repair::{
@@ -25,21 +22,21 @@ use {
         snapshot_packager_service::SnapshotPackagerService,
         stats_reporter_service::StatsReporterService,
         system_monitor_service::{
-            verify_net_stats_access, SystemMonitorService, SystemMonitorStatsReportConfig,
+            SystemMonitorService, SystemMonitorStatsReportConfig, verify_net_stats_access
         },
         tip_manager::TipManagerConfig,
-        tpu::{ForwardingClientOption, Tpu, TpuSockets, DEFAULT_TPU_COALESCE},
+        tpu::{DEFAULT_TPU_COALESCE, ForwardingClientOption, Tpu, TpuSockets},
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
-    anyhow::{anyhow, Context, Result},
+    anyhow::{Context, Result, anyhow},
     arc_swap::ArcSwap,
-    crossbeam_channel::{bounded, unbounded, Receiver},
+    crossbeam_channel::{Receiver, bounded, unbounded},
     quinn::Endpoint,
     solana_accounts_db::{
-        accounts_db::{AccountsDbConfig, ACCOUNTS_DB_CONFIG_FOR_TESTING},
+        accounts_db::{ACCOUNTS_DB_CONFIG_FOR_TESTING, AccountsDbConfig},
         accounts_update_notifier_interface::AccountsUpdateNotifier,
         hardened_unpack::{
-            open_genesis_config, OpenGenesisConfigError, MAX_GENESIS_ARCHIVE_UNPACKED_SIZE,
+            MAX_GENESIS_ARCHIVE_UNPACKED_SIZE, OpenGenesisConfigError, open_genesis_config
         },
         utils::move_and_async_delete_path_contents,
     },
@@ -50,7 +47,7 @@ use {
     solana_epoch_schedule::MAX_LEADER_SCHEDULE_EPOCH_OFFSET,
     solana_genesis_config::GenesisConfig,
     solana_geyser_plugin_manager::{
-        geyser_plugin_service::GeyserPluginService, GeyserPluginManagerRequest,
+        GeyserPluginManagerRequest, geyser_plugin_service::GeyserPluginService
     },
     solana_gossip::{
         cluster_info::{
@@ -68,11 +65,10 @@ use {
     solana_ledger::{
         bank_forks_utils,
         blockstore::{
-            Blockstore, BlockstoreError, PurgeType, MAX_COMPLETED_SLOTS_IN_CHANNEL,
-            MAX_REPLAY_WAKE_UP_SIGNALS,
+            Blockstore, BlockstoreError, MAX_COMPLETED_SLOTS_IN_CHANNEL, MAX_REPLAY_WAKE_UP_SIGNALS, PurgeType
         },
         blockstore_metric_report_service::BlockstoreMetricReportService,
-        blockstore_options::{BlockstoreOptions, BLOCKSTORE_DIRECTORY_ROCKS_LEVEL},
+        blockstore_options::{BLOCKSTORE_DIRECTORY_ROCKS_LEVEL, BlockstoreOptions},
         blockstore_processor::{self, TransactionStatusSender},
         entry_notifier_interface::EntryNotifierArc,
         entry_notifier_service::{EntryNotifierSender, EntryNotifierService},
@@ -119,7 +115,7 @@ use {
         snapshot_config::SnapshotConfig,
         snapshot_controller::SnapshotController,
         snapshot_hash::StartingSnapshotHashes,
-        snapshot_utils::{self, clean_orphaned_account_snapshot_dirs, SnapshotInterval},
+        snapshot_utils::{self, SnapshotInterval, clean_orphaned_account_snapshot_dirs},
     },
     solana_runtime_plugin::{
         runtime_plugin_admin_rpc_service::RuntimePluginManagerRpcRequest,
@@ -136,23 +132,22 @@ use {
     solana_turbine::{
         self,
         broadcast_stage::BroadcastStageType,
-        xdp::{master_ip_if_bonded, XdpConfig, XdpRetransmitter},
+        xdp::{XdpConfig, XdpRetransmitter, master_ip_if_bonded},
     },
     solana_unified_scheduler_pool::DefaultSchedulerPool,
     solana_validator_exit::Exit,
     solana_vote_program::vote_state,
-    solana_wen_restart::wen_restart::{wait_for_wen_restart, WenRestartConfig},
+    solana_wen_restart::wen_restart::{WenRestartConfig, wait_for_wen_restart},
     std::{
         borrow::Cow,
         collections::{HashMap, HashSet},
-        net::{IpAddr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         num::NonZeroUsize,
         path::{Path, PathBuf},
         sync::{
-            atomic::{AtomicBool, AtomicU64, Ordering},
-            Arc, Mutex, RwLock,
+            Arc, Mutex, RwLock, atomic::{AtomicBool, AtomicU64, Ordering}
         },
-        thread::{sleep, Builder, JoinHandle},
+        thread::{Builder, JoinHandle, sleep},
         time::{Duration, Instant},
     },
     strum::VariantNames,
@@ -311,10 +306,14 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub secondary_block_engine_urls: Arc<Mutex<Vec<String>>>,
     pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
+    pub batch_interval: Duration,
+    pub p3_socket: SocketAddr,
+    pub p3_mev_socket: SocketAddr,
 }
 
 impl ValidatorConfig {
@@ -398,10 +397,14 @@ impl ValidatorConfig {
             repair_handler_type: RepairHandlerType::default(),
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            secondary_block_engine_urls: Arc::new(Mutex::new(vec![])),
             shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: 0,
+            batch_interval: DEFAULT_BATCH_INTERVAL,
+            p3_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4819)),
+            p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4820)),
         }
     }
 
@@ -1700,10 +1703,14 @@ impl Validator {
             config.generator_config.clone(),
             key_notifiers.clone(),
             config.block_engine_config.clone(),
+            config.secondary_block_engine_urls.clone(),
             config.relayer_config.clone(),
+            leader_schedule_cache.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
             config.preallocated_bundle_cost,
+            config.batch_interval,
+            (config.p3_socket, config.p3_mev_socket),
         );
 
         datapoint_info!(
@@ -1739,6 +1746,7 @@ impl Validator {
             cluster_slots,
             node: Some(Arc::new(node_multihoming)),
             block_engine_config: config.block_engine_config.clone(),
+            secondary_block_engine_urls: config.secondary_block_engine_urls.clone(),
             relayer_config: config.relayer_config.clone(),
             shred_receiver_address: config.shred_receiver_address.clone(),
             shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),

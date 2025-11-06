@@ -14,7 +14,7 @@ use {
             },
             transaction_state_container::StateContainer,
         },
-        TOTAL_BUFFERED_PACKETS,
+        DEFAULT_BATCH_INTERVAL, TOTAL_BUFFERED_PACKETS,
     },
     solana_genesis_config::GenesisConfig,
     solana_hash::Hash,
@@ -145,11 +145,7 @@ impl ReceiveAndBufferCreator for TransactionViewReceiveAndBuffer {
         receiver: Receiver<Arc<Vec<PacketBatch>>>,
         bank_forks: Arc<RwLock<BankForks>>,
     ) -> Self {
-        TransactionViewReceiveAndBuffer {
-            receiver,
-            bank_forks,
-            blacklisted_accounts: HashSet::default(),
-        }
+        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, HashSet::default())
     }
 }
 
@@ -162,6 +158,7 @@ impl ReceiveAndBufferCreator for SanitizedTransactionReceiveAndBuffer {
             PacketDeserializer::new(receiver),
             bank_forks,
             HashSet::default(),
+            DEFAULT_BATCH_INTERVAL,
         )
     }
 }
