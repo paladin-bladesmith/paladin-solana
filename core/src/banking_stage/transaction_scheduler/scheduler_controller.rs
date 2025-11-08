@@ -7,16 +7,13 @@ use {
         scheduler::{PreLockFilterAction, Scheduler},
         scheduler_error::SchedulerError, scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
         unified_state_container::StateContainer,
-        unified_scheduling_unit::UnifiedSchedulingUnit,
         receive_and_buffer::ReceivingStats,
     },
     crate::banking_stage::{
         TOTAL_BUFFERED_PACKETS, consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
-        scheduler_messages::{FinishedBundleConsumeWork}
     },
-    crossbeam_channel::{Receiver, TryRecvError},
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
@@ -56,8 +53,6 @@ where
     worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
     /// Detailed scheduling metrics.
     scheduling_details: SchedulingDetails,
-    /// Receiver for finished bundle work from bundle worker.
-    finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
 }
 
 impl<R, S> SchedulerController<R, S>
@@ -72,7 +67,6 @@ where
         bank_forks: Arc<RwLock<BankForks>>,
         scheduler: S,
         worker_metrics: Vec<Arc<ConsumeWorkerMetrics>>,
-        finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
     ) -> Self {
         Self {
             exit,
@@ -85,7 +79,6 @@ where
             timing_metrics: SchedulerTimingMetrics::default(),
             worker_metrics,
             scheduling_details: SchedulingDetails::default(),
-            finished_bundle_work_receiver,
         }
     }
 
@@ -113,8 +106,8 @@ where
                 .maybe_report_and_reset_slot(new_leader_slot);
 
             self.receive_completed()?;
-            self.receive_completed_bundles()?;
             self.process_transactions(&decision)?;
+            self.receive_completed_bundles()?;
             self.receive_and_buffer
                 .maybe_queue_batch(&mut self.container, &decision);
             if self.receive_and_buffer_packets(&decision).is_err() {
@@ -126,6 +119,11 @@ where
             let _ = self
                 .receive_and_buffer
                 .receive_and_buffer_bundles(&mut self.container, &decision);
+            // Flush any deferred retryable bundles that were collected from the
+            // bundle worker earlier in the loop. We push them into the container
+            // only after we've processed and buffered transactions for this
+            // pass to avoid immediate re-selection and hot retry loops.
+            let _ = self.scheduler.flush_deferred_bundles(&mut self.container);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
@@ -321,29 +319,8 @@ where
     /// Receives completed bundles from the bundle worker.
     /// If retryable, puts bundle back in container. Otherwise removes it.
     fn receive_completed_bundles(&mut self) -> Result<(), SchedulerError> {
-        loop {
-            match self.finished_bundle_work_receiver.try_recv() {
-                Ok(FinishedBundleConsumeWork { work, retryable }) => {
-                    let bundle_id = work.bundle_id;
-                    
-                    if retryable {
-                        // Put the bundle back in the container for retry
-                        if let Some(bundle_state) = self.container.get_mut_bundle_state(bundle_id) {
-                            bundle_state.retry_bundle(work.bundle);
-                        }
-                    } else {
-                        // Remove the bundle from the container
-                        self.container.remove_by_id(UnifiedSchedulingUnit::Bundle(bundle_id));
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    return Err(SchedulerError::DisconnectedRecvChannel(
-                        "finished bundle work",
-                    ));
-                }
-            }
-        }
+        let ((_num_bundles, _num_retryable), _receive_bundle_time_us) =
+            measure_us!(self.scheduler.receive_bundles(&mut self.container)?);
         Ok(())
     }
 
@@ -535,6 +512,7 @@ mod tests {
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
+        let (_, finished_bundle_work_receiver) = unbounded();
 
         let test_frame = TestFrame {
             bank,
@@ -548,10 +526,10 @@ mod tests {
         let scheduler = PrioGraphScheduler::new(
             consume_work_senders,
             finished_consume_work_receiver,
+            finished_bundle_work_receiver,
             PrioGraphSchedulerConfig::default(),
             None,
         );
-        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
             exit,
@@ -560,7 +538,6 @@ mod tests {
             bank_forks,
             scheduler,
             vec![], // no actual workers with metrics to report, this can be empty
-            finished_bundle_work_receiver,
         );
 
         (test_frame, scheduler_controller)

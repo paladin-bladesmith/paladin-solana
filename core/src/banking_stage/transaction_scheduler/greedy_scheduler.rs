@@ -17,9 +17,9 @@ use {
     crate::banking_stage::{
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork},
+        scheduler_messages::{BundleConsumeWork, ConsumeWork, FinishedConsumeWork, FinishedBundleConsumeWork},
     },
-    crossbeam_channel::{Receiver, Sender},
+    crossbeam_channel::{Sender, Receiver},
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     std::num::Saturating,
@@ -58,6 +58,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
     pub(crate) fn new(
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
+        finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
         config: GreedySchedulerConfig,
         bundle_work_sender: Option<Sender<BundleConsumeWork>>,
     ) -> Self {
@@ -67,6 +68,7 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
             common: SchedulingCommon::new(
                 consume_work_senders,
                 finished_consume_work_receiver,
+                finished_bundle_work_receiver,
                 config.target_transactions_per_batch,
             ),
             config,
@@ -138,11 +140,25 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     // Fetch the bundle from the container
                     if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
                         let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
-                        let _ = self.bundle_work_sender.as_ref().unwrap().send(BundleConsumeWork {
+
+                        // If this bundle conflicts with the current working txs, flush tx batches
+                        if bundle.transactions.iter().any(|tx| !self.working_account_set.check_locks(tx.message())) {
+                            self.working_account_set.clear();
+                            num_sent += self.common.send_batches()?;
+                        }
+
+                        // Reserve bundle accounts in thread-aware locks so scheduler won't leapfrog
+                        self.common.account_locks.reserve_bundle_in_flight(&bundle);
+                        let work = BundleConsumeWork {
                             bundle_id,
                             bundle,
                             _max_age: max_age,
-                        });
+                        };
+                        if let Some(sender) = &self.bundle_work_sender {
+                            sender
+                                .send(work)
+                                .map_err(|_| SchedulerError::DisconnectedSendChannel("bundle_work_sender"))?;
+                        }
                     } else {
                         panic!("bundle state must exist");
                     }
@@ -336,8 +352,9 @@ mod test {
         let (consume_work_senders, consume_work_receivers) =
             (0..num_threads).map(|_| unbounded()).unzip();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
+        let (_, finished_bundle_work_receiver) = unbounded();
         let scheduler =
-            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, config, None);
+            GreedyScheduler::new(consume_work_senders, finished_consume_work_receiver, finished_bundle_work_receiver, config, None);
         (
             scheduler,
             consume_work_receivers,

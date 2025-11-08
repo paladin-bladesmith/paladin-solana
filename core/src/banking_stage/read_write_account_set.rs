@@ -59,7 +59,7 @@ impl ReadWriteAccountSet {
 
     /// Add an account to the read-set.
     /// Returns true if the lock was available.
-    fn add_read(&mut self, pubkey: &Pubkey) -> bool {
+    pub fn add_read(&mut self, pubkey: &Pubkey) -> bool {
         let can_read = self.can_read(pubkey);
         self.read_set.insert(*pubkey);
 

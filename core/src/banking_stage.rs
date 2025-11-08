@@ -640,7 +640,6 @@ impl BankingStage {
         macro_rules! spawn_scheduler {
             ($scheduler:ident) => {
                 let exit = exit.clone();
-                let finished_bundle_work_receiver_clone = finished_bundle_work_receiver.clone();
                 thread_hdls.push(
                     Builder::new()
                         .name("solBnkTxSched".to_string())
@@ -652,7 +651,6 @@ impl BankingStage {
                                 context.bank_forks.clone(),
                                 $scheduler,
                                 worker_metrics,
-                                finished_bundle_work_receiver_clone,
                             );
 
                             match scheduler_controller.run() {
@@ -673,6 +671,7 @@ impl BankingStage {
             let scheduler = GreedyScheduler::new(
                 work_senders,
                 finished_work_receiver,
+                finished_bundle_work_receiver.clone(),
                 GreedySchedulerConfig::default(),
                 Some(bundle_work_sender),
             );
@@ -681,6 +680,7 @@ impl BankingStage {
             let scheduler = PrioGraphScheduler::new(
                 work_senders,
                 finished_work_receiver,
+                finished_bundle_work_receiver,
                 PrioGraphSchedulerConfig::default(),
                 Some(bundle_work_sender),
             );

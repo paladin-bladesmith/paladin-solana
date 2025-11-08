@@ -17,7 +17,7 @@ use {
     crate::banking_stage::{
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork},
+        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork, FinishedBundleConsumeWork},
     },
     crossbeam_channel::{Receiver, Sender},
     prio_graph::{AccessKind, GraphNode, PrioGraph},
@@ -76,6 +76,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
     pub(crate) fn new(
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
+        finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
         config: PrioGraphSchedulerConfig,
         bundle_work_sender: Option<Sender<BundleConsumeWork>>,
     ) -> Self {
@@ -83,6 +84,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
             common: SchedulingCommon::new(
                 consume_work_senders,
                 finished_consume_work_receiver,
+                finished_bundle_work_receiver,
                 config.target_transactions_per_batch,
             ),
             prio_graph: PrioGraph::new(passthrough_priority),
@@ -487,9 +489,11 @@ mod tests {
         let (consume_work_senders, consume_work_receivers) =
             (0..num_threads).map(|_| unbounded()).unzip();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
+        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
         let scheduler = PrioGraphScheduler::new(
             consume_work_senders,
             finished_consume_work_receiver,
+            finished_bundle_work_receiver,
             PrioGraphSchedulerConfig::default(),
             None, // No bundle worker in tests
         );
