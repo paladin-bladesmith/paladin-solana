@@ -458,6 +458,7 @@ impl BankingStage {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn new_central_scheduler(
         transaction_struct: TransactionStructure,
         use_greedy_scheduler: bool,
@@ -533,6 +534,7 @@ impl BankingStage {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn spawn_scheduler_and_workers<R: ReceiveAndBuffer + Send + Sync + 'static>(
         receive_and_buffer: R,
@@ -710,7 +712,7 @@ impl BankingStage {
             transaction_recorder,
             QosService::new(0),
             log_messages_bytes_limit,
-            bundle_account_locker,
+            bundle_account_locker.clone(),
         );
         let decision_maker = DecisionMaker::from(poh_recorder.read().unwrap().deref());
 

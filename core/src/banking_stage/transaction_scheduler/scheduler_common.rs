@@ -317,7 +317,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                             // same scheduling pass. We'll flush these at the end of
                             // the scheduling loop.
                             let priority_id = UnifiedPriorityId::new(
-                                bundle_state.priority,
+                                bundle_state.priority(),
                                 UnifiedSchedulingUnit::Bundle(bundle_id),
                             );
                             self.deferred_bundle_priority_ids.push(priority_id);

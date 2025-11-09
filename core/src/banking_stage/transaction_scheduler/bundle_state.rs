@@ -51,6 +51,10 @@ impl BundleState {
         (bundle, self.max_age)
     }
 
+    pub(crate) fn priority(&self) -> u64 {
+        self.priority
+    }
+
     // When the bundle is retried or cost buffered
     /// Intended to be called when a bundle is retried. This method will
     /// put the bundle back into the state.

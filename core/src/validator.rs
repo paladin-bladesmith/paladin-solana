@@ -31,6 +31,7 @@ use {
         tvu::{Tvu, TvuConfig, TvuSockets},
     },
     anyhow::{anyhow, Context, Result},
+    arc_swap::ArcSwap,
     crossbeam_channel::{bounded, unbounded, Receiver},
     quinn::Endpoint,
     solana_accounts_db::{
@@ -310,8 +311,8 @@ pub struct ValidatorConfig {
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
     pub secondary_block_engine_urls: Arc<Mutex<Vec<String>>>,
-    pub shred_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
-    pub shred_retransmit_receiver_address: Arc<RwLock<Option<SocketAddr>>>,
+    pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+    pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
     pub preallocated_bundle_cost: u64,
     pub batch_interval: Duration,
@@ -401,8 +402,8 @@ impl ValidatorConfig {
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
             secondary_block_engine_urls: Arc::new(Mutex::new(vec![])),
-            shred_receiver_address: Arc::new(RwLock::new(None)),
-            shred_retransmit_receiver_address: Arc::new(RwLock::new(None)),
+            shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
+            shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
             preallocated_bundle_cost: 0,
             batch_interval: DEFAULT_BATCH_INTERVAL,
@@ -610,6 +611,12 @@ impl Validator {
             Receiver<RuntimePluginManagerRpcRequest>,
         )>,
     ) -> Result<Self> {
+        #[cfg(debug_assertions)]
+        const DEBUG_ASSERTION_STATUS: &str = "enabled";
+        #[cfg(not(debug_assertions))]
+        const DEBUG_ASSERTION_STATUS: &str = "disabled";
+        info!("debug-assertion status: {DEBUG_ASSERTION_STATUS}");
+
         let ValidatorTpuConfig {
             use_quic,
             vote_use_quic,

@@ -9,8 +9,11 @@ use {
     rayon::prelude::*,
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::{
-        banking_stage::{BankingStage, DEFAULT_BATCH_INTERVAL, update_bank_forks_and_poh_recorder_for_new_tpu_bank},
-        banking_trace::{BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BankingTracer, Channels},
+        banking_stage::{
+            update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage,
+            DEFAULT_BATCH_INTERVAL,
+        },
+        banking_trace::{BankingTracer, Channels, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
         bundle_stage::bundle_account_locker::BundleAccountLocker,
         validator::{BlockProductionMethod, TransactionStructure},
     },

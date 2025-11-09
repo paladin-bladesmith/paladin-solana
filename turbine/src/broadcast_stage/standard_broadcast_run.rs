@@ -181,7 +181,8 @@ impl StandardBroadcastRun {
             BroadcastSocket::Udp(sock),
             bank_forks,
             quic_endpoint_sender,
-            &Arc::new(RwLock::new(None)),
+            &ArcSwap::default(),
+            &ArcSwap::default(),
         );
         let _ = self.record(&brecv, blockstore);
         Ok(())
@@ -383,10 +384,14 @@ impl StandardBroadcastRun {
         broadcast_shred_batch_info: Option<BroadcastShredBatchInfo>,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
+        shredstream_receiver_address: &Option<SocketAddr>,
         shred_receiver_addr: &Option<SocketAddr>,
     ) -> Result<()> {
         trace!("Broadcasting {:?} shreds", shreds.len());
-        let mut transmit_stats = TransmitShredsStats::default();
+        let mut transmit_stats = TransmitShredsStats {
+            is_xdp: matches!(sock, BroadcastSocket::Xdp(_)),
+            ..Default::default()
+        };
         // Broadcast the shreds
         let mut transmit_time = Measure::start("broadcast_shreds");
 
@@ -402,6 +407,7 @@ impl StandardBroadcastRun {
             bank_forks,
             cluster_info.socket_addr_space(),
             quic_endpoint_sender,
+            shredstream_receiver_address,
             shred_receiver_addr,
         )?;
         transmit_time.stop();
@@ -475,7 +481,8 @@ impl BroadcastRun for StandardBroadcastRun {
         sock: BroadcastSocket,
         bank_forks: &RwLock<BankForks>,
         quic_endpoint_sender: &AsyncSender<(SocketAddr, Bytes)>,
-        shred_receiver_address: &Arc<RwLock<Option<SocketAddr>>>,
+        shredstream_receiver_address: &ArcSwap<Option<SocketAddr>>,
+        shred_receiver_address: &ArcSwap<Option<SocketAddr>>,
     ) -> Result<()> {
         let (shreds, batch_info) = receiver.recv()?;
         self.broadcast(
@@ -485,7 +492,8 @@ impl BroadcastRun for StandardBroadcastRun {
             batch_info,
             bank_forks,
             quic_endpoint_sender,
-            &shred_receiver_address.read().unwrap(),
+            &shredstream_receiver_address.load(),
+            &shred_receiver_address.load(),
         )
     }
     fn record(&mut self, receiver: &RecordReceiver, blockstore: &Blockstore) -> Result<()> {

@@ -144,7 +144,7 @@ pub struct TestValidatorGenesis {
     admin_rpc_service_post_init: Arc<RwLock<Option<AdminRpcRequestMetadataPostInit>>>,
     pub block_engine_url: String,
     pub relayer_url: String,
-    pub secondary_block_engine_urls: Vec<String> 
+    pub secondary_block_engine_urls: Vec<String>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -183,7 +183,7 @@ impl Default for TestValidatorGenesis {
                 Arc::<RwLock<Option<AdminRpcRequestMetadataPostInit>>>::default(),
             block_engine_url: String::default(),
             relayer_url: String::default(),
-            secondary_block_engine_urls: vec![]
+            secondary_block_engine_urls: vec![],
         }
     }
 }
@@ -1150,6 +1150,7 @@ impl TestValidator {
             runtime_config,
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig {
                 block_engine_url: config.block_engine_url.clone(),
+                disable_block_engine_autoconfig: true,
                 trust_packets: false,
             })),
             relayer_config: Arc::new(Mutex::new(RelayerConfig {
@@ -1157,7 +1158,9 @@ impl TestValidator {
                 expected_heartbeat_interval: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL,
                 oldest_allowed_heartbeat: DEFAULT_RELAYER_EXPECTED_HEARTBEAT_INTERVAL * 3,
             })),
-            secondary_block_engine_urls: Arc::new(Mutex::new(config.secondary_block_engine_urls.clone())),
+            secondary_block_engine_urls: Arc::new(Mutex::new(
+                config.secondary_block_engine_urls.clone(),
+            )),
             ..ValidatorConfig::default_for_test()
         };
         if let Some(ref tower_storage) = config.tower_storage {

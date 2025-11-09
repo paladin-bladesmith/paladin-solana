@@ -1,5 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use solana_message::compiled_instruction::CompiledInstruction;
 use solana_perf::packet::PacketBatch;
 
 use {
@@ -37,7 +38,7 @@ use {
     solana_cost_model::cost_model::CostModel,
     solana_fee_structure::FeeBudgetLimits,
     solana_measure::measure_us,
-    solana_message::compiled_instruction::CompiledInstruction,
+    solana_message::v0::MessageAddressTableLookup,
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::{
@@ -46,7 +47,10 @@ use {
     },
     solana_svm::transaction_error_metrics::TransactionErrorMetrics,
     solana_svm_transaction::svm_message::SVMMessage,
-    solana_transaction::sanitized::{MessageHash, SanitizedTransaction},
+    solana_transaction::{
+        sanitized::{MessageHash, SanitizedTransaction},
+        versioned::sanitized::SanitizedVersionedTransaction,
+    },
     solana_transaction_error::TransactionError,
     std::{
         collections::HashSet,
@@ -198,9 +202,6 @@ impl ReceiveAndBuffer for SanitizedTransactionReceiveAndBuffer {
                     Ok(ReceivingStats {
                         num_received,
                         num_dropped_without_parsing: 0,
-                        // Count only the initial parsing/sanitization drops once to avoid
-                        // double-counting (deserializer already accounts for failed
-                        // sanitization when filtering into deserialized_packets).
                         num_dropped_on_parsing_and_sanitization: num_dropped_on_initial_parsing,
                         num_dropped_on_lock_validation: 0,
                         num_dropped_on_compute_budget: 0,
@@ -432,6 +433,10 @@ impl SanitizedTransactionReceiveAndBuffer {
         let mut error_counts = TransactionErrorMetrics::default();
         for chunk in packets.chunks(CHUNK_SIZE) {
             for packet in chunk {
+                if total_num_locks(packet.transaction()) > transaction_account_lock_limit {
+                    num_dropped_on_lock_validation += 1;
+                    continue;
+                }
                 let Some((tx, deactivation_slot)) = packet.build_sanitized_transaction(
                     vote_only,
                     root_bank.as_ref(),
@@ -768,6 +773,24 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         
         stats
     }
+}
+
+/// Returns the total number of locks required by the transaction.
+fn total_num_locks(tx: &SanitizedVersionedTransaction) -> usize {
+    let extract_table_key_len = |table: &MessageAddressTableLookup| {
+        table
+            .writable_indexes
+            .len()
+            .wrapping_add(table.readonly_indexes.len())
+    };
+
+    let message = &tx.get_message().message;
+    message.static_account_keys().len().wrapping_add(
+        message
+            .address_table_lookups()
+            .map(|l| l.iter().map(extract_table_key_len).sum())
+            .unwrap_or(0),
+    )
 }
 
 enum PacketHandlingError {
@@ -1116,7 +1139,6 @@ impl TransactionViewReceiveAndBuffer {
         check_and_push_to_queue(container, &mut transaction_priority_ids);
 
         BufferStats {
-            // Match transaction_scheduler semantics: do not populate num_received here.
             num_received: 0,
             num_dropped_without_parsing,
             num_dropped_on_sanitization: num_dropped_on_parsing_and_sanitization,
@@ -1160,6 +1182,10 @@ impl TransactionViewReceiveAndBuffer {
         // Discard non-vote packets if in vote-only mode.
         if root_bank.vote_only_bank() && !view.is_simple_vote_transaction() {
             return Err(PacketHandlingError::Sanitization);
+        }
+
+        if usize::from(view.total_num_accounts()) > transaction_account_lock_limit {
+            return Err(PacketHandlingError::LockValidation);
         }
 
         // Load addresses for transaction.
@@ -1356,6 +1382,7 @@ mod tests {
         crate::banking_stage::tests::create_slow_genesis_config,
         crossbeam_channel::{unbounded, Receiver},
         solana_hash::Hash,
+        solana_instruction::{AccountMeta, Instruction},
         solana_keypair::Keypair,
         solana_ledger::genesis_utils::GenesisConfigInfo,
         solana_message::{v0, AddressLookupTableAccount, VersionedMessage},
@@ -1591,6 +1618,9 @@ mod tests {
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
             num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
             ..
         } = receive_and_buffer
             .receive_and_buffer_packets(
@@ -1653,12 +1683,15 @@ mod tests {
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
             num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
             ..
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
-        // SDK path: should_receive = 0, VIEW path: should_receive = 1
         assert_eq!(num_received, should_receive);
+
         assert_eq!(num_dropped_without_parsing, should_drop_without_parsing);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
@@ -1669,8 +1702,7 @@ mod tests {
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
 
-        // maybe_queue should do nothing for discarded packet
-        let _ = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
         verify_container(&mut container, 0);
     }
 
@@ -1724,6 +1756,8 @@ mod tests {
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
         let BufferStats {
             num_received,
             num_buffered,
@@ -1758,12 +1792,37 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, .. } = receive_and_buffer
+        let ReceivingStats {
+            num_received,
+            num_dropped_without_parsing,
+            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_lock_validation,
+            num_dropped_on_compute_budget,
+            num_dropped_on_age,
+            num_dropped_on_already_processed,
+            num_dropped_on_fee_payer,
+            num_dropped_on_capacity,
+            num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
+        } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
 
         assert_eq!(num_received, 1);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_compute_budget, 0);
+        assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_already_processed, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
+        assert_eq!(num_dropped_on_capacity, 0);
+        assert_eq!(num_buffered, 0);
 
+        // We need to queue the batch
         let BufferStats {
             num_received,
             num_buffered,
@@ -1801,11 +1860,37 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, .. } = receive_and_buffer
+        let ReceivingStats {
+            num_received,
+            num_dropped_without_parsing,
+            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_lock_validation,
+            num_dropped_on_compute_budget,
+            num_dropped_on_age,
+            num_dropped_on_already_processed,
+            num_dropped_on_fee_payer,
+            num_dropped_on_capacity,
+            num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
+        } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
 
         assert_eq!(num_received, 1);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_compute_budget, 0);
+        assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_already_processed, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
+        assert_eq!(num_dropped_on_capacity, 0);
+        assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
         let BufferStats {
             num_received,
             num_buffered,
@@ -1858,21 +1943,52 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, .. } = receive_and_buffer
+        let ReceivingStats {
+            num_received,
+            num_dropped_without_parsing,
+            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_lock_validation,
+            num_dropped_on_compute_budget,
+            num_dropped_on_age,
+            num_dropped_on_already_processed,
+            num_dropped_on_fee_payer,
+            num_dropped_on_capacity,
+            num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
+        } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
         assert_eq!(num_received, 1);
 
-        let BufferStats {
-            num_received,
-            num_buffered,
-            num_dropped_on_sanitization,
-            ..
-        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
-        assert_eq!(num_received, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_compute_budget, 0);
+        assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_already_processed, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
+        assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
         assert_eq!(num_dropped_on_sanitization, 1);
 
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_without_parsing,
+            num_dropped_on_sanitization,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_sanitization, 1);
+
+        // Nothing should be included in the container
         verify_container(&mut container, 0);
     }
 
@@ -1898,11 +2014,36 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, .. } = receive_and_buffer
+        let ReceivingStats {
+            num_received,
+            num_dropped_without_parsing,
+            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_lock_validation,
+            num_dropped_on_compute_budget,
+            num_dropped_on_age,
+            num_dropped_on_already_processed,
+            num_dropped_on_fee_payer,
+            num_dropped_on_capacity,
+            num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
+        } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
 
         assert_eq!(num_received, 1);
+
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_compute_budget, 0);
+        assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_already_processed, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
+        assert_eq!(num_dropped_on_capacity, 0);
+        assert_eq!(num_buffered, 0);
 
         // We need to queue the batch
         receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
@@ -1937,19 +2078,202 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&transactions, 17));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, .. } = receive_and_buffer
+        let ReceivingStats {
+            num_received,
+            num_dropped_without_parsing,
+            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_lock_validation,
+            num_dropped_on_compute_budget,
+            num_dropped_on_age,
+            num_dropped_on_already_processed,
+            num_dropped_on_fee_payer,
+            num_dropped_on_capacity,
+            num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
+        } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
 
         assert_eq!(num_received, num_transactions);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_compute_budget, 0);
+        assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_already_processed, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
+        assert!(num_dropped_on_capacity == 0);
+        assert_eq!(num_buffered, 0);
 
         // We need to queue the batch
         let BufferStats {
-            num_dropped_on_capacity, ..
+            num_received,
+            num_buffered,
+            num_dropped_on_capacity,
+            ..
         } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
 
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, num_transactions);
         assert!(num_dropped_on_capacity > 0);
+
+        // assert_eq!(num_buffered, num_transactions);
         verify_container(&mut container, TEST_CONTAINER_CAPACITY);
+    }
+
+    #[test_case(setup_sanitized_transaction_receive_and_buffer; "testcase-sdk")]
+    #[test_case(setup_transaction_view_receive_and_buffer; "testcase-view")]
+    fn test_receive_and_buffer_too_many_keys<R: ReceiveAndBuffer>(
+        setup_receive_and_buffer: impl FnOnce(
+            Receiver<BankingPacketBatch>,
+            Arc<RwLock<BankForks>>,
+            HashSet<Pubkey>,
+        ) -> (R, R::Container),
+    ) {
+        fn create_tx_with_n_keys(payer: &Keypair, n: usize) -> VersionedTransaction {
+            let alt_keys = (0..n - 2).map(|_| Pubkey::new_unique()).collect::<Vec<_>>();
+            VersionedTransaction::try_new(
+                VersionedMessage::V0(
+                    v0::Message::try_compile(
+                        &payer.pubkey(),
+                        &[Instruction::new_with_bytes(
+                            Pubkey::new_unique(),
+                            &[],
+                            alt_keys
+                                .iter()
+                                .map(|k| AccountMeta::new(*k, false))
+                                .collect::<Vec<_>>(),
+                        )],
+                        &[AddressLookupTableAccount {
+                            key: Pubkey::new_unique(),
+                            addresses: alt_keys,
+                        }],
+                        Hash::new_unique(),
+                    )
+                    .unwrap(),
+                ),
+                &[payer],
+            )
+            .unwrap()
+        }
+
+        let (sender, receiver) = unbounded();
+        let (bank_forks, mint_keypair) = test_bank_forks();
+        let (mut receive_and_buffer, mut container) =
+            setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
+
+        let transaction_account_lock_limit = bank_forks
+            .read()
+            .unwrap()
+            .root_bank()
+            .get_transaction_account_lock_limit();
+
+        // ALTs do not actually exist in the bank for this transaction - sanitization would cause failure if
+        // lock validation was not done first.
+        let bad_tx = create_tx_with_n_keys(&mint_keypair, transaction_account_lock_limit + 1);
+        let transactions = [bad_tx];
+
+        let packet_batches = Arc::new(to_packet_batches(&transactions, 17));
+        sender.send(packet_batches).unwrap();
+
+        let ReceivingStats {
+            num_received,
+            num_dropped_without_parsing,
+            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_lock_validation,
+            num_dropped_on_compute_budget,
+            num_dropped_on_age,
+            num_dropped_on_already_processed,
+            num_dropped_on_fee_payer,
+            num_dropped_on_capacity,
+            num_buffered,
+            receive_time_us: _,
+            buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
+            ..
+        } = receive_and_buffer
+            .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+            .unwrap();
+
+        assert_eq!(num_received, 1);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_compute_budget, 0);
+        assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_already_processed, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
+        assert_eq!(num_dropped_on_capacity, 0);
+        assert_eq!(num_buffered, 0);
+
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_lock_validation,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_lock_validation, 1);
+
+        verify_container(&mut container, 0);
+    }
+
+    #[test]
+    fn test_total_num_locks() {
+        let transaction = transfer(
+            &Keypair::new(),
+            &Pubkey::new_unique(),
+            1,
+            Hash::new_unique(),
+        );
+        let total_locks = transaction.message.account_keys.len();
+        let svt = SanitizedVersionedTransaction::try_new(VersionedTransaction::from(transaction))
+            .unwrap();
+        assert_eq!(total_num_locks(&svt), total_locks);
+
+        // with ALTs
+        let fee_payer = Keypair::new();
+        let pk1 = Pubkey::new_unique();
+        let pk2 = Pubkey::new_unique();
+        let pk3 = Pubkey::new_unique();
+        let transaction = VersionedTransaction::try_new(
+            VersionedMessage::V0(
+                v0::Message::try_compile(
+                    &fee_payer.pubkey(),
+                    &[Instruction::new_with_bytes(
+                        Pubkey::new_unique(),
+                        &[],
+                        vec![
+                            AccountMeta::new(pk1, false),
+                            AccountMeta::new(pk2, false),
+                            AccountMeta::new_readonly(pk3, false),
+                        ],
+                    )],
+                    &[
+                        AddressLookupTableAccount {
+                            key: Pubkey::new_unique(),
+                            addresses: vec![pk1],
+                        },
+                        AddressLookupTableAccount {
+                            key: Pubkey::new_unique(),
+                            addresses: vec![pk2, pk3],
+                        },
+                    ],
+                    Hash::new_unique(),
+                )
+                .unwrap(),
+            ),
+            &[&fee_payer],
+        )
+        .unwrap();
+        let total_locks = 5; // fee-payer, program, pk1, pk2, pk3
+        let svt = SanitizedVersionedTransaction::try_new(transaction).unwrap();
+        assert_eq!(total_num_locks(&svt), total_locks);
     }
 
     #[test_case(setup_sanitized_transaction_receive_and_buffer; "testcase-sdk")]
@@ -1984,20 +2308,32 @@ mod tests {
             bank_forks.read().unwrap().root_bank().last_blockhash(),
         );
         let packet_batches = Arc::new(to_packet_batches(&[ok_tx, blacklisted_tx], 2));
+
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, .. } = receive_and_buffer
+        let ReceivingStats {
+            num_received,
+            num_dropped_on_blacklisted_account,
+            ..
+        } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
 
         assert_eq!(num_received, 2);
+        assert_eq!(num_dropped_on_blacklisted_account, 0);
 
         // We need to queue the batch
         let BufferStats {
-            num_dropped_on_blacklisted_account, num_buffered, ..
+            num_received,
+            num_buffered,
+            num_dropped_on_blacklisted_account,
+            ..
         } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
         assert_eq!(num_buffered, 1);
         assert_eq!(num_dropped_on_blacklisted_account, 1);
+
         verify_container(&mut container, 1);
     }
 
@@ -2024,8 +2360,7 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, ..
-        } = receive_and_buffer
+        let ReceivingStats { num_received, .. } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
         assert_eq!(num_received, 1);
@@ -2041,8 +2376,7 @@ mod tests {
         let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
         sender.send(packet_batches).unwrap();
 
-        let ReceivingStats { num_received, ..
-        } = receive_and_buffer
+        let ReceivingStats { num_received, .. } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
         assert_eq!(num_received, 1);
