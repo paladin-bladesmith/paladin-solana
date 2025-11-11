@@ -5,17 +5,14 @@ use {
     super::{
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
         scheduler::{PreLockFilterAction, Scheduler},
-        scheduler_error::SchedulerError,
-        scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        scheduler_error::SchedulerError, scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        unified_state_container::StateContainer,
+        receive_and_buffer::ReceivingStats,
     },
     crate::banking_stage::{
-        consume_worker::ConsumeWorkerMetrics,
+        TOTAL_BUFFERED_PACKETS, consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
-        transaction_scheduler::{
-            receive_and_buffer::ReceivingStats, transaction_state_container::StateContainer,
-        },
-        TOTAL_BUFFERED_PACKETS,
     },
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
@@ -24,8 +21,7 @@ use {
     std::{
         num::Saturating,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, RwLock, atomic::{AtomicBool, Ordering}
         },
     },
 };
@@ -111,11 +107,23 @@ where
 
             self.receive_completed()?;
             self.process_transactions(&decision)?;
+            self.receive_completed_bundles()?;
             self.receive_and_buffer
                 .maybe_queue_batch(&mut self.container, &decision);
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
+            // Receive bundles into the receive_and_buffer's bundle store.
+            // If the bundle receiver is disconnected, treat it as zero bundles received
+            // and continue; a disconnected bundle channel should not terminate scheduling.
+            let _ = self
+                .receive_and_buffer
+                .receive_and_buffer_bundles(&mut self.container, &decision);
+            // Flush any deferred retryable bundles that were collected from the
+            // bundle worker earlier in the loop. We push them into the container
+            // only after we've processed and buffered transactions for this
+            // pass to avoid immediate re-selection and hot retry loops.
+            let _ = self.scheduler.flush_deferred_bundles(&mut self.container);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
@@ -237,7 +245,13 @@ where
             let Some(id) = self.container.pop() else {
                 break;
             };
-            transaction_ids.push(id);
+            // Only clean transactions, push bundles back immediately
+            if id.is_transaction() {
+                transaction_ids.push(id);
+            } else {
+                // Bundle - push back, don't clean
+                self.container.push_ids_into_queue(std::iter::once(id));
+            }
         }
 
         let bank = self.bank_forks.read().unwrap().working_bank();
@@ -251,7 +265,7 @@ where
                 .iter()
                 .map(|id| {
                     self.container
-                        .get_transaction(id.id)
+                        .get_transaction(id.get_id())
                         .expect("transaction must exist")
                 })
                 .collect();
@@ -302,6 +316,14 @@ where
         Ok(())
     }
 
+    /// Receives completed bundles from the bundle worker.
+    /// If retryable, puts bundle back in container. Otherwise removes it.
+    fn receive_completed_bundles(&mut self) -> Result<(), SchedulerError> {
+        let ((_num_bundles, _num_retryable), _receive_bundle_time_us) =
+            measure_us!(self.scheduler.receive_bundles(&mut self.container)?);
+        Ok(())
+    }
+
     /// Returns whether the packet receiver is still connected.
     fn receive_and_buffer_packets(
         &mut self,
@@ -326,6 +348,10 @@ where
                 num_dropped_on_blacklisted_account,
                 receive_time_us: _,
                 buffer_time_us: _,
+                num_bundles_buffered: _,
+                num_bundles_dropped_on_capacity: _,
+                num_bundles_dropped_on_sanitization: _,
+                num_bundles_received: _,
             } = &receiving_stats;
 
             count_metrics.num_received += *num_received;
@@ -355,6 +381,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use crate::bundle_stage::bundle_packet_receiver::BundleReceiver;
+
     use {
         super::*,
         crate::banking_stage::{
@@ -414,11 +442,14 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> SanitizedTransactionReceiveAndBuffer {
+        let (_bundle_sender, bundle_receiver) = unbounded();
         SanitizedTransactionReceiveAndBuffer::new(
             PacketDeserializer::new(receiver),
+            BundleReceiver::new(10_000, bundle_receiver, None),
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
+            HashSet::new(),
         )
     }
 
@@ -427,7 +458,19 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts, Duration::ZERO)
+        let (_bundle_sender, bundle_receiver) = unbounded();
+        TransactionViewReceiveAndBuffer::new(
+            receiver,
+            BundleReceiver::new(
+                10_000,
+                bundle_receiver,
+                None,
+            ),
+            bank_forks,
+            blacklisted_accounts,
+            Duration::ZERO,
+            HashSet::new(),
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -469,6 +512,7 @@ mod tests {
 
         let (consume_work_senders, consume_work_receivers) = create_channels(num_threads);
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
+        let (_, finished_bundle_work_receiver) = unbounded();
 
         let test_frame = TestFrame {
             bank,
@@ -482,7 +526,9 @@ mod tests {
         let scheduler = PrioGraphScheduler::new(
             consume_work_senders,
             finished_consume_work_receiver,
+            finished_bundle_work_receiver,
             PrioGraphSchedulerConfig::default(),
+            None,
         );
         let exit = Arc::new(AtomicBool::new(false));
         let scheduler_controller = SchedulerController::new(
@@ -552,7 +598,10 @@ mod tests {
             .map(|n| n.num_received > 0)
             .unwrap_or_default()
         {}
-        scheduler_controller.receive_and_buffer.maybe_queue_batch(&mut scheduler_controller.container, &decision);
+        // Ensure batches are queued into the container before processing
+        scheduler_controller
+            .receive_and_buffer
+            .maybe_queue_batch(&mut scheduler_controller.container, &decision);
         assert!(scheduler_controller.process_transactions(&decision).is_ok());
     }
 

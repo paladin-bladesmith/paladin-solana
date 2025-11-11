@@ -1,17 +1,22 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
+use crate::banking_stage::{scheduler_messages::FinishedBundleConsumeWork, transaction_scheduler::unified_priority_id::UnifiedPriorityId};
+
 use {
     super::{
         in_flight_tracker::InFlightTracker,
         scheduler_error::SchedulerError,
-        thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet},
-        transaction_state_container::StateContainer,
+        thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, MAX_THREADS},
+        unified_state_container::StateContainer,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
     },
-    crate::banking_stage::{
-        scheduler_messages::{
-            ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
+    crate::{
+        banking_stage::{
+            scheduler_messages::{
+                ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
+            },
         },
-        transaction_scheduler::thread_aware_account_locks::MAX_THREADS,
     },
     crossbeam_channel::{Receiver, Sender, TryRecvError},
     itertools::izip,
@@ -150,15 +155,22 @@ pub fn select_thread<Tx>(
 pub(crate) struct SchedulingCommon<Tx> {
     pub(crate) consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
     pub(crate) finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
+    pub(crate) finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
     pub(crate) in_flight_tracker: InFlightTracker,
     pub(crate) account_locks: ThreadAwareAccountLocks,
     pub(crate) batches: Batches<Tx>,
+    /// Deferred bundle priority ids collected from bundle worker results.
+    /// Retryable bundles are stored here and flushed into the container at
+    /// a later point to avoid immediate reinsertion (which can cause hot
+    /// retry loops and ordering inversion).
+    deferred_bundle_priority_ids: Vec<UnifiedPriorityId>,
 }
 
-impl<Tx> SchedulingCommon<Tx> {
+impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
     pub fn new(
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
+        finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
         target_num_transactions_per_batch: usize,
     ) -> Self {
         let num_threads = consume_work_senders.len();
@@ -174,8 +186,10 @@ impl<Tx> SchedulingCommon<Tx> {
             ),
             consume_work_senders,
             finished_consume_work_receiver,
+            finished_bundle_work_receiver,
             in_flight_tracker: InFlightTracker::new(num_threads),
             account_locks: ThreadAwareAccountLocks::new(num_threads),
+            deferred_bundle_priority_ids: Vec::new(),
         }
     }
 
@@ -249,7 +263,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                             continue;
                         }
                     }
-                    container.remove_by_id(id);
+                    container.remove_by_id(UnifiedSchedulingUnit::Transaction(id));
                 }
 
                 debug_assert!(
@@ -270,6 +284,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
     /// This will update the internal tracking, including account locks.
     fn complete_batch(&mut self, batch_id: TransactionBatchId, transactions: &[Tx]) {
         let thread_id = self.in_flight_tracker.complete_batch(batch_id);
+        
         for transaction in transactions {
             let account_keys = transaction.account_keys();
             let write_account_locks = account_keys
@@ -284,13 +299,61 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                 .unlock_accounts(write_account_locks, read_account_locks, thread_id);
         }
     }
+
+    // Receive bundles and retry if possible
+    pub fn receive_bundles(&mut self, container: &mut impl StateContainer<Tx>,)-> Result<(usize, usize), SchedulerError>{
+        match self.finished_bundle_work_receiver.try_recv() {
+                Ok(FinishedBundleConsumeWork { work, retryable }) => {
+                    let num_bundles= 1;
+                    let mut num_retryable= 0;
+                    let bundle_id = work.bundle_id;
+                    let bundle = &work.bundle;
+                    if retryable {
+                        num_retryable =1;
+                        // Put the bundle back in the container for retry
+                        if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
+                            bundle_state.retry_bundle(work.bundle);
+                            // Defer reinsertion to avoid immediate re-selection in the
+                            // same scheduling pass. We'll flush these at the end of
+                            // the scheduling loop.
+                            let priority_id = UnifiedPriorityId::new(
+                                bundle_state.priority(),
+                                UnifiedSchedulingUnit::Bundle(bundle_id),
+                            );
+                            self.deferred_bundle_priority_ids.push(priority_id);
+                        }
+                    } else {
+                        // Free locks from thread aware locks (not retryable)
+                        self.account_locks.unlock_bundle_in_flight_reservation(bundle);
+                        container.remove_by_id(UnifiedSchedulingUnit::Bundle(bundle_id));
+                    }
+                    Ok((num_bundles, num_retryable))
+                }
+                Err(TryRecvError::Empty) => Ok((0,0)),
+                Err(TryRecvError::Disconnected) => Err(SchedulerError::DisconnectedRecvChannel(
+                        "finished bundle work",
+                )),
+        }
+    }
+
+    /// Flush any deferred retryable bundles into the container's queue.
+    /// Returns the number of bundles flushed.
+    pub fn flush_deferred_bundles(&mut self, container: &mut impl StateContainer<Tx>) -> usize {
+        if self.deferred_bundle_priority_ids.is_empty() {
+            return 0;
+        }
+        let num = self.deferred_bundle_priority_ids.len();
+        let iter = core::mem::take(&mut self.deferred_bundle_priority_ids).into_iter();
+        let _ = container.push_ids_into_queue(iter);
+        num
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use {
         super::*,
-        crate::banking_stage::transaction_scheduler::transaction_state_container::TransactionStateContainer,
+        crate::banking_stage::transaction_scheduler::unified_state_container::UnifiedStateContainer,
         crossbeam_channel::unbounded, solana_hash::Hash, solana_keypair::Keypair,
         solana_pubkey::Pubkey, solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_system_transaction as system_transaction,
@@ -310,7 +373,7 @@ mod tests {
     }
 
     fn add_transactions_to_container(
-        container: &mut TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>>,
+        container: &mut UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>>,
         count: usize,
     ) {
         for index in 0..count {
@@ -324,13 +387,13 @@ mod tests {
     }
 
     fn pop_and_add_transaction<Tx: TransactionWithMeta>(
-        container: &mut TransactionStateContainer<Tx>,
+        container: &mut UnifiedStateContainer<Tx>,
         common: &mut SchedulingCommon<Tx>,
         thread_id: ThreadId,
     ) {
         let tx_id = container.pop().unwrap();
         let (transaction, max_age) = container
-            .get_mut_transaction_state(tx_id.id)
+            .get_mut_transaction_state(tx_id.get_id())
             .unwrap()
             .take_transaction_for_scheduling();
 
@@ -355,7 +418,7 @@ mod tests {
             .unwrap();
         common.batches.add_transaction_to_batch(
             thread_id,
-            tx_id.id,
+            tx_id.get_id(),
             transaction,
             max_age,
             DUMMY_COST,
@@ -438,13 +501,14 @@ mod tests {
 
     #[test]
     fn test_send_batches() {
-        let mut container = TransactionStateContainer::with_capacity(1024);
+        let mut container = UnifiedStateContainer::with_capacity(1024);
         add_transactions_to_container(&mut container, 3);
 
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
             (0..NUM_WORKERS).map(|_| unbounded()).unzip();
         let (_finished_work_sender, finished_work_receiver) = unbounded();
-        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, 10);
+        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded(); 
+        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, finished_bundle_work_receiver, 10);
 
         pop_and_add_transaction(&mut container, &mut common, 0);
         let num_scheduled = common.send_batch(0).unwrap();
@@ -486,13 +550,14 @@ mod tests {
 
     #[test]
     fn test_receive_completed() {
-        let mut container = TransactionStateContainer::with_capacity(1024);
+        let mut container = UnifiedStateContainer::with_capacity(1024);
         add_transactions_to_container(&mut container, 1);
 
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
             (0..NUM_WORKERS).map(|_| unbounded()).unzip();
         let (finished_work_sender, finished_work_receiver) = unbounded();
-        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, 10);
+        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded(); 
+        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, finished_bundle_work_receiver, 10);
 
         // Send a batch. Return completed work.
         pop_and_add_transaction(&mut container, &mut common, 0);
@@ -537,12 +602,13 @@ mod tests {
     #[test]
     #[should_panic = "retryable indexes were not in order: [1, 0]"]
     fn test_receive_completed_out_of_order() {
-        let mut container = TransactionStateContainer::with_capacity(1024);
+        let mut container = UnifiedStateContainer::with_capacity(1024);
 
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
             (0..NUM_WORKERS).map(|_| unbounded()).unzip();
         let (finished_work_sender, finished_work_receiver) = unbounded();
-        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, 10);
+        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded(); 
+        let mut common = SchedulingCommon::new(work_senders, finished_work_receiver, finished_bundle_work_receiver, 10);
         // Retryable indexes out-of-order.
         add_transactions_to_container(&mut container, 2);
         pop_and_add_transaction(&mut container, &mut common, 0);

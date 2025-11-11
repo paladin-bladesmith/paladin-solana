@@ -3,7 +3,7 @@ use qualifier_attr::qualifiers;
 use {
     super::{
         scheduler_common::SchedulingCommon, scheduler_error::SchedulerError,
-        transaction_state::TransactionState, transaction_state_container::StateContainer,
+        transaction_state::TransactionState, unified_state_container::StateContainer,
     },
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     std::num::Saturating,
@@ -42,6 +42,35 @@ pub(crate) trait Scheduler<Tx: TransactionWithMeta> {
         let Saturating(total_num_transactions) = total_num_transactions;
         let Saturating(total_num_retryable) = total_num_retryable;
         Ok((total_num_transactions, total_num_retryable))
+    }
+
+    // Receive completed bundles wothout blocking
+    fn receive_bundles(
+        &mut self,
+        container: &mut impl StateContainer<Tx>,
+    ) -> Result<(usize,usize),SchedulerError>{
+        let mut total_bundles = Saturating::<usize>(0);
+        let mut total_retryable = Saturating::<usize>(0);
+        loop{
+            let (num_bundles, num_retryale) = self.scheduling_common_mut().receive_bundles(container)?;
+            if num_bundles==0{
+                break;
+            }
+            total_bundles+=num_bundles;
+            total_retryable+=num_retryale;
+        }
+        let Saturating(total_bundles) = total_bundles;
+        let Saturating(total_retryable) = total_retryable;
+        Ok((total_bundles, total_retryable))
+    }
+
+    /// Flush any deferred retryable bundles into the container queue.
+    /// Default implementation forwards to the shared `SchedulingCommon`.
+    fn flush_deferred_bundles(
+        &mut self,
+        container: &mut impl StateContainer<Tx>,
+    ) -> Result<usize, SchedulerError> {
+        Ok(self.scheduling_common_mut().flush_deferred_bundles(container))
     }
 
     /// All schedulers should have access to the common context for shared

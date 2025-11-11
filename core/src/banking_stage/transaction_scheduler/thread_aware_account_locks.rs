@@ -1,7 +1,5 @@
 use {
-    ahash::AHashMap,
-    solana_pubkey::Pubkey,
-    std::{
+    ahash::{AHashMap, HashSet, HashSetExt}, solana_bundle::SanitizedBundle, solana_pubkey::Pubkey, solana_svm_transaction::svm_message::SVMMessage, std::{
         collections::hash_map::Entry,
         fmt::{Debug, Display},
         ops::{BitAnd, BitAndAssign, Sub},
@@ -59,6 +57,7 @@ pub(crate) struct ThreadAwareAccountLocks {
     /// Locks for each account. An account should only have an entry if there
     /// is at least one lock.
     locks: AHashMap<Pubkey, AccountLocks>,
+    bundle_locks_in_flight: HashSet<Pubkey>,
 }
 
 impl ThreadAwareAccountLocks {
@@ -73,7 +72,22 @@ impl ThreadAwareAccountLocks {
         Self {
             num_threads,
             locks: AHashMap::new(),
+            bundle_locks_in_flight: HashSet::new(),
         }
+    }
+
+    // Locks/reserves bundle accounts that are in flight
+    // If bundle retries keep the lock alive, only unlock incase bundle fails/completes
+    pub fn reserve_bundle_in_flight(&mut self, bundle: &SanitizedBundle){
+        bundle.transactions.iter().for_each(|tx| tx.account_keys().iter().for_each(|acc|{
+            let _=  self.bundle_locks_in_flight.insert(*acc);
+        }));
+    }
+
+    pub fn unlock_bundle_in_flight_reservation(&mut self, bundle: &SanitizedBundle){
+        bundle.transactions.iter().for_each(|tx| tx.account_keys().iter().for_each(|acc|{
+            let _= self.bundle_locks_in_flight.remove(acc);
+        }));
     }
 
     /// Returns the `ThreadId` if the accounts are able to be locked
@@ -90,6 +104,14 @@ impl ThreadAwareAccountLocks {
         allowed_threads: ThreadSet,
         thread_selector: impl FnOnce(ThreadSet) -> ThreadId,
     ) -> Result<ThreadId, TryLockError> {
+        // Check if in-flight bundles has locks on these
+        if write_account_locks.clone().any(|acc| self.bundle_locks_in_flight.contains(acc)) {
+            return Err(TryLockError::MultipleConflicts);
+        }
+        if read_account_locks.clone().any(|acc| self.bundle_locks_in_flight.contains(acc)){
+            return Err(TryLockError::MultipleConflicts);
+        }
+
         let schedulable_threads = self
             .accounts_schedulable_threads(write_account_locks.clone(), read_account_locks.clone())
             .ok_or(TryLockError::MultipleConflicts)?;

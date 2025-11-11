@@ -1,22 +1,23 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
         scheduler_common::{
-            SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo,
+            SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo, select_thread
         },
+        unified_state_container::StateContainer,
+        transaction_state::TransactionState,
         scheduler_error::SchedulerError,
         thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError},
+        unified_priority_id::UnifiedPriorityId,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
     },
     crate::banking_stage::{
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork},
-        transaction_scheduler::{
-            scheduler_common::select_thread, transaction_priority_id::TransactionPriorityId,
-            transaction_state::TransactionState, transaction_state_container::StateContainer,
-        },
+        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleConsumeWork, FinishedBundleConsumeWork},
     },
     crossbeam_channel::{Receiver, Sender},
     prio_graph::{AccessKind, GraphNode, PrioGraph},
@@ -30,17 +31,17 @@ use {
 
 #[inline(always)]
 fn passthrough_priority(
-    id: &TransactionPriorityId,
-    _graph_node: &GraphNode<TransactionPriorityId>,
-) -> TransactionPriorityId {
+    id: &UnifiedPriorityId,
+    _graph_node: &GraphNode<UnifiedPriorityId>,
+) -> UnifiedPriorityId {
     *id
 }
 
 type SchedulerPrioGraph = PrioGraph<
-    TransactionPriorityId,
+    UnifiedPriorityId,
     Pubkey,
-    TransactionPriorityId,
-    fn(&TransactionPriorityId, &GraphNode<TransactionPriorityId>) -> TransactionPriorityId,
+    UnifiedPriorityId,
+    fn(&UnifiedPriorityId, &GraphNode<UnifiedPriorityId>) -> UnifiedPriorityId,
 >;
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -67,6 +68,7 @@ pub(crate) struct PrioGraphScheduler<Tx> {
     common: SchedulingCommon<Tx>,
     prio_graph: SchedulerPrioGraph,
     config: PrioGraphSchedulerConfig,
+    bundle_work_sender: Option<Sender<BundleConsumeWork>>,
 }
 
 impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
@@ -74,16 +76,20 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
     pub(crate) fn new(
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
+        finished_bundle_work_receiver: Receiver<FinishedBundleConsumeWork>,
         config: PrioGraphSchedulerConfig,
+        bundle_work_sender: Option<Sender<BundleConsumeWork>>,
     ) -> Self {
         Self {
             common: SchedulingCommon::new(
                 consume_work_senders,
                 finished_consume_work_receiver,
+                finished_bundle_work_receiver,
                 config.target_transactions_per_batch,
             ),
             prio_graph: PrioGraph::new(passthrough_priority),
             config,
+            bundle_work_sender,
         }
     }
 }
@@ -147,7 +153,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         let mut window_budget = self.config.look_ahead_window_size;
         let mut chunked_pops = |container: &mut S,
                                 prio_graph: &mut PrioGraph<_, _, _, _>,
-                                window_budget: &mut usize| {
+                                window_budget: &mut usize,
+                                account_locks: &mut ThreadAwareAccountLocks,
+                                bundle_work_sender: Option<&Sender<BundleConsumeWork>>| {
             while *window_budget > 0 {
                 const MAX_FILTER_CHUNK_SIZE: usize = 128;
                 let mut filter_array = [true; MAX_FILTER_CHUNK_SIZE];
@@ -157,25 +165,53 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                 let chunk_size = (*window_budget).min(MAX_FILTER_CHUNK_SIZE);
                 for _ in 0..chunk_size {
                     if let Some(id) = container.pop() {
-                        ids.push(id);
+                        match id.id {
+                            UnifiedSchedulingUnit::Transaction(_) => {
+                                ids.push(id);
+                            }
+                            UnifiedSchedulingUnit::Bundle(bundle_id) => {
+                                // Send bundles immediately, don't add to prio graph
+                                if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
+                                    if let Some(bundle_sender) = bundle_work_sender {
+                                        let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
+                                        
+                                        // Reserve bundle accounts in thread-aware locks so scheduler won't leapfrog
+                                        // This prevents lower-priority transactions from being scheduled while
+                                        // bundle is waiting to execute
+                                        account_locks.reserve_bundle_in_flight(&bundle);
+                                        let _ = bundle_sender.send(BundleConsumeWork {
+                                            bundle_id,
+                                            bundle,
+                                            _max_age: max_age,
+                                        });
+                                    }
+                                }
+                                continue;
+                            }
+                        }
                     } else {
                         break;
                     }
                 }
-                *window_budget = window_budget.saturating_sub(chunk_size);
 
+                let num_transactions = ids.len();
+                *window_budget = window_budget.saturating_sub(num_transactions);
+
+                // Collect transactions for filtering
                 ids.iter().for_each(|id| {
-                    let transaction = container.get_transaction(id.id).unwrap();
+                    let transaction = container.get_transaction(id.get_id()).unwrap();
                     txs.push(transaction);
                 });
 
+                // Apply pre-graph filter
                 let (_, filter_us) =
-                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..chunk_size]));
+                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..num_transactions]));
                 total_filter_time_us += filter_us;
 
-                for (id, filter_result) in ids.iter().zip(&filter_array[..chunk_size]) {
+                // Insert passing transactions into prio graph
+                for (id, filter_result) in ids.iter().zip(&filter_array[..num_transactions]) {
                     if *filter_result {
-                        let transaction = container.get_transaction(id.id).unwrap();
+                        let transaction = container.get_transaction(id.get_id()).unwrap();
                         prio_graph.insert_transaction(
                             *id,
                             Self::get_transaction_account_access(transaction),
@@ -186,7 +222,8 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                     }
                 }
 
-                if ids.len() != chunk_size {
+                // If we got fewer transactions than requested, we've exhausted the container
+                if num_transactions < chunk_size {
                     break;
                 }
             }
@@ -194,7 +231,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
 
         // Create the initial look-ahead window.
         // Check transactions against filter, remove from container if it fails.
-        chunked_pops(container, &mut self.prio_graph, &mut window_budget);
+        chunked_pops(container, &mut self.prio_graph, &mut window_budget, &mut self.common.account_locks, self.bundle_work_sender.as_ref());
 
         #[cfg(debug_assertions)]
         debug_assert!(
@@ -216,12 +253,15 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
             }
 
             while let Some(id) = self.prio_graph.pop() {
+                // Prio graph should only contain transactions, not bundles
+                assert!(id.is_transaction(), "Prio-graph should only schedule transactions not bundles");
+                
                 num_scanned += 1;
                 unblock_this_batch.push(id);
 
                 // Should always be in the container, during initial testing phase panic.
                 // Later, we can replace with a continue in case this does happen.
-                let Some(transaction_state) = container.get_mut_transaction_state(id.id) else {
+                let Some(transaction_state) = container.get_mut_transaction_state(id.get_id()) else {
                     panic!("transaction state must exist")
                 };
 
@@ -260,7 +300,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                         num_scheduled += 1;
                         self.common.batches.add_transaction_to_batch(
                             thread_id,
-                            id.id,
+                            id.get_id(),
                             transaction,
                             max_age,
                             cost,
@@ -297,7 +337,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
 
             // Refresh window budget and do chunked pops
             window_budget += unblock_this_batch.len();
-            chunked_pops(container, &mut self.prio_graph, &mut window_budget);
+            chunked_pops(container, &mut self.prio_graph, &mut window_budget, &mut self.common.account_locks, self.bundle_work_sender.as_ref());
 
             // Unblock all transactions that were blocked by the transactions that were just sent.
             for id in unblock_this_batch.drain(..) {
@@ -429,7 +469,7 @@ mod tests {
         super::*,
         crate::banking_stage::{
             scheduler_messages::{MaxAge, TransactionId},
-            transaction_scheduler::transaction_state_container::TransactionStateContainer,
+            transaction_scheduler::unified_state_container::UnifiedStateContainer,
         },
         crossbeam_channel::{unbounded, Receiver},
         itertools::Itertools,
@@ -456,10 +496,13 @@ mod tests {
         let (consume_work_senders, consume_work_receivers) =
             (0..num_threads).map(|_| unbounded()).unzip();
         let (finished_consume_work_sender, finished_consume_work_receiver) = unbounded();
+        let (_finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
         let scheduler = PrioGraphScheduler::new(
             consume_work_senders,
             finished_consume_work_receiver,
+            finished_bundle_work_receiver,
             PrioGraphSchedulerConfig::default(),
+            None, // No bundle worker in tests
         );
         (
             scheduler,
@@ -497,7 +540,7 @@ mod tests {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
         create_container_with_capacity(100 * 1024, tx_infos)
     }
 
@@ -511,8 +554,8 @@ mod tests {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
-        let mut container = TransactionStateContainer::with_capacity(capacity);
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+        let mut container = UnifiedStateContainer::with_capacity(capacity);
         for (from_keypair, to_pubkeys, lamports, compute_unit_price) in tx_infos.into_iter() {
             let transaction = prioritized_tranfers(
                 from_keypair.borrow(),
