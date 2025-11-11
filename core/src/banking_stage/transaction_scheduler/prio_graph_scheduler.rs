@@ -153,7 +153,9 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
         let mut window_budget = self.config.look_ahead_window_size;
         let mut chunked_pops = |container: &mut S,
                                 prio_graph: &mut PrioGraph<_, _, _, _>,
-                                window_budget: &mut usize| {
+                                window_budget: &mut usize,
+                                account_locks: &mut ThreadAwareAccountLocks,
+                                bundle_work_sender: Option<&Sender<BundleConsumeWork>>| {
             while *window_budget > 0 {
                 const MAX_FILTER_CHUNK_SIZE: usize = 128;
                 let mut filter_array = [true; MAX_FILTER_CHUNK_SIZE];
@@ -170,8 +172,13 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                             UnifiedSchedulingUnit::Bundle(bundle_id) => {
                                 // Send bundles immediately, don't add to prio graph
                                 if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
-                                    if let Some(bundle_sender) = self.bundle_work_sender.as_ref() {
+                                    if let Some(bundle_sender) = bundle_work_sender {
                                         let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
+                                        
+                                        // Reserve bundle accounts in thread-aware locks so scheduler won't leapfrog
+                                        // This prevents lower-priority transactions from being scheduled while
+                                        // bundle is waiting to execute
+                                        account_locks.reserve_bundle_in_flight(&bundle);
                                         let _ = bundle_sender.send(BundleConsumeWork {
                                             bundle_id,
                                             bundle,
@@ -224,7 +231,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
 
         // Create the initial look-ahead window.
         // Check transactions against filter, remove from container if it fails.
-        chunked_pops(container, &mut self.prio_graph, &mut window_budget);
+        chunked_pops(container, &mut self.prio_graph, &mut window_budget, &mut self.common.account_locks, self.bundle_work_sender.as_ref());
 
         #[cfg(debug_assertions)]
         debug_assert!(
@@ -330,7 +337,7 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
 
             // Refresh window budget and do chunked pops
             window_budget += unblock_this_batch.len();
-            chunked_pops(container, &mut self.prio_graph, &mut window_budget);
+            chunked_pops(container, &mut self.prio_graph, &mut window_budget, &mut self.common.account_locks, self.bundle_work_sender.as_ref());
 
             // Unblock all transactions that were blocked by the transactions that were just sent.
             for id in unblock_this_batch.drain(..) {
