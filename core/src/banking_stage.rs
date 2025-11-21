@@ -6,9 +6,8 @@
 use qualifier_attr::qualifiers;
 use {
     self::{
-        bundle_consumer_worker::BundleConsumerWorker, committer::Committer, consumer::Consumer,
-        decision_maker::DecisionMaker, packet_receiver::PacketReceiver, qos_service::QosService,
-        vote_storage::VoteStorage,
+        committer::Committer, consumer::Consumer, decision_maker::DecisionMaker,
+        packet_receiver::PacketReceiver, qos_service::QosService, vote_storage::VoteStorage,
     },
     crate::{
         banking_stage::{
@@ -86,11 +85,6 @@ conditional_vis_mod!(
 // Re-export the unified scheduler's StateContainer trait so other modules in this crate
 // can depend on it without accessing the private `transaction_scheduler` module directly.
 pub(crate) use self::transaction_scheduler::unified_state_container::StateContainer;
-conditional_vis_mod!(
-    bundle_consumer_worker,
-    feature = "dev-context-only-utils",
-    pub
-);
 conditional_vis_mod!(unified_scheduler, feature = "dev-context-only-utils", pub, pub(crate));
 
 /// The maximum number of worker threads that can be spawned by banking stage.
@@ -556,23 +550,37 @@ impl BankingStage {
 
         let exit = context.non_vote_exit_signal.clone();
 
-        // + 1 for scheduler thread + 1 for bundle worker thread
-        let mut thread_hdls = Vec::with_capacity(num_workers + 2);
+        // + 1 for scheduler thread
+        let mut thread_hdls = Vec::with_capacity(num_workers + 1);
 
         // Create channels for communication between scheduler and workers
         let (work_senders, work_receivers): (Vec<Sender<_>>, Vec<Receiver<_>>) =
             (0..num_workers).map(|_| unbounded()).unzip();
         let (finished_work_sender, finished_work_receiver) = unbounded();
-
-        // Create channels for communication between scheduler and bundle worker
-        let (bundle_work_sender, bundle_work_receiver) = unbounded();
-        let (finished_bundle_work_sender, finished_bundle_work_receiver) = unbounded();
-
-        // Spawn the worker threads
         let decision_maker = DecisionMaker::from(context.poh_recorder.read().unwrap().deref());
         let mut worker_metrics = Vec::with_capacity(num_workers);
         for (index, work_receiver) in work_receivers.into_iter().enumerate() {
             let id = index as u32;
+
+            // Create a BundleConsumer instance for each worker
+            let worker_bundle_committer = BundleCommiter::new(
+                transaction_status_sender.clone(),
+                replay_vote_sender.clone(),
+                prioritization_fee_cache.clone(),
+            );
+
+            let worker_bundle_consumer = BundleConsumer::new(
+                worker_bundle_committer,
+                context.transaction_recorder.clone(),
+                QosService::new(id),
+                context.log_messages_bytes_limit,
+                tip_manager.clone(),
+                bundle_account_locker.clone(),
+                block_builder_fee_info.clone(),
+                max_bundle_retry_duration,
+                cluster_info.clone(),
+            );
+
             let consume_worker = ConsumeWorker::new(
                 id,
                 exit.clone(),
@@ -584,6 +592,7 @@ impl BankingStage {
                     context.log_messages_bytes_limit,
                     bundle_account_locker.clone(),
                 ),
+                Some(worker_bundle_consumer),
                 finished_work_sender.clone(),
                 context.poh_recorder.read().unwrap().shared_working_bank(),
             );
@@ -599,42 +608,6 @@ impl BankingStage {
                     .unwrap(),
             )
         }
-        let bundle_committer = BundleCommiter::new(
-            transaction_status_sender,
-            replay_vote_sender,
-            prioritization_fee_cache.clone(),
-        );
-
-        let bundle_consumer = BundleConsumer::new(
-            bundle_committer,
-            context.transaction_recorder.clone(),
-            QosService::new(0),
-            context.log_messages_bytes_limit,
-            tip_manager,
-            bundle_account_locker,
-            block_builder_fee_info,
-            max_bundle_retry_duration,
-            cluster_info,
-        );
-
-        let bundle_consume_worker = BundleConsumerWorker::new(
-            0, // Single bundle worker with id 0
-            exit.clone(),
-            bundle_work_receiver,
-            bundle_consumer,
-            finished_bundle_work_sender,
-            context.poh_recorder.read().unwrap().shared_working_bank(),
-        );
-
-        let cb = block_cost_limit_reservation_cb.clone();
-        thread_hdls.push(
-            Builder::new()
-                .name("solBunWorker00".to_string())
-                .spawn(move || {
-                    let _ = bundle_consume_worker.run(cb);
-                })
-                .unwrap(),
-        );
 
         // Macro to spawn the scheduler. Different type on `scheduler` and thus
         // scheduler_controller mean we cannot have an easy if for `scheduler`
@@ -673,18 +646,14 @@ impl BankingStage {
             let scheduler = GreedyScheduler::new(
                 work_senders,
                 finished_work_receiver,
-                finished_bundle_work_receiver.clone(),
                 GreedySchedulerConfig::default(),
-                Some(bundle_work_sender),
             );
             spawn_scheduler!(scheduler);
         } else {
             let scheduler = PrioGraphScheduler::new(
                 work_senders,
                 finished_work_receiver,
-                finished_bundle_work_receiver,
                 PrioGraphSchedulerConfig::default(),
-                Some(bundle_work_sender),
             );
             spawn_scheduler!(scheduler);
         }

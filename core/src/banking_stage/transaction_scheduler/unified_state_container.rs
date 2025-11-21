@@ -87,6 +87,17 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
         self.push_ids_into_queue(std::iter::once(priority_id));
     }
 
+    /// Retries a bundle - inserts bundle back into map.
+    /// This transitions the bundle back to available state.
+    fn retry_bundle(&mut self, bundle_id: BundleId, bundle: solana_bundle::SanitizedBundle) {
+        let bundle_state = self
+            .get_mut_bundle_state(bundle_id)
+            .expect("bundle must exist");
+        let priority_id = UnifiedPriorityId::new(bundle_state.priority(), UnifiedSchedulingUnit::Bundle(bundle_id));
+        bundle_state.retry_bundle(bundle);
+        self.push_ids_into_queue(std::iter::once(priority_id));
+    }
+
     /// Pushes transaction ids into the priority queue. If the queue if full,
     /// the lowest priority transactions will be dropped (removed from the
     /// queue and map) **after** all ids have been pushed.

@@ -57,7 +57,6 @@ pub(crate) struct ThreadAwareAccountLocks {
     /// Locks for each account. An account should only have an entry if there
     /// is at least one lock.
     locks: AHashMap<Pubkey, AccountLocks>,
-    bundle_locks_in_flight: HashSet<Pubkey>,
 }
 
 impl ThreadAwareAccountLocks {
@@ -72,22 +71,76 @@ impl ThreadAwareAccountLocks {
         Self {
             num_threads,
             locks: AHashMap::new(),
-            bundle_locks_in_flight: HashSet::new(),
         }
     }
 
-    // Locks/reserves bundle accounts that are in flight
-    // If bundle retries keep the lock alive, only unlock incase bundle fails/completes
-    pub fn reserve_bundle_in_flight(&mut self, bundle: &SanitizedBundle){
-        bundle.transactions.iter().for_each(|tx| tx.account_keys().iter().for_each(|acc|{
-            let _=  self.bundle_locks_in_flight.insert(*acc);
-        }));
+    /// Extract unique write and read accounts from bundle in a single pass.
+    /// Returns (write_accounts, read_accounts) with duplicates removed.
+    /// 
+    /// Performance optimized: Single iteration, minimal allocations.
+    #[inline]
+    fn extract_bundle_accounts(bundle: &SanitizedBundle) -> (Vec<Pubkey>, Vec<Pubkey>) {
+        let mut write_set = HashSet::new();
+        let mut read_set = HashSet::new();
+        
+        // Single pass through all transactions
+        for tx in &bundle.transactions {
+            let account_keys = tx.account_keys();
+            for (idx, key) in account_keys.iter().enumerate() {
+                if tx.is_writable(idx) {
+                    write_set.insert(*key);
+                    // Remove from read_set if it was there (write takes precedence)
+                    read_set.remove(key);
+                } else if !write_set.contains(key) {
+                    read_set.insert(*key);
+                }
+            }
+        }
+        
+        // Convert sets to vectors only once at the end
+        (
+            write_set.into_iter().collect(),
+            read_set.into_iter().collect(),
+        )
     }
 
-    pub fn unlock_bundle_in_flight_reservation(&mut self, bundle: &SanitizedBundle){
-        bundle.transactions.iter().for_each(|tx| tx.account_keys().iter().for_each(|acc|{
-            let _= self.bundle_locks_in_flight.remove(acc);
-        }));
+    /// Try to atomically lock all accounts for a bundle on a single thread.
+    /// This treats the bundle as one large atomic unit that must be scheduled together.
+    /// Returns the selected thread_id if successful, or an error if there are conflicts.
+    pub(crate) fn try_lock_bundle(
+        &mut self,
+        bundle: &SanitizedBundle,
+        allowed_threads: ThreadSet,
+        thread_selector: impl FnOnce(ThreadSet) -> ThreadId,
+    ) -> Result<ThreadId, TryLockError> {
+        let (write_accounts, read_accounts) = Self::extract_bundle_accounts(bundle);
+
+        // Check if all bundle accounts can be scheduled
+        let schedulable_threads = self
+            .accounts_schedulable_threads(write_accounts.iter(), read_accounts.iter())
+            .ok_or(TryLockError::MultipleConflicts)?;
+
+        let schedulable_threads = schedulable_threads & allowed_threads;
+        if schedulable_threads.is_empty() {
+            return Err(TryLockError::ThreadNotAllowed);
+        }
+
+        let thread_id = thread_selector(schedulable_threads);
+
+        // Atomically lock ALL accounts for this bundle
+        self.lock_accounts(write_accounts.iter(), read_accounts.iter(), thread_id);
+
+        Ok(thread_id)
+    }
+
+    /// Unlock all accounts for a bundle that were previously locked.
+    pub(crate) fn unlock_bundle(
+        &mut self,
+        bundle: &SanitizedBundle,
+        thread_id: ThreadId,
+    ) {
+        let (write_accounts, read_accounts) = Self::extract_bundle_accounts(bundle);
+        self.unlock_accounts(write_accounts.iter(), read_accounts.iter(), thread_id);
     }
 
     /// Returns the `ThreadId` if the accounts are able to be locked
@@ -104,14 +157,6 @@ impl ThreadAwareAccountLocks {
         allowed_threads: ThreadSet,
         thread_selector: impl FnOnce(ThreadSet) -> ThreadId,
     ) -> Result<ThreadId, TryLockError> {
-        // Check if in-flight bundles has locks on these
-        if write_account_locks.clone().any(|acc| self.bundle_locks_in_flight.contains(acc)) {
-            return Err(TryLockError::MultipleConflicts);
-        }
-        if read_account_locks.clone().any(|acc| self.bundle_locks_in_flight.contains(acc)){
-            return Err(TryLockError::MultipleConflicts);
-        }
-
         let schedulable_threads = self
             .accounts_schedulable_threads(write_account_locks.clone(), read_account_locks.clone())
             .ok_or(TryLockError::MultipleConflicts)?;

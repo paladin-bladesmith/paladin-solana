@@ -4,6 +4,10 @@ use {
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork},
     },
+    crate::{
+        banking_stage::scheduler_messages::ConsumeWorkItem,
+        bundle_stage::bundle_consumer::BundleConsumer,
+    },
     crossbeam_channel::{Receiver, RecvError, SendError, Sender},
     solana_measure::measure_us,
     solana_poh::poh_recorder::SharedWorkingBank,
@@ -33,6 +37,7 @@ pub(crate) struct ConsumeWorker<Tx> {
     exit: Arc<AtomicBool>,
     consume_receiver: Receiver<ConsumeWork<Tx>>,
     consumer: Consumer,
+    bundle_consumer: Option<BundleConsumer>,
     consumed_sender: Sender<FinishedConsumeWork<Tx>>,
 
     shared_working_bank: SharedWorkingBank,
@@ -45,6 +50,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         exit: Arc<AtomicBool>,
         consume_receiver: Receiver<ConsumeWork<Tx>>,
         consumer: Consumer,
+        bundle_consumer: Option<BundleConsumer>,
         consumed_sender: Sender<FinishedConsumeWork<Tx>>,
         shared_working_bank: SharedWorkingBank,
     ) -> Self {
@@ -52,6 +58,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             exit,
             consume_receiver,
             consumer,
+            bundle_consumer,
             consumed_sender,
             shared_working_bank,
             metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
@@ -62,7 +69,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.clone()
     }
 
-    pub fn run(self, reservation_cb: impl Fn(&Bank) -> u64) -> Result<(), ConsumeWorkerError<Tx>> {
+    pub fn run(
+        mut self,
+        reservation_cb: impl Fn(&Bank) -> u64,
+    ) -> Result<(), ConsumeWorkerError<Tx>> {
         while !self.exit.load(Ordering::Relaxed) {
             let work = self.consume_receiver.recv()?;
             self.consume_loop(work, &reservation_cb)?;
@@ -71,7 +81,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     fn consume_loop(
-        &self,
+        &mut self,
         work: ConsumeWork<Tx>,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Result<(), ConsumeWorkerError<Tx>> {
@@ -88,7 +98,10 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .wait_for_bank_success_us
             .fetch_add(get_bank_us, Ordering::Relaxed);
 
-        for work in try_drain_iter(work, &self.consume_receiver) {
+        // Collect all work items first to avoid borrow checker issues
+        let work_items: Vec<_> = try_drain_iter(work, &self.consume_receiver).collect();
+
+        for work in work_items {
             self.metrics
                 .count_metrics
                 .max_queue_len
@@ -127,29 +140,141 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(())
     }
 
-    /// Consume a single batch.
+    /// Consume a single batch of work items (transactions and/or bundles).
+    ///
+    /// Process items in priority order while batching consecutive transactions for efficiency.
+    /// Example: [Tx1, Tx2, B1, Tx3, Tx4] → batch[Tx1,Tx2] → B1 → batch[Tx3,Tx4]
     fn consume(
-        &self,
+        &mut self,
         bank: &Arc<Bank>,
-        work: ConsumeWork<Tx>,
+        mut work: ConsumeWork<Tx>,
         reservation_cb: &impl Fn(&Bank) -> u64,
     ) -> Result<(), ConsumeWorkerError<Tx>> {
-        let output = self.consumer.process_and_record_aged_transactions(
-            bank,
-            &work.transactions,
-            &work.max_ages,
-            reservation_cb,
+        let items = std::mem::take(&mut work.items);
+        let mut retryable_transaction_indexes = Vec::new();
+        let mut retryable_bundle_ids = Vec::new();
+
+        let mut current_tx_batch = Vec::new();
+        let mut current_tx_ids = Vec::new();
+        let mut current_tx_max_ages = Vec::new();
+        let mut processed_items = Vec::new();
+        let mut tx_index_offset = 0;
+
+        // Helper to flush accumulated transaction batch
+        let flush_tx_batch = |batch: &mut Vec<Tx>,
+                              ids: &mut Vec<_>,
+                              max_ages: &mut Vec<_>,
+                              processed: &mut Vec<_>,
+                              retryable: &mut Vec<usize>,
+                              offset: &mut usize,
+                              consumer: &Consumer,
+                              metrics: &ConsumeWorkerMetrics| {
+            if batch.is_empty() {
+                return;
+            }
+
+            let output = consumer.process_and_record_aged_transactions(
+                bank,
+                batch,
+                max_ages,
+                reservation_cb,
+            );
+
+            metrics.update_for_consume(&output);
+            metrics.has_data.store(true, Ordering::Relaxed);
+
+            // Map batch-relative retryable indexes to global indexes
+            for batch_idx in output
+                .execute_and_commit_transactions_output
+                .retryable_transaction_indexes
+            {
+                retryable.push(*offset + batch_idx);
+            }
+
+            // Reconstruct items for return
+            for ((id, tx), max_age) in ids.drain(..).zip(batch.drain(..)).zip(max_ages.drain(..)) {
+                processed.push(ConsumeWorkItem::Transaction {
+                    id,
+                    transaction: tx,
+                    max_age,
+                });
+            }
+
+            *offset += processed.len();
+        };
+
+        // Process items in order, batching consecutive transactions
+        for item in items {
+            match item {
+                ConsumeWorkItem::Transaction {
+                    id,
+                    transaction,
+                    max_age,
+                } => {
+                    current_tx_batch.push(transaction);
+                    current_tx_ids.push(id);
+                    current_tx_max_ages.push(max_age);
+                }
+                ConsumeWorkItem::Bundle {
+                    id,
+                    bundle,
+                    max_age,
+                } => {
+                    // Flush any pending transaction batch before processing bundle
+                    flush_tx_batch(
+                        &mut current_tx_batch,
+                        &mut current_tx_ids,
+                        &mut current_tx_max_ages,
+                        &mut processed_items,
+                        &mut retryable_transaction_indexes,
+                        &mut tx_index_offset,
+                        &self.consumer,
+                        &self.metrics,
+                    );
+
+                    // Execute bundle - locks already held by ThreadAwareAccountLocks
+                    if let Some(bundle_consumer) = &mut self.bundle_consumer {
+                        match bundle_consumer.process_single_bundle(bank, &bundle, true) {
+                            Ok(_) => {
+                                // Bundle executed successfully
+                            }
+                            Err(_) => {
+                                retryable_bundle_ids.push(id);
+                            }
+                        }
+                    } else {
+                        retryable_bundle_ids.push(id);
+                    }
+
+                    processed_items.push(ConsumeWorkItem::Bundle {
+                        id,
+                        bundle,
+                        max_age,
+                    });
+                }
+            }
+        }
+
+        // Flush any remaining transactions
+        flush_tx_batch(
+            &mut current_tx_batch,
+            &mut current_tx_ids,
+            &mut current_tx_max_ages,
+            &mut processed_items,
+            &mut retryable_transaction_indexes,
+            &mut tx_index_offset,
+            &self.consumer,
+            &self.metrics,
         );
 
-        self.metrics.update_for_consume(&output);
-        self.metrics.has_data.store(true, Ordering::Relaxed);
+        work.items = processed_items;
 
         self.consumed_sender.send(FinishedConsumeWork {
             work,
-            retryable_indexes: output
-                .execute_and_commit_transactions_output
-                .retryable_transaction_indexes,
+            retryable_transaction_indexes,
+            retryable_bundle_ids,
         })?;
+
         Ok(())
     }
 
@@ -173,8 +298,11 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
     }
 
     /// Retry current batch and all outstanding batches.
-    fn retry_drain(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
-        for work in try_drain_iter(work, &self.consume_receiver) {
+    fn retry_drain(&mut self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
+        // Collect all work items first to avoid borrow checker issues
+        let work_items: Vec<_> = try_drain_iter(work, &self.consume_receiver).collect();
+
+        for work in work_items {
             if self.exit.load(Ordering::Relaxed) {
                 return Ok(());
             }
@@ -183,9 +311,19 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         Ok(())
     }
 
-    /// Send transactions back to scheduler as retryable.
+    /// Send transactions and bundles back to scheduler as retryable.
     fn retry(&self, work: ConsumeWork<Tx>) -> Result<(), ConsumeWorkerError<Tx>> {
-        let retryable_indexes: Vec<_> = (0..work.transactions.len()).collect();
+        let mut num_transactions = 0;
+        let mut retryable_bundle_ids = Vec::new();
+
+        for item in &work.items {
+            match item {
+                ConsumeWorkItem::Transaction { .. } => num_transactions += 1,
+                ConsumeWorkItem::Bundle { id, .. } => retryable_bundle_ids.push(*id),
+            }
+        }
+
+        let retryable_indexes: Vec<_> = (0..num_transactions).collect();
         let num_retryable = retryable_indexes.len();
         self.metrics
             .count_metrics
@@ -198,7 +336,8 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         self.metrics.has_data.store(true, Ordering::Relaxed);
         self.consumed_sender.send(FinishedConsumeWork {
             work,
-            retryable_indexes,
+            retryable_transaction_indexes: retryable_indexes,
+            retryable_bundle_ids,
         })?;
         Ok(())
     }
@@ -897,6 +1036,7 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             consume_receiver,
             consumer,
+            None, // No bundle consumer for tests
             consumed_sender,
             poh_recorder.read().unwrap().shared_working_bank(),
         );
@@ -948,16 +1088,20 @@ mod tests {
         };
         let work = ConsumeWork {
             batch_id: bid,
-            ids: vec![id],
-            transactions,
-            max_ages: vec![max_age],
+            items: transactions
+                .into_iter()
+                .map(|tx| ConsumeWorkItem::Transaction {
+                    id,
+                    transaction: tx,
+                    max_age,
+                })
+                .collect(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid);
-        assert_eq!(consumed.work.ids, vec![id]);
-        assert_eq!(consumed.work.max_ages, vec![max_age]);
-        assert_eq!(consumed.retryable_indexes, vec![0]);
+        assert_eq!(consumed.work.items.len(), 1);
+        assert_eq!(consumed.retryable_transaction_indexes, vec![0]);
 
         drop(test_frame);
         let _ = worker_thread.join().unwrap();
@@ -997,16 +1141,20 @@ mod tests {
         };
         let work = ConsumeWork {
             batch_id: bid,
-            ids: vec![id],
-            transactions,
-            max_ages: vec![max_age],
+            items: transactions
+                .into_iter()
+                .map(|tx| ConsumeWorkItem::Transaction {
+                    id,
+                    transaction: tx,
+                    max_age,
+                })
+                .collect(),
         };
         consume_sender.send(work).unwrap();
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid);
-        assert_eq!(consumed.work.ids, vec![id]);
-        assert_eq!(consumed.work.max_ages, vec![max_age]);
-        assert_eq!(consumed.retryable_indexes, Vec::<usize>::new());
+        assert_eq!(consumed.work.items.len(), 1);
+        assert_eq!(consumed.retryable_transaction_indexes, Vec::<usize>::new());
 
         drop(test_frame);
         let _ = worker_thread.join().unwrap();
@@ -1049,20 +1197,28 @@ mod tests {
         consume_sender
             .send(ConsumeWork {
                 batch_id: bid,
-                ids: vec![id1, id2],
-                transactions: txs,
-                max_ages: vec![max_age, max_age],
+                items: vec![
+                    ConsumeWorkItem::Transaction {
+                        id: id1,
+                        transaction: txs[0].clone(),
+                        max_age,
+                    },
+                    ConsumeWorkItem::Transaction {
+                        id: id2,
+                        transaction: txs[1].clone(),
+                        max_age,
+                    },
+                ],
             })
             .unwrap();
 
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid);
-        assert_eq!(consumed.work.ids, vec![id1, id2]);
-        assert_eq!(consumed.work.max_ages, vec![max_age, max_age]);
+        assert_eq!(consumed.work.items.len(), 2);
 
         // id2 succeeds with simd83, or is retryable due to lock conflict without simd83
         assert_eq!(
-            consumed.retryable_indexes,
+            consumed.retryable_transaction_indexes,
             if relax_intrabatch_account_locks {
                 vec![]
             } else {
@@ -1119,31 +1275,39 @@ mod tests {
         consume_sender
             .send(ConsumeWork {
                 batch_id: bid1,
-                ids: vec![id1],
-                transactions: txs1,
-                max_ages: vec![max_age],
+                items: txs1
+                    .into_iter()
+                    .map(|tx| ConsumeWorkItem::Transaction {
+                        id: id1,
+                        transaction: tx,
+                        max_age,
+                    })
+                    .collect(),
             })
             .unwrap();
 
         consume_sender
             .send(ConsumeWork {
                 batch_id: bid2,
-                ids: vec![id2],
-                transactions: txs2,
-                max_ages: vec![max_age],
+                items: txs2
+                    .into_iter()
+                    .map(|tx| ConsumeWorkItem::Transaction {
+                        id: id2,
+                        transaction: tx,
+                        max_age,
+                    })
+                    .collect(),
             })
             .unwrap();
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid1);
-        assert_eq!(consumed.work.ids, vec![id1]);
-        assert_eq!(consumed.work.max_ages, vec![max_age]);
-        assert_eq!(consumed.retryable_indexes, Vec::<usize>::new());
+        assert_eq!(consumed.work.items.len(), 1);
+        assert_eq!(consumed.retryable_transaction_indexes, Vec::<usize>::new());
 
         let consumed = consumed_receiver.recv().unwrap();
         assert_eq!(consumed.work.batch_id, bid2);
-        assert_eq!(consumed.work.ids, vec![id2]);
-        assert_eq!(consumed.work.max_ages, vec![max_age]);
-        assert_eq!(consumed.retryable_indexes, Vec::<usize>::new());
+        assert_eq!(consumed.work.items.len(), 1);
+        assert_eq!(consumed.retryable_transaction_indexes, Vec::<usize>::new());
 
         drop(test_frame);
         let _ = worker_thread.join().unwrap();
@@ -1238,42 +1402,49 @@ mod tests {
             .unwrap();
         }
 
+        let max_ages = vec![
+            MaxAge {
+                sanitized_epoch: bank.epoch() - 1,
+                alt_invalidation_slot: Slot::MAX,
+            },
+            MaxAge {
+                sanitized_epoch: bank.epoch(),
+                alt_invalidation_slot: Slot::MAX,
+            },
+            MaxAge {
+                sanitized_epoch: bank.epoch() + 1,
+                alt_invalidation_slot: Slot::MAX,
+            },
+            MaxAge {
+                sanitized_epoch: bank.epoch(),
+                alt_invalidation_slot: bank.slot() - 1,
+            },
+            MaxAge {
+                sanitized_epoch: bank.epoch(),
+                alt_invalidation_slot: bank.slot(),
+            },
+            MaxAge {
+                sanitized_epoch: bank.epoch(),
+                alt_invalidation_slot: bank.slot() + 1,
+            },
+        ];
         consume_sender
             .send(ConsumeWork {
                 batch_id: TransactionBatchId::new(1),
-                ids: vec![0, 1, 2, 3, 4, 5],
-                transactions: txs,
-                max_ages: vec![
-                    MaxAge {
-                        sanitized_epoch: bank.epoch() - 1,
-                        alt_invalidation_slot: Slot::MAX,
-                    },
-                    MaxAge {
-                        sanitized_epoch: bank.epoch(),
-                        alt_invalidation_slot: Slot::MAX,
-                    },
-                    MaxAge {
-                        sanitized_epoch: bank.epoch() + 1,
-                        alt_invalidation_slot: Slot::MAX,
-                    },
-                    MaxAge {
-                        sanitized_epoch: bank.epoch(),
-                        alt_invalidation_slot: bank.slot() - 1,
-                    },
-                    MaxAge {
-                        sanitized_epoch: bank.epoch(),
-                        alt_invalidation_slot: bank.slot(),
-                    },
-                    MaxAge {
-                        sanitized_epoch: bank.epoch(),
-                        alt_invalidation_slot: bank.slot() + 1,
-                    },
-                ],
+                items: txs
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, tx)| ConsumeWorkItem::Transaction {
+                        id: i,
+                        transaction: tx,
+                        max_age: max_ages[i],
+                    })
+                    .collect(),
             })
             .unwrap();
 
         let consumed = consumed_receiver.recv().unwrap();
-        assert_eq!(consumed.retryable_indexes, Vec::<usize>::new());
+        assert_eq!(consumed.retryable_transaction_indexes, Vec::<usize>::new());
         // all but one succeed. 6 for initial funding
         assert_eq!(bank.transaction_count(), 6 + 5);
 

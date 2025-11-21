@@ -106,8 +106,10 @@ impl SigVerifier {
     }
 }
 
-/// For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
-/// from the Bank's block cost limit.
+/// Deprecated: For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
+/// from the Bank's block cost limit. No longer used with unified scheduling where bundles and
+/// transactions compete fairly based on priority.
+#[allow(dead_code)]
 fn calculate_block_cost_limit_reservation(
     bank: &Bank,
     reserved_ticks: u64,
@@ -192,6 +194,7 @@ impl Tpu {
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        #[allow(unused_variables)] // Deprecated: no longer needed with unified scheduling
         preallocated_bundle_cost: u64,
         batch_interval: Duration,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
@@ -429,6 +432,7 @@ impl Tpu {
         // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
         // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
         // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
+        #[allow(unused_variables)]
         let reserved_ticks = poh_recorder
             .read()
             .unwrap()
@@ -456,13 +460,7 @@ impl Tpu {
             prioritization_fee_cache.clone(),
             blacklisted_accounts,
             bundle_account_locker.clone(),
-            move |bank| {
-                calculate_block_cost_limit_reservation(
-                    bank,
-                    reserved_ticks,
-                    preallocated_bundle_cost,
-                )
-            },
+            |_bank| 0, // No blockspace reservation - bundles compete fairly with transactions in unified scheduler
             batch_interval,
             MAX_BUNDLE_RETRY_DURATION,
             cluster_info.clone(),

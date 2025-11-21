@@ -20,10 +20,8 @@ pub (crate) struct BundleState {
     /// is valid for.
     max_age: MaxAge,
     /// Priority of the bundle.
-    #[allow(dead_code)]
     priority: u64,
     /// Estimated cost of the bundle.
-    #[allow(dead_code)]
     cost: u64,
 }
 
@@ -51,11 +49,19 @@ impl BundleState {
         (bundle, self.max_age)
     }
 
+    /// Return the priority of the bundle.
+    /// This is *not* the same as the `compute_unit_price` of the bundle transactions.
+    /// The priority is used to order bundles for processing.
     pub(crate) fn priority(&self) -> u64 {
         self.priority
     }
 
-    // When the bundle is retried or cost buffered
+    /// Returns the cost of the bundle.
+    pub(crate) fn cost(&self) -> u64 {
+        self.cost
+    }
+
+    /// When the bundle is retried or cost buffered
     /// Intended to be called when a bundle is retried. This method will
     /// put the bundle back into the state.
     /// # Panics
