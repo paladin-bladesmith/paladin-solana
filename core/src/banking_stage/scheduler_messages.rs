@@ -1,6 +1,5 @@
 use {
-    solana_clock::{Epoch, Slot},
-    std::fmt::Display,
+    solana_bundle::SanitizedBundle, solana_clock::{Epoch, Slot}, std::fmt::Display
 };
 
 /// A unique identifier for a transaction batch.
@@ -20,6 +19,7 @@ impl Display for TransactionBatchId {
 }
 
 pub type TransactionId = usize;
+pub type BundleId = usize;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MaxAge {
@@ -34,18 +34,35 @@ impl MaxAge {
     };
 }
 
+/// A work item that can be either a transaction or a bundle
+pub enum ConsumeWorkItem<Tx> {
+    Transaction {
+        id: TransactionId,
+        transaction: Tx,
+        max_age: MaxAge,
+    },
+    Bundle {
+        id: BundleId,
+        bundle: SanitizedBundle,
+        /// Max age for bundle validity.
+        #[allow(dead_code)]
+        max_age: MaxAge,
+    },
+}
+
 /// Message: [Scheduler -> Worker]
-/// Transactions to be consumed (i.e. executed, recorded, and committed)
+/// Work items (transactions and/or bundles) to be consumed (i.e. executed, recorded, and committed)
 pub struct ConsumeWork<Tx> {
     pub batch_id: TransactionBatchId,
-    pub ids: Vec<TransactionId>,
-    pub transactions: Vec<Tx>,
-    pub max_ages: Vec<MaxAge>,
+    pub items: Vec<ConsumeWorkItem<Tx>>,
 }
 
 /// Message: [Worker -> Scheduler]
-/// Processed transactions.
+/// Processed work items with retry information.
+/// For transactions: retryable_transaction_indexes contains indexes into the items vec
+/// For bundles: retryable_bundle_ids contains the bundle IDs that should be retried
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
-    pub retryable_indexes: Vec<usize>,
+    pub retryable_transaction_indexes: Vec<usize>,
+    pub retryable_bundle_ids: Vec<BundleId>,
 }

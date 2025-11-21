@@ -67,6 +67,9 @@ impl Drop for LockedBundle<'_, '_> {
 pub struct BundleAccountLocks {
     read_locks: HashMap<Pubkey, u64>,
     write_locks: HashMap<Pubkey, u64>,
+    // Tracks accounts reserved by scheduled transactions that haven't been executed yet.
+    // This prevents bundles from locking accounts that higher-priority transactions need.
+    reserved_accounts: HashMap<Pubkey, u64>,
 }
 
 impl BundleAccountLocks {
@@ -134,7 +137,8 @@ impl BundleAccountLocker {
     }
 
     /// Prepares a locked bundle and returns a LockedBundle containing locked accounts.
-    /// When a LockedBundle is dropped, the accounts are automatically unlocked
+    /// When a LockedBundle is dropped, the accounts are automatically unlocked.
+    /// Returns ReservationConflict error if accounts are reserved by scheduled transactions.
     pub fn prepare_locked_bundle<'a, 'b>(
         &'a self,
         sanitized_bundle: &'b SanitizedBundle,
@@ -142,10 +146,11 @@ impl BundleAccountLocker {
     ) -> BundleAccountLockerResult<LockedBundle<'a, 'b>> {
         let (read_locks, write_locks) = Self::get_read_write_locks(sanitized_bundle, bank)?;
 
-        self.account_locks
-            .lock()
-            .unwrap()
-            .lock_accounts(read_locks, write_locks);
+        let mut locks = self.account_locks.lock().unwrap();
+
+        locks.lock_accounts(read_locks, write_locks);
+        drop(locks);
+
         Ok(LockedBundle::new(self, sanitized_bundle, bank))
     }
 
@@ -242,6 +247,7 @@ mod tests {
 
         let kp0 = Keypair::new();
         let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
 
         let tx0 = VersionedTransaction::from(transfer(
             &mint_keypair,
@@ -249,12 +255,8 @@ mod tests {
             1,
             genesis_config.hash(),
         ));
-        let tx1 = VersionedTransaction::from(transfer(
-            &mint_keypair,
-            &kp1.pubkey(),
-            1,
-            genesis_config.hash(),
-        ));
+        let tx1 =
+            VersionedTransaction::from(transfer(&kp2, &kp1.pubkey(), 1, genesis_config.hash()));
 
         let mut packet_bundle0 = PacketBundle {
             batch: PacketBatch::from(vec![BytesPacket::from_data(None, &tx0).unwrap()]),
@@ -309,7 +311,12 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp0.pubkey(), kp1.pubkey()])
+            HashSet::from_iter([
+                mint_keypair.pubkey(),
+                kp0.pubkey(),
+                kp2.pubkey(),
+                kp1.pubkey()
+            ])
         );
         assert_eq!(
             bundle_account_locker
@@ -329,7 +336,7 @@ mod tests {
                 .keys()
                 .cloned()
                 .collect::<HashSet<Pubkey>>(),
-            HashSet::from_iter([mint_keypair.pubkey(), kp1.pubkey()])
+            HashSet::from_iter([kp2.pubkey(), kp1.pubkey()])
         );
         assert_eq!(
             bundle_account_locker

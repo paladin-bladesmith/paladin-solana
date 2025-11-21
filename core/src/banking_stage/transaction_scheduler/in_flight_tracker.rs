@@ -14,7 +14,7 @@ pub struct InFlightTracker {
 
 struct BatchEntry {
     thread_id: ThreadId,
-    num_transactions: usize,
+    num_items: usize,
     total_cus: u64,
 }
 
@@ -38,23 +38,23 @@ impl InFlightTracker {
         &self.cus_in_flight_per_thread
     }
 
-    /// Tracks number of transactions and CUs in-flight for the `thread_id`.
+    /// Tracks number of work items (transactions and bundles) and CUs in-flight for the `thread_id`.
     /// Returns a `TransactionBatchId` that can be used to stop tracking the batch
     /// when it is complete.
     pub fn track_batch(
         &mut self,
-        num_transactions: usize,
+        num_items: usize,
         total_cus: u64,
         thread_id: ThreadId,
     ) -> TransactionBatchId {
         let batch_id = self.batch_id_generator.next();
-        self.num_in_flight_per_thread[thread_id] += num_transactions;
+        self.num_in_flight_per_thread[thread_id] += num_items;
         self.cus_in_flight_per_thread[thread_id] += total_cus;
         self.batches.insert(
             batch_id,
             BatchEntry {
                 thread_id,
-                num_transactions,
+                num_items,
                 total_cus,
             },
         );
@@ -63,7 +63,7 @@ impl InFlightTracker {
     }
 
     /// Stop tracking the batch with given `batch_id`.
-    /// Removes the number of transactions for the scheduled thread.
+    /// Removes the number of work items (transactions and bundles) for the scheduled thread.
     /// Returns the thread id that the batch was scheduled on.
     ///
     /// # Panics
@@ -71,13 +71,13 @@ impl InFlightTracker {
     pub fn complete_batch(&mut self, batch_id: TransactionBatchId) -> ThreadId {
         let Some(BatchEntry {
             thread_id,
-            num_transactions,
+            num_items,
             total_cus,
         }) = self.batches.remove(&batch_id)
         else {
             panic!("batch id {batch_id} is not being tracked");
         };
-        self.num_in_flight_per_thread[thread_id] -= num_transactions;
+        self.num_in_flight_per_thread[thread_id] -= num_items;
         self.cus_in_flight_per_thread[thread_id] -= total_cus;
 
         thread_id

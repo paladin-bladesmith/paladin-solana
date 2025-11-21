@@ -9,7 +9,7 @@ use {
         admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
         banking_stage::BankingStage,
         banking_trace::{Channels, TracerThread},
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, MAX_BUNDLE_RETRY_DURATION},
         cluster_info_vote_listener::{
             ClusterInfoVoteListener, DuplicateConfirmedSlotsSender, GossipVerifiedVoteHashSender,
             VerifiedVoteSender, VoteTracker,
@@ -106,8 +106,10 @@ impl SigVerifier {
     }
 }
 
-/// For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
-/// from the Bank's block cost limit.
+/// Deprecated: For the first `reserved_ticks` ticks of a bank, the preallocated_bundle_cost is subtracted
+/// from the Bank's block cost limit. No longer used with unified scheduling where bundles and
+/// transactions compete fairly based on priority.
+#[allow(dead_code)]
 fn calculate_block_cost_limit_reservation(
     bank: &Bank,
     reserved_ticks: u64,
@@ -137,7 +139,7 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    // bundle_stage: BundleStage,
     p3_quic: std::thread::JoinHandle<()>,
 }
 
@@ -192,6 +194,7 @@ impl Tpu {
         leader_schedule_cache: Arc<LeaderScheduleCache>,
         tip_manager_config: TipManagerConfig,
         shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
+        #[allow(unused_variables)] // Deprecated: no longer needed with unified scheduling
         preallocated_bundle_cost: u64,
         batch_interval: Duration,
         (p3_socket, p3_mev_socket): (SocketAddr, SocketAddr),
@@ -429,6 +432,7 @@ impl Tpu {
         // The tip program can't be used in BankingStage to avoid someone from stealing tips mid-slot.
         // The first 80% of the block, based on poh ticks, has `preallocated_bundle_cost` less compute units.
         // The last 20% has has full compute so blockspace is maximized if BundleStage is idle.
+        #[allow(unused_variables)]
         let reserved_ticks = poh_recorder
             .read()
             .unwrap()
@@ -447,6 +451,7 @@ impl Tpu {
             banking_stage_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            bundle_receiver,
             block_production_num_workers,
             transaction_status_sender.clone(),
             replay_vote_sender.clone(),
@@ -455,14 +460,12 @@ impl Tpu {
             prioritization_fee_cache.clone(),
             blacklisted_accounts,
             bundle_account_locker.clone(),
-            move |bank| {
-                calculate_block_cost_limit_reservation(
-                    bank,
-                    reserved_ticks,
-                    preallocated_bundle_cost,
-                )
-            },
+            |_bank| 0, // No blockspace reservation - bundles compete fairly with transactions in unified scheduler
             batch_interval,
+            MAX_BUNDLE_RETRY_DURATION,
+            cluster_info.clone(),
+            tip_manager,
+            block_builder_fee_info,
         );
 
         let SpawnForwardingStageResult {
@@ -477,20 +480,22 @@ impl Tpu {
             DataBudget::default(),
         );
 
-        let bundle_stage = BundleStage::new(
-            cluster_info,
-            poh_recorder,
-            transaction_recorder,
-            bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            exit.clone(),
-            tip_manager,
-            bundle_account_locker,
-            &block_builder_fee_info,
-            prioritization_fee_cache,
-        );
+        // TODO: Remove bundle stage entirely
+        // Processing bundles in banking stage
+        // let bundle_stage = BundleStage::new(
+        //     cluster_info,
+        //     poh_recorder,
+        //     transaction_recorder,
+        //     bundle_receiver,
+        //     transaction_status_sender,
+        //     replay_vote_sender,
+        //     log_messages_bytes_limit,
+        //     exit.clone(),
+        //     tip_manager,
+        //     bundle_account_locker,
+        //     &block_builder_fee_info,
+        //     prioritization_fee_cache,
+        // );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -552,7 +557,7 @@ impl Tpu {
             block_engine_stage,
             relayer_stage,
             fetch_stage_manager,
-            bundle_stage,
+            // bundle_stage,
             p3_quic,
         }
     }
@@ -569,7 +574,7 @@ impl Tpu {
             self.tpu_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_forwards_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_vote_quic_t.join(),
-            self.bundle_stage.join(),
+            // self.bundle_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),
             self.fetch_stage_manager.join(),

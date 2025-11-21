@@ -5,17 +5,14 @@ use {
     super::{
         receive_and_buffer::{DisconnectedError, ReceiveAndBuffer},
         scheduler::{PreLockFilterAction, Scheduler},
-        scheduler_error::SchedulerError,
-        scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        scheduler_error::SchedulerError, scheduler_metrics::{SchedulerCountMetrics, SchedulerTimingMetrics, SchedulingDetails},
+        unified_state_container::StateContainer,
+        receive_and_buffer::ReceivingStats,
     },
     crate::banking_stage::{
-        consume_worker::ConsumeWorkerMetrics,
+        TOTAL_BUFFERED_PACKETS, consume_worker::ConsumeWorkerMetrics,
         consumer::Consumer,
         decision_maker::{BufferedPacketsDecision, DecisionMaker},
-        transaction_scheduler::{
-            receive_and_buffer::ReceivingStats, transaction_state_container::StateContainer,
-        },
-        TOTAL_BUFFERED_PACKETS,
     },
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
@@ -24,8 +21,7 @@ use {
     std::{
         num::Saturating,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, RwLock, atomic::{AtomicBool, Ordering}
         },
     },
 };
@@ -116,6 +112,11 @@ where
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
+            // Receive bundles into the receive_and_buffer's bundle store.
+            // If the bundle receiver is disconnected, treat it as zero bundles received
+            let _ = self
+                .receive_and_buffer
+                .receive_and_buffer_bundles(&mut self.container, &decision);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
@@ -237,7 +238,13 @@ where
             let Some(id) = self.container.pop() else {
                 break;
             };
-            transaction_ids.push(id);
+            // Only clean transactions, push bundles back immediately
+            if id.is_transaction() {
+                transaction_ids.push(id);
+            } else {
+                // Bundle - push back, don't clean
+                self.container.push_ids_into_queue(std::iter::once(id));
+            }
         }
 
         let bank = self.bank_forks.read().unwrap().working_bank();
@@ -251,7 +258,7 @@ where
                 .iter()
                 .map(|id| {
                     self.container
-                        .get_transaction(id.id)
+                        .get_transaction(id.get_id())
                         .expect("transaction must exist")
                 })
                 .collect();
@@ -326,6 +333,10 @@ where
                 num_dropped_on_blacklisted_account,
                 receive_time_us: _,
                 buffer_time_us: _,
+                num_bundles_buffered: _,
+                num_bundles_dropped_on_capacity: _,
+                num_bundles_dropped_on_sanitization: _,
+                num_bundles_received: _,
             } = &receiving_stats;
 
             count_metrics.num_received += *num_received;
@@ -355,6 +366,8 @@ where
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use crate::bundle_stage::bundle_packet_receiver::BundleReceiver;
+
     use {
         super::*,
         crate::banking_stage::{
@@ -414,11 +427,14 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> SanitizedTransactionReceiveAndBuffer {
+        let (_bundle_sender, bundle_receiver) = unbounded();
         SanitizedTransactionReceiveAndBuffer::new(
             PacketDeserializer::new(receiver),
+            BundleReceiver::new(10_000, bundle_receiver, None),
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
+            HashSet::new(),
         )
     }
 
@@ -427,7 +443,19 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts, Duration::ZERO)
+        let (_bundle_sender, bundle_receiver) = unbounded();
+        TransactionViewReceiveAndBuffer::new(
+            receiver,
+            BundleReceiver::new(
+                10_000,
+                bundle_receiver,
+                None,
+            ),
+            bank_forks,
+            blacklisted_accounts,
+            Duration::ZERO,
+            HashSet::new(),
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -552,7 +580,10 @@ mod tests {
             .map(|n| n.num_received > 0)
             .unwrap_or_default()
         {}
-        scheduler_controller.receive_and_buffer.maybe_queue_batch(&mut scheduler_controller.container, &decision);
+        // Ensure batches are queued into the container before processing
+        scheduler_controller
+            .receive_and_buffer
+            .maybe_queue_batch(&mut scheduler_controller.container, &decision);
         assert!(scheduler_controller.process_transactions(&decision).is_ok());
     }
 
@@ -576,11 +607,10 @@ mod tests {
             .send(FinishedConsumeWork {
                 work: ConsumeWork {
                     batch_id: TransactionBatchId::new(0),
-                    ids: vec![],
-                    transactions: vec![],
-                    max_ages: vec![],
+                    items: vec![],
                 },
-                retryable_indexes: vec![],
+                retryable_transaction_indexes: vec![],
+                retryable_bundle_ids: vec![],
             })
             .unwrap();
 
@@ -638,12 +668,14 @@ mod tests {
 
         test_receive_then_schedule(&mut scheduler_controller);
         let consume_work = consume_work_receivers[0].try_recv().unwrap();
-        assert_eq!(consume_work.ids.len(), 2);
-        assert_eq!(consume_work.transactions.len(), 2);
+        assert_eq!(consume_work.items.len(), 2);
         let message_hashes = consume_work
-            .transactions
+            .items
             .iter()
-            .map(|tx| tx.message_hash())
+            .map(|item| match item {
+                crate::banking_stage::scheduler_messages::ConsumeWorkItem::Transaction { transaction, .. } => transaction.message_hash(),
+                _ => panic!("Expected transaction"),
+            })
             .collect_vec();
         assert_eq!(message_hashes, vec![&tx2_hash, &tx1_hash]);
     }
@@ -703,10 +735,13 @@ mod tests {
             .map(|_| consume_work_receivers[0].try_recv().unwrap())
             .collect_vec();
 
-        let num_txs_per_batch = consume_works.iter().map(|cw| cw.ids.len()).collect_vec();
+        let num_txs_per_batch = consume_works.iter().map(|cw| cw.items.len()).collect_vec();
         let message_hashes = consume_works
             .iter()
-            .flat_map(|cw| cw.transactions.iter().map(|tx| tx.message_hash()))
+            .flat_map(|cw| cw.items.iter().map(|item| match item {
+                crate::banking_stage::scheduler_messages::ConsumeWorkItem::Transaction { transaction, .. } => transaction.message_hash(),
+                _ => panic!("Expected transaction"),
+            }))
             .collect_vec();
         assert_eq!(num_txs_per_batch, vec![1; 2]);
         assert_eq!(message_hashes, vec![&tx2_hash, &tx1_hash]);
@@ -776,7 +811,7 @@ mod tests {
             .collect_vec();
 
         assert_eq!(
-            consume_works.iter().map(|cw| cw.ids.len()).collect_vec(),
+            consume_works.iter().map(|cw| cw.items.len()).collect_vec(),
             vec![TARGET_NUM_TRANSACTIONS_PER_BATCH; 4]
         );
     }
@@ -837,16 +872,22 @@ mod tests {
         let t0_actual = consume_work_receivers[0]
             .try_recv()
             .unwrap()
-            .transactions
+            .items
             .iter()
-            .map(|tx| *tx.message_hash())
+            .map(|item| match item {
+                crate::banking_stage::scheduler_messages::ConsumeWorkItem::Transaction { transaction, .. } => *transaction.message_hash(),
+                _ => panic!("Expected transaction"),
+            })
             .collect_vec();
         let t1_actual = consume_work_receivers[1]
             .try_recv()
             .unwrap()
-            .transactions
+            .items
             .iter()
-            .map(|tx| *tx.message_hash())
+            .map(|item| match item {
+                crate::banking_stage::scheduler_messages::ConsumeWorkItem::Transaction { transaction, .. } => *transaction.message_hash(),
+                _ => panic!("Expected transaction"),
+            })
             .collect_vec();
 
         assert_eq!(t0_actual, t0_expected);
@@ -905,12 +946,14 @@ mod tests {
 
         test_receive_then_schedule(&mut scheduler_controller);
         let consume_work = consume_work_receivers[0].try_recv().unwrap();
-        assert_eq!(consume_work.ids.len(), 2);
-        assert_eq!(consume_work.transactions.len(), 2);
+        assert_eq!(consume_work.items.len(), 2);
         let message_hashes = consume_work
-            .transactions
+            .items
             .iter()
-            .map(|tx| tx.message_hash())
+            .map(|item| match item {
+                crate::banking_stage::scheduler_messages::ConsumeWorkItem::Transaction { transaction, .. } => transaction.message_hash(),
+                _ => panic!("Expected transaction"),
+            })
             .collect_vec();
         assert_eq!(message_hashes, vec![&tx2_hash, &tx1_hash]);
 
@@ -918,19 +961,22 @@ mod tests {
         finished_consume_work_sender
             .send(FinishedConsumeWork {
                 work: consume_work,
-                retryable_indexes: vec![1],
+                retryable_transaction_indexes: vec![1],
+                retryable_bundle_ids: vec![],
             })
             .unwrap();
 
         // Transaction should be rescheduled
         test_receive_then_schedule(&mut scheduler_controller);
         let consume_work = consume_work_receivers[0].try_recv().unwrap();
-        assert_eq!(consume_work.ids.len(), 1);
-        assert_eq!(consume_work.transactions.len(), 1);
+        assert_eq!(consume_work.items.len(), 1);
         let message_hashes = consume_work
-            .transactions
+            .items
             .iter()
-            .map(|tx| tx.message_hash())
+            .map(|item| match item {
+                crate::banking_stage::scheduler_messages::ConsumeWorkItem::Transaction { transaction, .. } => transaction.message_hash(),
+                _ => panic!("Expected transaction"),
+            })
             .collect_vec();
         assert_eq!(message_hashes, vec![&tx1_hash]);
     }

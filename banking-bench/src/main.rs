@@ -2,10 +2,10 @@
 use {
     agave_banking_stage_ingress_types::BankingPacketBatch,
     assert_matches::assert_matches,
-    clap::{crate_description, crate_name, Arg, ArgEnum, Command},
-    crossbeam_channel::{unbounded, Receiver},
+    clap::{Arg, ArgEnum, Command, crate_description, crate_name},
+    crossbeam_channel::{Receiver, unbounded},
     log::*,
-    rand::{thread_rng, Rng},
+    rand::{Rng, thread_rng},
     rayon::prelude::*,
     solana_compute_budget_interface::ComputeBudgetInstruction,
     solana_core::{
@@ -21,14 +21,14 @@ use {
     solana_keypair::Keypair,
     solana_ledger::{
         blockstore::Blockstore,
-        genesis_utils::{create_genesis_config, GenesisConfigInfo},
+        genesis_utils::{GenesisConfigInfo, create_genesis_config},
         get_tmp_ledger_path_auto_delete,
         leader_schedule_cache::LeaderScheduleCache,
     },
     solana_measure::measure::Measure,
     solana_message::Message,
-    solana_perf::packet::{to_packet_batches, PacketBatch},
-    solana_poh::poh_recorder::{create_test_recorder, PohRecorder, WorkingBankEntry},
+    solana_perf::packet::{PacketBatch, to_packet_batches},
+    solana_poh::poh_recorder::{PohRecorder, WorkingBankEntry, create_test_recorder},
     solana_pubkey::{self as pubkey, Pubkey},
     solana_runtime::{
         bank::Bank, bank_forks::BankForks, prioritization_fee_cache::PrioritizationFeeCache,
@@ -42,7 +42,7 @@ use {
     std::{
         collections::HashSet,
         num::NonZeroUsize,
-        sync::{atomic::Ordering, Arc, RwLock},
+        sync::{Arc, RwLock, atomic::Ordering},
         thread::sleep,
         time::{Duration, Instant},
     },

@@ -58,6 +58,10 @@ impl From<BundleExecutionError> for RpcBundleExecutionError {
                 Self::BankProcessingTimeLimitReached
             }
             BundleExecutionError::ExceedsCostModel => Self::ExceedsCostModel,
+            BundleExecutionError::ReservationConflict => {
+                // Treat reservation conflicts as lock errors
+                Self::BundleLockError
+            }
             BundleExecutionError::TransactionFailure(load_and_execute_bundle_error) => {
                 match load_and_execute_bundle_error {
                     LoadAndExecuteBundleError::ProcessingTimeExceeded(_) => {
