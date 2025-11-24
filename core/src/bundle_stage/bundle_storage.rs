@@ -256,14 +256,6 @@ impl BundleStorage {
                         // lock errors are irrecoverable due to malformed transactions
                         debug!("bundle={} lock error", sanitized_bundle.bundle_id);
                     }
-                    Err(BundleExecutionError::ReservationConflict) => {
-                        // Reservation conflicts are retryable - buffer to try again
-                        debug!(
-                            "bundle={} reservation conflict, rebuffering",
-                            sanitized_bundle.bundle_id
-                        );
-                        self.push_back_cost_model_buffered_bundles(vec![deserialized_bundle]);
-                    }
                     // NB: Tip cutoff is static & front-runs will never succeed.
                     Err(BundleExecutionError::FrontRun) => {}
                 },

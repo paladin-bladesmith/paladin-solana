@@ -1,6 +1,5 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-
 use {
     super::{
         in_flight_tracker::InFlightTracker,
@@ -328,22 +327,9 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                     },
                 );
 
-                // Free the locks for transactions
+                // Free the locks
                 let thread_id = self.in_flight_tracker.complete_batch(batch_id);
-                
-                for transaction in &transactions {
-                    let account_keys = transaction.account_keys();
-                    let write_account_locks = account_keys
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, key)| transaction.is_writable(index).then_some(key));
-                    let read_account_locks = account_keys
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
-                    self.account_locks
-                        .unlock_accounts(write_account_locks, read_account_locks, thread_id);
-                }
+                self.complete_batch(&transactions, thread_id);
 
                 // Handle retryable transactions
                 let mut retryable_iter = retryable_transaction_indexes.iter().peekable();
@@ -385,6 +371,25 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
             )),
         }
     }
+
+    /// Mark a given `TransactionBatchId` as completed.
+    /// This will update the internal tracking, including account locks.
+    fn complete_batch(&mut self, transactions: &[Tx], thread_id: usize) {
+        for transaction in transactions {
+            let account_keys = transaction.account_keys();
+            let write_account_locks = account_keys
+                .iter()
+                .enumerate()
+                .filter_map(|(index, key)| transaction.is_writable(index).then_some(key));
+            let read_account_locks = account_keys
+                .iter()
+                .enumerate()
+                .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
+            self.account_locks
+                .unlock_accounts(write_account_locks, read_account_locks, thread_id);
+        }
+    }
+
 }
 
 #[cfg(test)]

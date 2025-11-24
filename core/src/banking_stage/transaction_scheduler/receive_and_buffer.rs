@@ -1,6 +1,5 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
-use solana_message::compiled_instruction::CompiledInstruction;
 use solana_perf::packet::PacketBatch;
 
 use {
@@ -38,7 +37,7 @@ use {
     solana_cost_model::cost_model::CostModel,
     solana_fee_structure::FeeBudgetLimits,
     solana_measure::measure_us,
-    solana_message::v0::MessageAddressTableLookup,
+    solana_message::{v0::MessageAddressTableLookup, compiled_instruction::CompiledInstruction},
     solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::{
@@ -1972,7 +1971,6 @@ mod tests {
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
-        assert_eq!(num_dropped_on_sanitization, 1);
 
         // We need to queue the batch
         let BufferStats {

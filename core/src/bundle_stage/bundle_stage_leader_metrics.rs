@@ -248,8 +248,7 @@ impl BundleStageStatsMetricsTracker {
                 Err(BundleExecutionError::TransactionFailure(
                     LoadAndExecuteBundleError::LockError { .. },
                 ))
-                | Err(BundleExecutionError::LockError)
-                | Err(BundleExecutionError::ReservationConflict) => {
+                | Err(BundleExecutionError::LockError) => {
                     bundle_stage_metrics
                         .num_lock_errors
                         .add_assign(Saturating(1));
