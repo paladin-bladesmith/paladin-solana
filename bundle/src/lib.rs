@@ -56,9 +56,6 @@ pub enum BundleExecutionError {
     #[error("Error locking bundle because a transaction is malformed")]
     LockError,
 
-    #[error("Reservation conflict - accounts reserved by higher-priority scheduled transactions")]
-    ReservationConflict,
-
     #[error("PoH record error: {0}")]
     PohRecordError(#[from] PohRecorderError),
 
