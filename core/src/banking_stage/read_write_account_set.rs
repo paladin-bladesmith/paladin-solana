@@ -47,6 +47,27 @@ impl ReadWriteAccountSet {
         self.write_set.clear();
     }
 
+    /// Check if locks are available for bulk accounts
+    /// Uses pre-deduplicated accounts from BundleState.
+    /// Returns true if all locks are available.
+    pub fn check_locks_bulk(&self, write_accounts: &[Pubkey], read_accounts: &[Pubkey]) -> bool {
+        write_accounts.iter().all(|pubkey| self.can_write(pubkey))
+            && read_accounts.iter().all(|pubkey| self.can_read(pubkey))
+    }
+
+    /// Take locks for bulk accounts
+    /// Uses pre-deduplicated accounts from BundleState.
+    /// Returns true if all locks were available.
+    pub fn take_locks_bulk(&mut self, write_accounts: &[Pubkey], read_accounts: &[Pubkey]) -> bool {
+        let writes_ok = write_accounts
+            .iter()
+            .fold(true, |all_ok, pubkey| all_ok & self.add_write(pubkey));
+        let reads_ok = read_accounts
+            .iter()
+            .fold(true, |all_ok, pubkey| all_ok & self.add_read(pubkey));
+        writes_ok && reads_ok
+    }
+
     /// Check if an account can be read-locked
     fn can_read(&self, pubkey: &Pubkey) -> bool {
         !self.write_set.contains(pubkey)

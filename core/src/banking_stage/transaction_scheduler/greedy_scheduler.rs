@@ -1,5 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -180,14 +181,18 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                 }
                 UnifiedSchedulingUnit::Bundle(bundle_id) => {
                     let bundle_state = container.get_mut_bundle_state(bundle_id)
-                        .expect("bundle state must exist");                    
-                    let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
+                        .expect("bundle state must exist");
                     
                     // Check conflicts and flush if needed
-                    if bundle.transactions.iter().any(|tx| !self.working_account_set.check_locks(tx.message())) {
+                    if !self.working_account_set.check_locks_bulk(
+                        bundle_state.write_accounts(),
+                        bundle_state.read_accounts(),
+                    ) {
                         self.working_account_set.clear();
                         num_sent += self.common.send_batches()?;
                     }
+                    
+                    let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
                     
                     try_schedule_bundle(
                         bundle_id,
@@ -239,9 +244,17 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     }
                 }
                 Ok(ScheduledItem::Bundle { thread_id, bundle_id: bid, bundle, max_age, cost }) => {
-                    for tx in &bundle.transactions {
-                        assert!(self.working_account_set.take_locks(tx.message()), "bundle locks must be available");
-                    }
+                    let bundle_state = container.get_mut_bundle_state(bid)
+                        .expect("bundle state must exist");
+                    
+                    assert!(
+                        self.working_account_set.take_locks_bulk(
+                            bundle_state.write_accounts(),
+                            bundle_state.read_accounts(),
+                        ),
+                        "bundle locks must be available in working_account_set"
+                    );
+                    
                     num_scheduled += 1;
                     self.common.batches.add_bundle_to_batch(thread_id, bid, bundle, max_age, cost);
 
@@ -341,8 +354,9 @@ fn try_schedule_bundle<Tx: TransactionWithMeta>(
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
 ) -> Result<ScheduledItem<Tx>, TransactionSchedulingError> {
-    let thread_id = match account_locks.try_lock_bundle(
-        &bundle,
+    let thread_id = match account_locks.try_lock_accounts(
+        bundle_state.write_accounts().iter(),
+        bundle_state.read_accounts().iter(),
         schedulable_threads,
         thread_selector,
     ) {

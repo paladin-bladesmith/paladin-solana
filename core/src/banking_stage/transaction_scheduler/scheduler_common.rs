@@ -1,5 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         in_flight_tracker::InFlightTracker,
@@ -346,8 +347,12 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
 
                 // Handle bundles - unlock scheduler-level locks
                 for (id, bundle) in bundle_items {
-                    // Always unlock bundle accounts (whether successful or retryable)
-                    self.account_locks.unlock_bundle(&bundle, thread_id);
+                    let bundle_state = container.get_mut_bundle_state(id)
+                        .expect("bundle state must exist");
+                    
+                    // Clone the account vecs for unlocking (cheap - just Vec<Pubkey>)
+                    let write_accounts = bundle_state.write_accounts().to_vec();
+                    let read_accounts = bundle_state.read_accounts().to_vec();
                     
                     if retryable_bundle_ids.contains(&id) {
                         // Bundle failed, put it back for retry
@@ -356,6 +361,12 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                         // Bundle completed successfully
                         container.remove_by_id(UnifiedSchedulingUnit::Bundle(id));
                     }
+                    
+                    self.account_locks.unlock_accounts(
+                        write_accounts.iter(),
+                        read_accounts.iter(),
+                        thread_id,
+                    );
                 }
 
                 debug_assert!(

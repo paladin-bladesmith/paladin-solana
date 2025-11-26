@@ -1,5 +1,6 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
@@ -166,10 +167,12 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                                 // Insert bundle into prio graph as composite node
                                 // Bundle accounts = union of all transaction accounts
                                 if let Some(bundle_state) = container.get_mut_bundle_state(bundle_id) {
-                                    // Temporarily take bundle to get accounts, then put it back
-                                    let (bundle, _) = bundle_state.take_bundle_for_consuming();
-                                    let accounts = Self::get_bundle_account_access(&bundle);
-                                    bundle_state.retry_bundle(bundle);
+                                    let accounts = bundle_state.write_accounts().iter()
+                                        .map(|pk| (*pk, prio_graph::AccessKind::Write))
+                                        .chain(
+                                            bundle_state.read_accounts().iter()
+                                                .map(|pk| (*pk, prio_graph::AccessKind::Read))
+                                        );
                                     prio_graph.insert_transaction(id, accounts);
                                     *window_budget = window_budget.saturating_sub(1);
                                 }
@@ -427,36 +430,6 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
             })
     }
 
-    /// Gets accessed accounts for all transactions in a bundle.
-    /// Returns the union of all accounts with Write access if any transaction writes.
-    fn get_bundle_account_access(
-        bundle: &solana_bundle::SanitizedBundle,
-    ) -> impl Iterator<Item = (Pubkey, AccessKind)> {
-        use std::collections::HashMap;
-        
-        let mut account_map: HashMap<Pubkey, AccessKind> = HashMap::new();
-        
-        for transaction in &bundle.transactions {
-            for (index, key) in transaction.account_keys().iter().enumerate() {
-                let access = if transaction.is_writable(index) {
-                    AccessKind::Write
-                } else {
-                    AccessKind::Read
-                };
-                
-                account_map.entry(*key)
-                    .and_modify(|existing| {
-                        // If any transaction writes, bundle writes
-                        if matches!(access, AccessKind::Write) {
-                            *existing = AccessKind::Write;
-                        }
-                    })
-                    .or_insert(access);
-            }
-        }
-        
-        account_map.into_iter()
-    }
 }
 
 /// Unified scheduling result that can be either a transaction or a bundle
@@ -564,8 +537,9 @@ fn try_schedule_bundle<Tx: TransactionWithMeta>(
     }
 
     // Try to atomically lock all bundle accounts
-    let thread_id = match account_locks.try_lock_bundle(
-        &bundle,
+    let thread_id = match account_locks.try_lock_accounts(
+        bundle_state.write_accounts().iter(),
+        bundle_state.read_accounts().iter(),
         ThreadSet::any(num_threads),
         thread_selector,
     ) {
