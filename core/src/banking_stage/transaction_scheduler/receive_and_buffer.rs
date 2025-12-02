@@ -1263,20 +1263,26 @@ fn calculate_bundle_priority_and_cost(
         };
         
         let fee_budget_limits = FeeBudgetLimits::from(compute_budget_limits);
-        let cost = CostModel::calculate_cost(tx, &bank.feature_set).sum();
-        let reward = bank.calculate_reward_for_transaction(tx, &fee_budget_limits);
+        let cost = CostModel::calculate_cost(tx, &bank.feature_set).sum() as u128;
+        let reward = bank.calculate_reward_for_transaction(tx, &fee_budget_limits) as u128;
 
         // Calculate tip rewards
         let account_keys = tx.message().static_account_keys();
         let message = tx.message();
-        let tips = message.program_instructions_iter().filter_map(|(pid, ix)| extract_transfer(account_keys, pid, ix))
+        // sum tip transfers, apply validator fee (6%)
+        let tips_total: u128 = message
+            .program_instructions_iter()
+            .filter_map(|(pid, ix)| extract_transfer(account_keys, pid, ix))
             .filter(|(dest, _)| tip_accounts.contains(dest))
-            .map(|(_, amount)| amount)
-            .sum::<u64>();
-        
-        total_reward += reward as u128;
-        total_reward += tips as u128;
-        total_cost += cost as u128;
+            .map(|(_, amount)| amount as u128)
+            .sum();
+
+        // Apply validator fee (6%) -> keep 94% to rewards.
+        let tips = tips_total.saturating_mul(94).saturating_div(100);
+
+        total_reward += reward;
+        total_reward += tips;
+        total_cost += cost;
     }
 
     // Calculate priority: (total_reward * 1M) / (total_cost + 1)
