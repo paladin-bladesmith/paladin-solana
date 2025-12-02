@@ -192,6 +192,7 @@ impl Consumer {
         // same account state.
         // BundleAccountLocker is used to prevent race conditions with bundled transactions from bundle stage
         let bundle_account_locks = self.bundle_account_locker.account_locks();
+
         let (batch, lock_us) = measure_us!(bank.prepare_sanitized_batch_with_results(
             txs,
             transaction_qos_cost_results.iter().map(|r| match r {

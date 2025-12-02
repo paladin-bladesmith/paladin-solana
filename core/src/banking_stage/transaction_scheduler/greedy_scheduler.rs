@@ -1,23 +1,26 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+
 use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
         scheduler_common::{
-            select_thread, SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo,
+            select_thread, ScheduledItem, SchedulingCommon, TransactionSchedulingError,
         },
         scheduler_error::SchedulerError,
         thread_aware_account_locks::{ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError},
-        transaction_priority_id::TransactionPriorityId,
+        unified_priority_id::UnifiedPriorityId,
+        unified_scheduling_unit::UnifiedSchedulingUnit,
         transaction_state::TransactionState,
-        transaction_state_container::StateContainer,
+        unified_state_container::StateContainer,
     },
     crate::banking_stage::{
         consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
         read_write_account_set::ReadWriteAccountSet,
-        scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+        scheduler_messages::{ConsumeWork, FinishedConsumeWork, BundleId, MaxAge},
+        transaction_scheduler::bundle_state::BundleState,
     },
-    crossbeam_channel::{Receiver, Sender},
+    crossbeam_channel::{Sender, Receiver},
     solana_cost_model::block_cost_limits::MAX_BLOCK_UNITS,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
     std::num::Saturating,
@@ -46,7 +49,7 @@ impl Default for GreedySchedulerConfig {
 pub struct GreedyScheduler<Tx: TransactionWithMeta> {
     common: SchedulingCommon<Tx>,
     working_account_set: ReadWriteAccountSet,
-    unschedulables: Vec<TransactionPriorityId>,
+    unschedulables: Vec<UnifiedPriorityId>,
     config: GreedySchedulerConfig,
 }
 
@@ -67,6 +70,32 @@ impl<Tx: TransactionWithMeta> GreedyScheduler<Tx> {
             ),
             config,
         }
+    }
+
+    /// Check if batches should be flushed after scheduling to a thread.
+    /// Returns true if flushing should happen, and updates schedulable_threads accordingly.
+    #[inline]
+    fn should_flush_after_schedule(
+        &self,
+        thread_id: ThreadId,
+        target_cu_per_thread: u64,
+        schedulable_threads: &mut ThreadSet,
+    ) -> bool {
+        // Check if target batch size reached for transactions
+        if self.common.batches.transactions()[thread_id].len() >= self.config.target_transactions_per_batch {
+            return true;
+        }
+
+        // Check if thread has reached CU limit
+        if self.common.in_flight_tracker.cus_in_flight_per_thread()[thread_id]
+            + self.common.batches.total_cus()[thread_id]
+            >= target_cu_per_thread
+        {
+            schedulable_threads.remove(thread_id);
+            return schedulable_threads.is_empty();
+        }
+
+        false
     }
 }
 
@@ -119,41 +148,74 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
             let Some(id) = container.pop() else {
                 unreachable!("container is not empty")
             };
-
             num_scanned += 1;
 
             // Should always be in the container, during initial testing phase panic.
             // Later, we can replace with a continue in case this does happen.
-            let Some(transaction_state) = container.get_mut_transaction_state(id.id) else {
-                panic!("transaction state must exist")
+            // Unified scheduling: check conflicts, acquire locks, add to batch
+            let schedule_result = match id.id {
+                UnifiedSchedulingUnit::Transaction(tx_id) => {
+                    let transaction_state = container.get_mut_transaction_state(tx_id)
+                        .expect("transaction state must exist");
+                    // Check conflicts and flush if needed
+                    if !self.working_account_set.check_locks(transaction_state.transaction()) {
+                        self.working_account_set.clear();
+                        num_sent += self.common.send_batches()?;
+                    }
+                    
+                    try_schedule_transaction(
+                        transaction_state,
+                        &pre_lock_filter,
+                        &mut self.common.account_locks,
+                        schedulable_threads,
+                        |thread_set| {
+                            select_thread(
+                                thread_set,
+                                self.common.batches.total_cus(),
+                                self.common.in_flight_tracker.cus_in_flight_per_thread(),
+                                self.common.batches.transactions(),
+                                self.common.in_flight_tracker.num_in_flight_per_thread(),
+                            )
+                        },
+                    )
+                }
+                UnifiedSchedulingUnit::Bundle(bundle_id) => {
+                    let bundle_state = container.get_mut_bundle_state(bundle_id)
+                        .expect("bundle state must exist");
+                    
+                    // Check conflicts and flush if needed
+                    if !self.working_account_set.check_locks_bulk(
+                        bundle_state.write_accounts(),
+                        bundle_state.read_accounts(),
+                    ) {
+                        self.working_account_set.clear();
+                        num_sent += self.common.send_batches()?;
+                    }
+                    
+                    let (bundle, max_age) = bundle_state.take_bundle_for_consuming();
+                    
+                    try_schedule_bundle(
+                        bundle_id,
+                        bundle,
+                        max_age,
+                        bundle_state,
+                        &mut self.common.account_locks,
+                        schedulable_threads,
+                        |thread_set| {
+                            select_thread(
+                                thread_set,
+                                self.common.batches.total_cus(),
+                                self.common.in_flight_tracker.cus_in_flight_per_thread(),
+                                self.common.batches.transactions(),
+                                self.common.in_flight_tracker.num_in_flight_per_thread(),
+                            )
+                        },
+                    )
+                }
             };
 
-            // If there is a conflict with any of the transactions in the current batches,
-            // we should immediately send out the batches, so this transaction may be scheduled.
-            if !self
-                .working_account_set
-                .check_locks(transaction_state.transaction())
-            {
-                self.working_account_set.clear();
-                num_sent += self.common.send_batches()?;
-            }
-
-            // Now check if the transaction can actually be scheduled.
-            match try_schedule_transaction(
-                transaction_state,
-                &pre_lock_filter,
-                &mut self.common.account_locks,
-                schedulable_threads,
-                |thread_set| {
-                    select_thread(
-                        thread_set,
-                        self.common.batches.total_cus(),
-                        self.common.in_flight_tracker.cus_in_flight_per_thread(),
-                        self.common.batches.transactions(),
-                        self.common.in_flight_tracker.num_in_flight_per_thread(),
-                    )
-                },
-            ) {
+            // Handle scheduling result uniformly
+            match schedule_result {
                 Err(TransactionSchedulingError::UnschedulableConflicts) => {
                     num_unschedulable_conflicts += 1;
                     self.unschedulables.push(id);
@@ -162,40 +224,43 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     num_unschedulable_threads += 1;
                     self.unschedulables.push(id);
                 }
-                Ok(TransactionSchedulingInfo {
-                    thread_id,
-                    transaction,
-                    max_age,
-                    cost,
-                }) => {
-                    assert!(
-                        self.working_account_set.take_locks(&transaction),
-                        "locks must be available"
-                    );
+                Ok(ScheduledItem::Transaction { thread_id, transaction, max_age, cost }) => {
+                    assert!(self.working_account_set.take_locks(&transaction), "locks must be available");
                     num_scheduled += 1;
                     self.common.batches.add_transaction_to_batch(
                         thread_id,
-                        id.id,
+                        id.get_id(),
                         transaction,
                         max_age,
                         cost,
                     );
 
-                    // If target batch size is reached, send all the batches
-                    if self.common.batches.transactions()[thread_id].len()
-                        >= self.config.target_transactions_per_batch
-                    {
+                    if self.should_flush_after_schedule(thread_id, target_cu_per_thread, &mut schedulable_threads) {
                         self.working_account_set.clear();
                         num_sent += self.common.send_batches()?;
+                        if schedulable_threads.is_empty() {
+                            break;
+                        }
                     }
+                }
+                Ok(ScheduledItem::Bundle { thread_id, bundle_id: bid, bundle, max_age, cost }) => {
+                    let bundle_state = container.get_mut_bundle_state(bid)
+                        .expect("bundle state must exist");
+                    
+                    assert!(
+                        self.working_account_set.take_locks_bulk(
+                            bundle_state.write_accounts(),
+                            bundle_state.read_accounts(),
+                        ),
+                        "bundle locks must be available in working_account_set"
+                    );
+                    
+                    num_scheduled += 1;
+                    self.common.batches.add_bundle_to_batch(thread_id, bid, bundle, max_age, cost);
 
-                    // if the thread is at target_cu_per_thread, remove it from the schedulable threads
-                    // if there are no more schedulable threads, stop scheduling.
-                    if self.common.in_flight_tracker.cus_in_flight_per_thread()[thread_id]
-                        + self.common.batches.total_cus()[thread_id]
-                        >= target_cu_per_thread
-                    {
-                        schedulable_threads.remove(thread_id);
+                    if self.should_flush_after_schedule(thread_id, target_cu_per_thread, &mut schedulable_threads) {
+                        self.working_account_set.clear();
+                        num_sent += self.common.send_batches()?;
                         if schedulable_threads.is_empty() {
                             break;
                         }
@@ -237,7 +302,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     account_locks: &mut ThreadAwareAccountLocks,
     schedulable_threads: ThreadSet,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
-) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
+) -> Result<ScheduledItem<Tx>, TransactionSchedulingError> {
     match pre_lock_filter(transaction_state) {
         PreLockFilterAction::AttemptToSchedule => {}
     }
@@ -272,9 +337,48 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
     let cost = transaction_state.cost();
 
-    Ok(TransactionSchedulingInfo {
+    Ok(ScheduledItem::Transaction {
         thread_id,
         transaction,
+        max_age,
+        cost,
+    })
+}
+
+fn try_schedule_bundle<Tx: TransactionWithMeta>(
+    bundle_id:BundleId,
+    bundle: solana_bundle::SanitizedBundle,
+    max_age:MaxAge,
+    bundle_state: &mut BundleState,
+    account_locks: &mut ThreadAwareAccountLocks,
+    schedulable_threads: ThreadSet,
+    thread_selector: impl Fn(ThreadSet) -> ThreadId,
+) -> Result<ScheduledItem<Tx>, TransactionSchedulingError> {
+    let thread_id = match account_locks.try_lock_accounts(
+        bundle_state.write_accounts().iter(),
+        bundle_state.read_accounts().iter(),
+        schedulable_threads,
+        thread_selector,
+    ) {
+        Ok(thread_id) => thread_id,
+        Err(TryLockError::MultipleConflicts) => {
+            // Put bundle back on failure
+            bundle_state.retry_bundle(bundle);
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+        Err(TryLockError::ThreadNotAllowed) => {
+            // Put bundle back on failure
+            bundle_state.retry_bundle(bundle);
+            return Err(TransactionSchedulingError::UnschedulableThread);
+        }
+    };
+
+    let cost = bundle_state.cost();
+
+    Ok(ScheduledItem::Bundle {
+        thread_id,
+        bundle_id,
+        bundle,
         max_age,
         cost,
     })
@@ -285,8 +389,8 @@ mod test {
     use {
         super::*,
         crate::banking_stage::{
-            scheduler_messages::{MaxAge, TransactionId},
-            transaction_scheduler::transaction_state_container::TransactionStateContainer,
+            scheduler_messages::{ConsumeWorkItem, MaxAge, TransactionId},
+            transaction_scheduler::unified_state_container::UnifiedStateContainer,
         },
         crossbeam_channel::unbounded,
         itertools::Itertools,
@@ -298,7 +402,7 @@ mod test {
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
-        solana_transaction::{sanitized::SanitizedTransaction, Transaction},
+        solana_transaction::{Transaction, sanitized::SanitizedTransaction},
         std::borrow::Borrow,
     };
 
@@ -352,8 +456,8 @@ mod test {
                 u64,
             ),
         >,
-    ) -> TransactionStateContainer<RuntimeTransaction<SanitizedTransaction>> {
-        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+    ) -> UnifiedStateContainer<RuntimeTransaction<SanitizedTransaction>> {
+        let mut container = UnifiedStateContainer::with_capacity(10 * 1024);
         for (from_keypair, to_pubkeys, lamports, compute_unit_price) in tx_infos.into_iter() {
             let transaction = prioritized_tranfers(
                 from_keypair.borrow(),
@@ -382,7 +486,10 @@ mod test {
         receiver
             .try_iter()
             .map(|work| {
-                let ids = work.ids.clone();
+                let ids = work.items.iter().map(|item| match item {
+                   ConsumeWorkItem::Transaction { id, .. } => *id,
+                    _ => panic!("Expected transaction"),
+                }).collect();
                 (work, ids)
             })
             .unzip()

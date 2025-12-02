@@ -7,7 +7,7 @@ use {
             qos_service::QosService,
         },
         bundle_stage::{
-            bundle_account_locker::{BundleAccountLocker, LockedBundle},
+            bundle_account_locker::{BundleAccountLocker, BundleAccountLockerError, LockedBundle},
             bundle_stage_leader_metrics::BundleStageLeaderMetrics,
             bundle_storage::BundleStorage,
             committer::Committer,
@@ -125,6 +125,88 @@ impl BundleConsumer {
     // payment program and set the tip receiver to themself.
     // A bundle is not allowed to touch consensus-related accounts
     //  - This is to avoid stalling the voting BankingStage threads.
+
+    /// Process a single bundle - used by unified scheduler's bundle worker
+    /// Process a single bundle.
+    ///
+    /// When called from the unified scheduler (ConsumeWorker), locks are already held by
+    /// ThreadAwareAccountLocks, so we skip BundleAccountLocker locking to avoid double-locking.
+    ///
+    /// When called from standalone contexts, we acquire locks via BundleAccountLocker.
+    ///
+    /// # Arguments
+    /// * `bank` - The current bank
+    /// * `sanitized_bundle` - The bundle to execute
+    /// * `skip_locking` - If true, assumes locks are already held; if false, acquires locks
+    ///
+    /// # Returns
+    /// * `Ok(())` if bundle executed successfully
+    /// * `Err(BundleExecutionError)` if execution failed
+    pub fn process_single_bundle(
+        &mut self,
+        bank: &Arc<Bank>,
+        sanitized_bundle: &SanitizedBundle,
+        skip_locking: bool,
+    ) -> Result<(), BundleExecutionError> {
+        if bank.is_complete() {
+            return Err(BundleExecutionError::BankProcessingTimeLimitReached);
+        }
+
+        if skip_locking {
+            // Unified scheduler path: locks already held by ThreadAwareAccountLocks
+            // Handle tip programs if needed (simplified path)
+            if bank.slot() != self.last_tip_update_slot
+                && Self::bundle_touches_tip_pdas(
+                    sanitized_bundle,
+                    &self.tip_manager.get_tip_accounts(),
+                )
+            {
+                // Note: Tip program handling requires locking, but locks are already held.
+                // Just update slot tracking. Full tip handling happens in other paths.
+                self.last_tip_update_slot = bank.slot();
+            }
+
+            // Execute bundle directly without additional locking
+            let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+
+            Self::update_qos_and_execute_record_commit_bundle(
+                &self.committer,
+                &self.transaction_recorder,
+                &self.qos_service,
+                &self.log_messages_bytes_limit,
+                self.max_bundle_retry_duration,
+                sanitized_bundle,
+                bank,
+                &mut bundle_stage_leader_metrics,
+            )
+        } else {
+            // Standalone path: acquire locks via BundleAccountLocker
+            let locked_bundle = self
+                .bundle_account_locker
+                .prepare_locked_bundle(sanitized_bundle, bank)
+                .map_err(|e| match e {
+                    BundleAccountLockerError::LockingError => BundleExecutionError::LockError,
+                })?;
+
+            let mut bundle_stage_leader_metrics = BundleStageLeaderMetrics::new(0);
+            Self::process_bundle(
+                &self.bundle_account_locker,
+                &self.tip_manager,
+                &mut self.last_tip_update_slot,
+                &self.cluster_info,
+                &self.block_builder_fee_info,
+                &self.committer,
+                &self.transaction_recorder,
+                &self.qos_service,
+                &self.log_messages_bytes_limit,
+                self.max_bundle_retry_duration,
+                &locked_bundle,
+                bank,
+                &mut bundle_stage_leader_metrics,
+            )
+        }
+    }
+
     pub fn consume_buffered_bundles(
         &mut self,
         bank: &Arc<Bank>,

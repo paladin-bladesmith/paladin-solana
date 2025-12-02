@@ -1,7 +1,5 @@
 use {
-    ahash::AHashMap,
-    solana_pubkey::Pubkey,
-    std::{
+    ahash::AHashMap, solana_pubkey::Pubkey, std::{
         collections::hash_map::Entry,
         fmt::{Debug, Display},
         ops::{BitAnd, BitAndAssign, Sub},
