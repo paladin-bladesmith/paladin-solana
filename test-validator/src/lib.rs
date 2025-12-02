@@ -151,6 +151,8 @@ pub struct TestValidatorGenesis {
     pub block_engine_url: String,
     pub relayer_url: String,
     pub secondary_block_engine_urls: Vec<String>,
+    pub tip_payment_program_id: Option<Pubkey>,
+    pub tip_distribution_program_id: Option<Pubkey>,
 }
 
 impl Default for TestValidatorGenesis {
@@ -190,6 +192,8 @@ impl Default for TestValidatorGenesis {
             block_engine_url: String::default(),
             relayer_url: String::default(),
             secondary_block_engine_urls: vec![],
+            tip_payment_program_id: None,
+            tip_distribution_program_id: None,
         }
     }
 }
@@ -1147,6 +1151,8 @@ impl TestValidator {
             accounts_db_config,
             runtime_config,
             tip_manager_config: TipManagerConfig {
+                funnel: None,
+                rewards_split: None,
                 tip_payment_program_id: jito_tip_payment::id(),
                 tip_distribution_program_id: jito_tip_distribution::id(),
                 tip_distribution_account_config: TipDistributionAccountConfig {
@@ -1170,6 +1176,18 @@ impl TestValidator {
             )),
             ..ValidatorConfig::default_for_test()
         };
+        if let Some(tip_payment_id) = config.tip_payment_program_id {
+            validator_config.tip_manager_config.tip_payment_program_id = tip_payment_id;
+        }
+        if let Some(tip_distribution_id) = config.tip_distribution_program_id {
+            validator_config
+                .tip_manager_config
+                .tip_distribution_program_id = tip_distribution_id;
+        }
+        validator_config
+            .tip_manager_config
+            .tip_distribution_account_config
+            .vote_account = vote_account_address;
         if let Some(ref tower_storage) = config.tower_storage {
             validator_config.tower_storage = tower_storage.clone();
         }
