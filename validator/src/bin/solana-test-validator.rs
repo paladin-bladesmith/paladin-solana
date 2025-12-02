@@ -614,6 +614,8 @@ fn main() {
         .unwrap_or_default()
         .map(ToString::to_string)
         .collect();
+    genesis.tip_payment_program_id = pubkey_of(&matches, "tip_payment_program_pubkey");
+    genesis.tip_distribution_program_id = pubkey_of(&matches, "tip_distribution_program_pubkey");
 
     match genesis.start_with_mint_address_and_geyser_plugin_rpc(
         mint_address,

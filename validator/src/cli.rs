@@ -964,6 +964,22 @@ pub fn test_app<'a>(version: &'a str, default_args: &'a DefaultTestArgs) -> App<
                 .takes_value(true)
                 .multiple(true),
         )
+        .arg(
+            Arg::with_name("tip_payment_program_pubkey")
+                .long("tip-payment-program-pubkey")
+                .value_name("TIP_PAYMENT_PROGRAM_PUBKEY")
+                .validator(is_pubkey)
+                .help("The public key of the tip-payment program")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("tip_distribution_program_pubkey")
+                .long("tip-distribution-program-pubkey")
+                .value_name("TIP_DISTRIBUTION_PROGRAM_PUBKEY")
+                .validator(is_pubkey)
+                .help("The public key of the tip-distribution program")
+                .takes_value(true),
+        )
 }
 
 pub struct DefaultTestArgs {
