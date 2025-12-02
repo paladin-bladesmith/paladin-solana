@@ -73,6 +73,25 @@ pub struct RecordSummary {
     pub remaining_hashes_in_slot: u64,
 }
 
+#[derive(Debug, Clone)]
+pub struct BankStart {
+    pub working_bank: Arc<Bank>,
+    pub bank_creation_time: Arc<Instant>,
+}
+
+impl BankStart {
+    pub fn should_working_bank_still_be_processing_txs(&self) -> bool {
+        Bank::should_bank_still_be_processing_txs(
+            &self.bank_creation_time,
+            self.working_bank.ns_per_slot,
+        )
+    }
+}
+
+// Sends the Result of the record operation, including the index in the slot of the first
+// transaction, if being tracked by WorkingBank
+type _RecordResultSender = Sender<Result<Option<usize>>>;
+
 pub struct Record {
     pub mixins: Vec<Hash>,
     pub transaction_batches: Vec<Vec<VersionedTransaction>>,
@@ -89,6 +108,27 @@ impl Record {
             mixins,
             transaction_batches,
             bank_id,
+        }
+    }
+}
+
+pub enum PohRecorderBank {
+    WorkingBank(BankStart),
+    LastResetBank(Arc<Bank>),
+}
+
+impl PohRecorderBank {
+    pub fn bank(&self) -> &Bank {
+        match self {
+            PohRecorderBank::WorkingBank(bank_start) => &bank_start.working_bank,
+            PohRecorderBank::LastResetBank(last_reset_bank) => last_reset_bank,
+        }
+    }
+
+    pub fn working_bank_start(&self) -> Option<&BankStart> {
+        match self {
+            PohRecorderBank::WorkingBank(bank_start) => Some(bank_start),
+            PohRecorderBank::LastResetBank(_last_reset_bank) => None,
         }
     }
 }
@@ -656,6 +696,22 @@ impl PohRecorder {
 
     pub fn bank(&self) -> Option<Arc<Bank>> {
         self.working_bank.as_ref().map(|w| w.bank.clone())
+    }
+
+    pub fn bank_start(&self) -> Option<BankStart> {
+        self.working_bank.as_ref().map(|w| BankStart {
+            working_bank: w.bank.clone(),
+            bank_creation_time: w.start.clone(),
+        })
+    }
+
+    pub fn get_poh_recorder_bank(&self) -> PohRecorderBank {
+        let bank_start = self.bank_start();
+        if let Some(bank_start) = bank_start {
+            PohRecorderBank::WorkingBank(bank_start)
+        } else {
+            PohRecorderBank::LastResetBank(self.start_bank.clone())
+        }
     }
 
     pub fn has_bank(&self) -> bool {

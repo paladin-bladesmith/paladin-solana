@@ -1,12 +1,14 @@
 //! The `validator` module hosts all the validator microservices.
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
 use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
 use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
         banking_stage::{
-            transaction_scheduler::scheduler_controller::SchedulerConfig, BankingStage,
+            transaction_scheduler::scheduler_controller::SchedulerConfig, BankingStage, DEFAULT_BATCH_INTERVAL
         },
         banking_trace::{self, BankingTracer, TraceError},
         cluster_info_vote_listener::VoteTracker,
@@ -391,9 +393,13 @@ pub struct ValidatorConfig {
     // jito configuration
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub secondary_block_engine_urls: Arc<Mutex<Vec<String>>>,
     pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub tip_manager_config: TipManagerConfig,
+    pub batch_interval: Duration,
+    pub p3_socket: SocketAddr,
+    pub p3_mev_socket: SocketAddr,
 }
 
 impl ValidatorConfig {
@@ -478,9 +484,13 @@ impl ValidatorConfig {
             repair_handler_type: RepairHandlerType::default(),
             relayer_config: Arc::new(Mutex::new(RelayerConfig::default())),
             block_engine_config: Arc::new(Mutex::new(BlockEngineConfig::default())),
+            secondary_block_engine_urls: Arc::new(Mutex::new(vec![])),
             shred_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             shred_retransmit_receiver_address: Arc::new(ArcSwap::from_pointee(None)),
             tip_manager_config: TipManagerConfig::default(),
+            batch_interval: DEFAULT_BATCH_INTERVAL,
+            p3_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4819)),
+            p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 4820)),
         }
     }
 
@@ -1777,9 +1787,13 @@ impl Validator {
             key_notifiers.clone(),
             cancel,
             config.block_engine_config.clone(),
+            config.secondary_block_engine_urls.clone(),
             config.relayer_config.clone(),
+            leader_schedule_cache.clone(),
             config.tip_manager_config.clone(),
             config.shred_receiver_address.clone(),
+            config.batch_interval,
+            (config.p3_socket, config.p3_mev_socket),
         );
 
         datapoint_info!(
@@ -1816,6 +1830,7 @@ impl Validator {
             node: Some(node_multihoming),
             banking_stage: tpu.banking_stage(),
             block_engine_config: config.block_engine_config.clone(),
+            secondary_block_engine_urls: config.secondary_block_engine_urls.clone(),
             relayer_config: config.relayer_config.clone(),
             shred_receiver_address: config.shred_receiver_address.clone(),
             shred_retransmit_receiver_address: config.shred_retransmit_receiver_address.clone(),

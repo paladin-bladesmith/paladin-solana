@@ -1,5 +1,6 @@
 #[allow(deprecated)]
 use crate::quic::QuicServerParams;
+use crate::quic::QuicStreamerConfig;
 use {
     crate::{
         nonblocking::{
@@ -8,7 +9,7 @@ use {
             stream_throttle::ConnectionStreamCounter,
             swqos::{SwQos, SwQosConfig},
         },
-        quic::{configure_server, QuicServerError, QuicStreamerConfig, StreamerStats},
+        quic::{configure_server, QuicServerError, QuicVariant, StreamerStats},
         streamer::StakedNodes,
     },
     bytes::{BufMut, Bytes, BytesMut},
@@ -116,11 +117,16 @@ impl PacketAccumulator {
 pub enum ConnectionPeerType {
     Unstaked,
     Staked(u64),
+    P3(u64),
+    Mev(u64),
 }
 
 impl ConnectionPeerType {
     pub(crate) fn is_staked(&self) -> bool {
-        matches!(self, ConnectionPeerType::Staked(_))
+        matches!(
+            self,
+            ConnectionPeerType::Staked(_) | ConnectionPeerType::P3(_)
+        )
     }
 }
 
@@ -228,6 +234,7 @@ where
         quic_server_params,
         swqos,
         cancel,
+        QuicVariant::Regular,
     )
 }
 
@@ -241,6 +248,7 @@ pub(crate) fn spawn_server_with_cancel_and_qos<Q, C>(
     quic_server_params: QuicStreamerConfig,
     qos: Arc<Q>,
     cancel: CancellationToken,
+    variant: QuicVariant,
 ) -> Result<SpawnNonBlockingServerResult, QuicServerError>
 where
     Q: QosController<C> + Send + Sync + 'static,
@@ -285,6 +293,7 @@ where
                 quic_server_params,
                 cancel,
                 qos,
+                variant,
             )
             .await;
             tasks.close();
@@ -354,6 +363,7 @@ async fn run_server<Q, C>(
     quic_server_params: QuicStreamerConfig,
     cancel: CancellationToken,
     qos: Arc<Q>,
+    variant: QuicVariant,
 ) -> TaskTracker
 where
     Q: QosController<C> + Send + Sync + 'static,
@@ -455,6 +465,7 @@ where
                         quic_server_params.clone(),
                         qos.clone(),
                         tasks.clone(),
+                        variant,
                     ));
                 }
                 Err(err) => {
@@ -530,6 +541,7 @@ async fn setup_connection<Q, C>(
     server_params: Arc<QuicStreamerConfig>,
     qos: Arc<Q>,
     tasks: TaskTracker,
+    variant: QuicVariant,
 ) where
     Q: QosController<C> + Send + Sync + 'static,
     C: ConnectionContext + Send + Sync + 'static,
@@ -572,7 +584,11 @@ async fn setup_connection<Q, C>(
 
                 stats.total_new_connections.fetch_add(1, Ordering::Relaxed);
 
-                let mut conn_context = qos.build_connection_context(&new_connection);
+                let mut conn_context = qos.build_connection_context(
+                    &new_connection,
+                    server_params.stream_throttling_interval_ms,
+                    variant,
+                );
                 if let Some(cancel_connection) = qos
                     .try_add_connection(
                         client_connection_tracker,
@@ -1018,7 +1034,9 @@ fn handle_chunks(
                     .total_unstaked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
             }
-            ConnectionPeerType::Staked(_) => {
+            ConnectionPeerType::Staked(_)
+            | ConnectionPeerType::P3(_)
+            | ConnectionPeerType::Mev(_) => {
                 stats
                     .total_staked_packets_sent_for_batching
                     .fetch_add(1, Ordering::Relaxed);
@@ -1032,9 +1050,10 @@ fn handle_chunks(
 }
 
 #[derive(Debug)]
-struct ConnectionEntry {
-    cancel: CancellationToken,
-    peer_type: ConnectionPeerType,
+pub struct ConnectionEntry {
+    pub cancel: CancellationToken,
+    pub peer_type: ConnectionPeerType,
+    pub identity: Pubkey,
     last_update: Arc<AtomicU64>,
     port: u16,
     // We do not explicitly use it, but its drop is triggered when ConnectionEntry is dropped.
@@ -1047,6 +1066,7 @@ impl ConnectionEntry {
     fn new(
         cancel: CancellationToken,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: Arc<AtomicU64>,
         port: u16,
         client_connection_tracker: ClientConnectionTracker,
@@ -1056,6 +1076,7 @@ impl ConnectionEntry {
         Self {
             cancel,
             peer_type,
+            identity,
             last_update,
             port,
             _client_connection_tracker: client_connection_tracker,
@@ -1071,7 +1092,9 @@ impl ConnectionEntry {
     fn stake(&self) -> u64 {
         match self.peer_type {
             ConnectionPeerType::Unstaked => 0,
-            ConnectionPeerType::Staked(stake) => stake,
+            ConnectionPeerType::Staked(stake)
+            | ConnectionPeerType::P3(stake)
+            | ConnectionPeerType::Mev(stake) => stake,
         }
     }
 }
@@ -1089,7 +1112,7 @@ impl Drop for ConnectionEntry {
 }
 
 #[derive(Copy, Clone, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum ConnectionTableKey {
+pub enum ConnectionTableKey {
     IP(IpAddr),
     Pubkey(Pubkey),
 }
@@ -1102,14 +1125,14 @@ impl ConnectionTableKey {
     }
 }
 
-pub(crate) enum ConnectionTableType {
+pub enum ConnectionTableType {
     Staked,
     Unstaked,
 }
 
 // Map of IP to list of connection entries
-pub(crate) struct ConnectionTable {
-    table: IndexMap<ConnectionTableKey, Vec<ConnectionEntry>>,
+pub struct ConnectionTable {
+    pub table: IndexMap<ConnectionTableKey, Vec<ConnectionEntry>>,
     pub(crate) total_size: usize,
     table_type: ConnectionTableType,
     cancel: CancellationToken,
@@ -1119,7 +1142,7 @@ pub(crate) struct ConnectionTable {
 ///
 /// Return number pruned
 impl ConnectionTable {
-    pub(crate) fn new(table_type: ConnectionTableType, cancel: CancellationToken) -> Self {
+    pub fn new(table_type: ConnectionTableType, cancel: CancellationToken) -> Self {
         Self {
             table: IndexMap::default(),
             total_size: 0,
@@ -1187,8 +1210,10 @@ impl ConnectionTable {
         client_connection_tracker: ClientConnectionTracker,
         connection: Option<Connection>,
         peer_type: ConnectionPeerType,
+        identity: Pubkey,
         last_update: Arc<AtomicU64>,
         max_connections_per_peer: usize,
+        stream_throttling_interval: Duration,
     ) -> Option<(
         Arc<AtomicU64>,
         CancellationToken,
@@ -1205,10 +1230,13 @@ impl ConnectionTable {
             let stream_counter = connection_entry
                 .first()
                 .map(|entry| entry.stream_counter.clone())
-                .unwrap_or(Arc::new(ConnectionStreamCounter::new()));
+                .unwrap_or(Arc::new(ConnectionStreamCounter::new(
+                    stream_throttling_interval,
+                )));
             connection_entry.push(ConnectionEntry::new(
                 cancel.clone(),
                 peer_type,
+                identity,
                 last_update.clone(),
                 port,
                 client_connection_tracker,
@@ -1288,9 +1316,12 @@ impl Future for EndpointAccept<'_> {
 pub mod test {
     use {
         super::*,
-        crate::nonblocking::testing_utilities::{
-            check_multiple_streams, get_client_config, make_client_endpoint, setup_quic_server,
-            SpawnTestServerResult,
+        crate::nonblocking::{
+            stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL,
+            testing_utilities::{
+                check_multiple_streams, get_client_config, make_client_endpoint, setup_quic_server,
+                SpawnTestServerResult,
+            },
         },
         assert_matches::assert_matches,
         crossbeam_channel::{unbounded, Receiver},
@@ -1873,8 +1904,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     Arc::new(AtomicU64::new(i as u64)),
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -1886,8 +1919,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 Arc::new(AtomicU64::new(5)),
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
             .unwrap();
 
@@ -1929,8 +1964,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     Arc::new(AtomicU64::new(i as u64)),
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -1965,8 +2002,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     Arc::new(AtomicU64::new(i as u64)),
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         });
@@ -1980,8 +2019,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 Arc::new(AtomicU64::new(10)),
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL
             )
             .is_none());
 
@@ -1995,8 +2036,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 Arc::new(AtomicU64::new(10)),
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL
             )
             .is_some());
 
@@ -2035,8 +2078,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Staked((i + 1) as u64),
+                    Pubkey::default(),
                     Arc::new(AtomicU64::new(i as u64)),
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2079,8 +2124,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     Arc::new(AtomicU64::new((i * 2) as u64)),
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
 
@@ -2091,8 +2138,10 @@ pub mod test {
                     ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                     None,
                     ConnectionPeerType::Unstaked,
+                    Pubkey::default(),
                     Arc::new(AtomicU64::new((i * 2 + 1) as u64)),
                     max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
                 .unwrap();
         }
@@ -2106,8 +2155,10 @@ pub mod test {
                 ClientConnectionTracker::new(stats.clone(), 1000).unwrap(),
                 None,
                 ConnectionPeerType::Unstaked,
+                Pubkey::default(),
                 Arc::new(AtomicU64::new((num_ips * 2) as u64)),
                 max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
             .unwrap();
 
