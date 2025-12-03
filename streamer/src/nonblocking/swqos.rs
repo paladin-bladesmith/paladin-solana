@@ -11,10 +11,11 @@ use {
             },
             stream_throttle::{
                 throttle_stream, ConnectionStreamCounter, StakedStreamLoadEMA,
-                STREAM_THROTTLING_INTERVAL_MS,
+                DEFAULT_STREAM_THROTTLING_INTERVAL, DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+                P3_PER_SECOND,
             },
         },
-        quic::{StreamerStats, DEFAULT_MAX_STREAMS_PER_MS},
+        quic::{QuicVariant, StreamerStats, DEFAULT_MAX_STREAMS_PER_MS},
         streamer::StakedNodes,
     },
     percentage::Percentage,
@@ -104,6 +105,7 @@ impl SwQos {
                 stats.clone(),
                 max_unstaked_connections,
                 qos_config.max_streams_per_ms,
+                DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
             )),
             stats,
             staked_nodes,
@@ -154,7 +156,9 @@ fn compute_recieve_window(
         ConnectionPeerType::Unstaked => {
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * QUIC_UNSTAKED_RECEIVE_WINDOW_RATIO)
         }
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake)
+        | ConnectionPeerType::P3(peer_stake)
+        | ConnectionPeerType::Mev(peer_stake) => {
             let ratio =
                 compute_receive_window_ratio_for_staked_node(max_stake, min_stake, peer_stake);
             VarInt::from_u64(PACKET_DATA_SIZE as u64 * ratio)
@@ -164,7 +168,9 @@ fn compute_recieve_window(
 
 fn compute_max_allowed_uni_streams(peer_type: ConnectionPeerType, total_stake: u64) -> usize {
     match peer_type {
-        ConnectionPeerType::Staked(peer_stake) => {
+        ConnectionPeerType::Staked(peer_stake)
+        | ConnectionPeerType::P3(peer_stake)
+        | ConnectionPeerType::Mev(peer_stake) => {
             // No checked math for f64 type. So let's explicitly check for 0 here
             if total_stake == 0 || peer_stake > total_stake {
                 warn!(
@@ -232,8 +238,10 @@ impl SwQos {
                     client_connection_tracker,
                     Some(connection.clone()),
                     conn_context.peer_type(),
+                    conn_context.remote_pubkey.unwrap_or_default(),
                     conn_context.last_update.clone(),
                     self.max_connections_per_peer,
+                    DEFAULT_STREAM_THROTTLING_INTERVAL,
                 )
             {
                 update_open_connections_stat(&self.stats, &connection_table_l);
@@ -325,7 +333,12 @@ impl SwQos {
 }
 
 impl QosController<SwQosConnectionContext> for SwQos {
-    fn build_connection_context(&self, connection: &Connection) -> SwQosConnectionContext {
+    fn build_connection_context(
+        &self,
+        connection: &Connection,
+        stream_throttling_interval_ms: u64,
+        variant: QuicVariant,
+    ) -> SwQosConnectionContext {
         get_connection_stake(connection, &self.staked_nodes).map_or(
             SwQosConnectionContext {
                 peer_type: ConnectionPeerType::Unstaked,
@@ -345,9 +358,21 @@ impl QosController<SwQosConnectionContext> for SwQos {
                 let peer_type = {
                     let max_streams_per_ms = self.staked_stream_load_ema.max_streams_per_ms();
                     let min_stake_ratio =
-                        1_f64 / (max_streams_per_ms * STREAM_THROTTLING_INTERVAL_MS) as f64;
+                        1_f64 / (max_streams_per_ms * stream_throttling_interval_ms) as f64;
                     let stake_ratio = stake as f64 / total_stake as f64;
-                    if stake_ratio < min_stake_ratio {
+                    if variant != QuicVariant::Regular {
+                        if stake_ratio >= 1.0 / P3_PER_SECOND as f64 {
+                            match variant {
+                                QuicVariant::P3 => ConnectionPeerType::P3(stake),
+                                QuicVariant::Mev => ConnectionPeerType::Mev(stake),
+                                // NB: Unreachable.
+                                QuicVariant::Regular => ConnectionPeerType::Unstaked,
+                            }
+                        } else {
+                            // The peer will never be able to send so treat as unstaked (and thus close connection).
+                            ConnectionPeerType::Unstaked
+                        }
+                    } else if stake_ratio < min_stake_ratio {
                         // If it is a staked connection with ultra low stake ratio, treat it as unstaked.
                         ConnectionPeerType::Unstaked
                     } else {
@@ -381,7 +406,9 @@ impl QosController<SwQosConnectionContext> for SwQos {
             const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
 
             match conn_context.peer_type() {
-                ConnectionPeerType::Staked(stake) => {
+                ConnectionPeerType::Staked(stake)
+                | ConnectionPeerType::P3(stake)
+                | ConnectionPeerType::Mev(stake) => {
                     let mut connection_table_l = self.staked_connection_table.lock().await;
 
                     if connection_table_l.total_size >= self.max_staked_connections {
@@ -610,4 +637,6 @@ pub mod test {
             QUIC_MAX_UNSTAKED_CONCURRENT_STREAMS
         );
     }
+
+    // TODO:(PALADIN) Add test for paladin connection context
 }

@@ -8,10 +8,10 @@ use {
                 ConnectionTableType,
             },
             stream_throttle::{
-                throttle_stream, ConnectionStreamCounter, STREAM_THROTTLING_INTERVAL,
+                throttle_stream, ConnectionStreamCounter, DEFAULT_STREAM_THROTTLING_INTERVAL,
             },
         },
-        quic::{StreamerStats, DEFAULT_MAX_STREAMS_PER_MS},
+        quic::{QuicVariant, StreamerStats, DEFAULT_MAX_STREAMS_PER_MS},
         streamer::StakedNodes,
     },
     quinn::Connection,
@@ -100,8 +100,10 @@ impl SimpleQos {
                 client_connection_tracker,
                 Some(connection.clone()),
                 conn_context.peer_type(),
+                conn_context.remote_pubkey.unwrap_or_default(),
                 conn_context.last_update.clone(),
                 self.max_connections_per_peer,
+                DEFAULT_STREAM_THROTTLING_INTERVAL,
             )
         {
             update_open_connections_stat(&self.stats, &connection_table_l);
@@ -117,7 +119,7 @@ impl SimpleQos {
     }
 
     fn max_streams_per_throttling_interval(&self, _context: &SimpleQosConnectionContext) -> u64 {
-        let interval_ms = STREAM_THROTTLING_INTERVAL.as_millis() as u64;
+        let interval_ms = DEFAULT_STREAM_THROTTLING_INTERVAL.as_millis() as u64;
         (self.max_streams_per_second * interval_ms / 1000).max(1)
     }
 }
@@ -142,7 +144,12 @@ impl ConnectionContext for SimpleQosConnectionContext {
 }
 
 impl QosController<SimpleQosConnectionContext> for SimpleQos {
-    fn build_connection_context(&self, connection: &Connection) -> SimpleQosConnectionContext {
+    fn build_connection_context(
+        &self,
+        connection: &Connection,
+        _stream_throttling_interval_ms: u64,
+        _variant: QuicVariant,
+    ) -> SimpleQosConnectionContext {
         let (peer_type, remote_pubkey, _total_stake) =
             get_connection_stake(connection, &self.staked_nodes).map_or(
                 (ConnectionPeerType::Unstaked, None, 0),
@@ -170,7 +177,9 @@ impl QosController<SimpleQosConnectionContext> for SimpleQos {
         async move {
             const PRUNE_RANDOM_SAMPLE_SIZE: usize = 2;
             match conn_context.peer_type() {
-                ConnectionPeerType::Staked(stake) => {
+                ConnectionPeerType::Staked(stake)
+                | ConnectionPeerType::P3(stake)
+                | ConnectionPeerType::Mev(stake) => {
                     let mut connection_table_l = self.staked_connection_table.lock().await;
 
                     if connection_table_l.total_size >= self.max_staked_connections {
@@ -286,14 +295,16 @@ mod tests {
         crate::{
             nonblocking::{
                 quic::{ConnectionTable, ConnectionTableType},
+                stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
                 testing_utilities::get_client_config,
             },
-            quic::{configure_server, StreamerStats},
+            quic::{configure_server, QuicVariant, StreamerStats},
             streamer::StakedNodes,
         },
         quinn::Endpoint,
         solana_keypair::{Keypair, Signer},
         solana_net_utils::sockets::bind_to_localhost_unique,
+        solana_pubkey::Pubkey,
         std::{
             collections::HashMap,
             sync::{
@@ -460,8 +471,10 @@ mod tests {
             client_tracker1,
             Some(connection1),
             ConnectionPeerType::Staked(1000),
+            Pubkey::default(),
             Arc::new(AtomicU64::new(0)),
             1, // max_connections_per_peer
+            DEFAULT_STREAM_THROTTLING_INTERVAL,
         );
 
         let connection_table_guard = tokio::sync::Mutex::new(connection_table);
@@ -578,7 +591,11 @@ mod tests {
             create_server_side_connection().await;
 
         // Test - build connection context for unstaked peer
-        let context = simple_qos.build_connection_context(&server_connection);
+        let context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         // Verify unstaked peer context
         assert!(matches!(context.peer_type(), ConnectionPeerType::Unstaked));
@@ -617,7 +634,11 @@ mod tests {
             create_connection_with_keypairs(&server_keypair, &client_keypair).await;
 
         // Test - build connection context for staked peer
-        let context = simple_qos.build_connection_context(&server_connection);
+        let context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         // Verify staked peer context
         assert!(matches!(context.peer_type(), ConnectionPeerType::Staked(_)));
@@ -663,7 +684,11 @@ mod tests {
             create_connection_with_keypairs(&server_keypair, &client_keypair).await;
 
         // Build connection context
-        let mut conn_context = simple_qos.build_connection_context(&server_connection);
+        let mut conn_context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         // Test - try to add staked connection
         let result = simple_qos
@@ -721,7 +746,11 @@ mod tests {
             create_server_side_connection().await;
 
         // Build connection context (will be unstaked)
-        let mut conn_context = simple_qos.build_connection_context(&server_connection);
+        let mut conn_context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         // Test - try to add unstaked connection (should be rejected)
         let result = simple_qos
@@ -783,7 +812,11 @@ mod tests {
         let (server_connection1, _client_endpoint1, _server_endpoint1) =
             create_connection_with_keypairs(&server_keypair1, &client_keypair1).await;
 
-        let mut conn_context1 = simple_qos.build_connection_context(&server_connection1);
+        let mut conn_context1 = simple_qos.build_connection_context(
+            &server_connection1,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let result1 = simple_qos
             .try_add_connection(client_tracker1, &server_connection1, &mut conn_context1)
@@ -799,7 +832,11 @@ mod tests {
         let (server_connection2, _client_endpoint2, _server_endpoint2) =
             create_connection_with_keypairs(&server_keypair2, &client_keypair2).await;
 
-        let mut conn_context2 = simple_qos.build_connection_context(&server_connection2);
+        let mut conn_context2 = simple_qos.build_connection_context(
+            &server_connection2,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let result2 = simple_qos
             .try_add_connection(client_tracker2, &server_connection2, &mut conn_context2)
@@ -852,7 +889,11 @@ mod tests {
         let (server_connection1, _client_endpoint1, _server_endpoint1) =
             create_connection_with_keypairs(&server_keypair1, &client_keypair1).await;
 
-        let mut conn_context1 = simple_qos.build_connection_context(&server_connection1);
+        let mut conn_context1 = simple_qos.build_connection_context(
+            &server_connection1,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let result1 = simple_qos
             .try_add_connection(client_tracker1, &server_connection1, &mut conn_context1)
@@ -868,7 +909,11 @@ mod tests {
         let (server_connection2, _client_endpoint2, _server_endpoint2) =
             create_connection_with_keypairs(&server_keypair2, &client_keypair2).await;
 
-        let mut conn_context2 = simple_qos.build_connection_context(&server_connection2);
+        let mut conn_context2 = simple_qos.build_connection_context(
+            &server_connection2,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let result2 = simple_qos
             .try_add_connection(client_tracker2, &server_connection2, &mut conn_context2)
@@ -911,7 +956,11 @@ mod tests {
         let (server_connection, _client_endpoint, _server_endpoint) =
             create_connection_with_keypairs(&server_keypair, &client_keypair).await;
 
-        let mut conn_context = simple_qos.build_connection_context(&server_connection);
+        let mut conn_context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         // Record initial context state
         let initial_last_update = conn_context.last_update.load(Ordering::Relaxed);
@@ -975,7 +1024,11 @@ mod tests {
             create_connection_with_keypairs(&server_keypair, &client_keypair).await;
 
         // Build connection context and add connection to initialize stream counter
-        let mut conn_context = simple_qos.build_connection_context(&server_connection);
+        let mut conn_context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let result = simple_qos
             .try_add_connection(client_tracker, &server_connection, &mut conn_context)
@@ -1037,7 +1090,11 @@ mod tests {
             create_connection_with_keypairs(&server_keypair, &client_keypair).await;
 
         // Build connection context and add connection first
-        let mut conn_context = simple_qos.build_connection_context(&server_connection);
+        let mut conn_context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let add_result = simple_qos
             .try_add_connection(client_tracker, &server_connection, &mut conn_context)
@@ -1099,7 +1156,11 @@ mod tests {
             create_connection_with_keypairs(&server_keypair, &client_keypair).await;
 
         // Build connection context and add connection to initialize stream counter
-        let mut conn_context = simple_qos.build_connection_context(&server_connection);
+        let mut conn_context = simple_qos.build_connection_context(
+            &server_connection,
+            DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
+            QuicVariant::Regular,
+        );
 
         let result = simple_qos
             .try_add_connection(client_tracker, &server_connection, &mut conn_context)

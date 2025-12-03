@@ -1,5 +1,8 @@
 use {
-    crate::nonblocking::quic::{ClientConnectionTracker, ConnectionPeerType},
+    crate::{
+        nonblocking::quic::{ClientConnectionTracker, ConnectionPeerType},
+        quic::QuicVariant,
+    },
     quinn::Connection,
     std::future::Future,
     tokio_util::sync::CancellationToken,
@@ -18,7 +21,12 @@ pub(crate) trait ConnectionContext: Clone + Send + Sync {
 /// 2) managing connection caching and connection limits, stream limits
 pub(crate) trait QosController<C: ConnectionContext> {
     /// Build the ConnectionContext for a connection
-    fn build_connection_context(&self, connection: &Connection) -> C;
+    fn build_connection_context(
+        &self,
+        connection: &Connection,
+        stream_throttling_interval_ms: u64,
+        variant: QuicVariant,
+    ) -> C;
 
     /// Try to add a new connection to the connection table. This is an async operation that
     /// returns a Future. If successful, the Future resolves to Some containing a CancellationToken.

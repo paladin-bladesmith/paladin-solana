@@ -29,6 +29,7 @@ pub enum ClientId {
     JitoLabs,
     Firedancer,
     Agave,
+    Paladin,
     // If new variants are added, update From<u16> and TryFrom<ClientId>.
     Unknown(u16),
 }
@@ -75,7 +76,7 @@ impl Default for Version {
                 .unwrap_or_else(|| thread_rng().gen::<u32>()),
             feature_set,
             // Other client implementations need to modify this line.
-            client: u16::try_from(ClientId::JitoLabs).unwrap(),
+            client: u16::try_from(ClientId::Paladin).unwrap(),
         }
     }
 }
@@ -110,6 +111,7 @@ impl From<u16> for ClientId {
             1u16 => Self::JitoLabs,
             2u16 => Self::Firedancer,
             3u16 => Self::Agave,
+            4u16 => Self::Paladin,
             _ => Self::Unknown(client),
         }
     }
@@ -124,7 +126,8 @@ impl TryFrom<ClientId> for u16 {
             ClientId::JitoLabs => Ok(1u16),
             ClientId::Firedancer => Ok(2u16),
             ClientId::Agave => Ok(3u16),
-            ClientId::Unknown(client @ 0u16..=3u16) => Err(format!("Invalid client: {client}")),
+            ClientId::Paladin => Ok(4u16),
+            ClientId::Unknown(client @ 0u16..=4u16) => Err(format!("Invalid client: {client}")),
             ClientId::Unknown(client) => Ok(client),
         }
     }

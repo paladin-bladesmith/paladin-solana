@@ -1,20 +1,20 @@
 use {
     crossbeam_channel::Sender,
     jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
-    jsonrpc_core_client::{transports::ipc, RpcError},
+    jsonrpc_core_client::{RpcError, transports::ipc},
     jsonrpc_derive::rpc,
     jsonrpc_ipc_server::{
-        tokio::sync::oneshot::channel as oneshot_channel, RequestContext, ServerBuilder,
+        RequestContext, ServerBuilder, tokio::sync::oneshot::channel as oneshot_channel
     },
     log::*,
-    serde::{de::Deserializer, Deserialize, Serialize},
+    serde::{Deserialize, Serialize, de::Deserializer},
     solana_accounts_db::accounts_index::AccountIndex,
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         banking_stage::{
-            transaction_scheduler::scheduler_controller::SchedulerConfig, BankingStage,
+            BankingStage, DEFAULT_BATCH_INTERVAL, transaction_scheduler::scheduler_controller::SchedulerConfig
         },
-        consensus::{tower_storage::TowerStorage, Tower},
+        consensus::{Tower, tower_storage::TowerStorage},
         proxy::{
             block_engine_stage::{BlockEngineConfig, BlockEngineStage},
             relayer_stage::{RelayerConfig, RelayerStage},
@@ -26,7 +26,7 @@ use {
     },
     solana_geyser_plugin_manager::GeyserPluginManagerRequest,
     solana_gossip::contact_info::{ContactInfo, Protocol, SOCKET_ADDR_UNSPECIFIED},
-    solana_keypair::{read_keypair_file, Keypair},
+    solana_keypair::{Keypair, read_keypair_file},
     solana_pubkey::Pubkey,
     solana_rpc::rpc::verify_pubkey,
     solana_rpc_client_api::{config::RpcAccountIndex, custom_error::RpcCustomError},
@@ -41,8 +41,7 @@ use {
         path::{Path, PathBuf},
         str::FromStr,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, RwLock, atomic::{AtomicBool, Ordering}
         },
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -288,6 +287,13 @@ pub trait AdminRpc {
         block_engine_url: String,
         disable_block_engine_autoconfig: bool,
         trust_packets: bool,
+    ) -> Result<()>;
+
+    #[rpc(meta, name = "setSecondaryBlockEngineUrls")]
+    fn set_secondary_block_engine_urls(
+        &self,
+        meta: Self::Metadata,
+        secondary_block_engine_urls: Vec<String>,
     ) -> Result<()>;
 
     #[rpc(meta, name = "setRelayerConfig")]
@@ -564,6 +570,19 @@ impl AdminRpc for AdminRpcImpl {
                 "failed to set block engine config. see logs for details.",
             ))
         }
+    }
+
+    fn set_secondary_block_engine_urls(
+        &self,
+        meta: Self::Metadata,
+        secondary_block_engine_urls: Vec<String>,
+    ) -> Result<()> {
+        debug!("set_secondary_block_engine_urls request received");
+
+        meta.with_post_init(|post_init| {
+            *post_init.secondary_block_engine_urls.lock().unwrap() = secondary_block_engine_urls;
+            Ok(())
+        })
     }
 
     fn set_identity(
@@ -916,6 +935,7 @@ impl AdminRpc for AdminRpcImpl {
                 .spawn_internal_threads(
                     block_production_method,
                     num_workers,
+                    DEFAULT_BATCH_INTERVAL,
                     SchedulerConfig { scheduler_pacing },
                 )
                 .map_err(|err| {
@@ -1125,6 +1145,7 @@ mod tests {
         solana_core::{
             admin_rpc_post_init::{KeyUpdaterType, KeyUpdaters},
             consensus::tower_storage::NullTowerStorage,
+            proxy::block_engine_stage::BlockEngineConfig,
             validator::{Validator, ValidatorConfig, ValidatorTpuConfig},
         },
         solana_gossip::{cluster_info::ClusterInfo, node::Node},
@@ -1196,6 +1217,7 @@ mod tests {
             let start_progress = Arc::new(RwLock::new(ValidatorStartProgress::default()));
             let repair_whitelist = Arc::new(RwLock::new(HashSet::new()));
             let block_engine_config = Arc::new(Mutex::new(BlockEngineConfig::default()));
+            let secondary_block_engine_urls = Arc::new(Mutex::new(vec![]));
             let relayer_config = Arc::new(Mutex::new(RelayerConfig::default()));
             let shred_receiver_address = Arc::new(ArcSwap::default());
             let shred_retransmit_receiver_address = Arc::new(ArcSwap::default());
@@ -1223,6 +1245,7 @@ mod tests {
                     node: None,
                     banking_stage: Arc::new(RwLock::new(None)),
                     block_engine_config,
+                    secondary_block_engine_urls,
                     relayer_config,
                     shred_receiver_address,
                     shred_retransmit_receiver_address,
@@ -1682,6 +1705,8 @@ mod tests {
                 updater_keys,
                 HashSet::from_iter(vec![
                     KeyUpdaterType::Tpu,
+                    KeyUpdaterType::P3Regular,
+                    KeyUpdaterType::P3Mev,
                     KeyUpdaterType::TpuForwards,
                     KeyUpdaterType::TpuVote,
                     KeyUpdaterType::Forward,

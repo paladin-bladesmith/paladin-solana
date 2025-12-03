@@ -12,6 +12,7 @@ use {
         banking_stage::{
             transaction_scheduler::scheduler_controller::SchedulerConfig,
             update_bank_forks_and_poh_recorder_for_new_tpu_bank, BankingStage,
+            DEFAULT_BATCH_INTERVAL,
         },
         banking_trace::{BankingTracer, Channels, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT},
         bundle_stage::bundle_account_locker::BundleAccountLocker,
@@ -479,6 +480,8 @@ fn main() {
         prioritization_fee_cache,
         HashSet::default(),
         BundleAccountLocker::default(),
+        |_| 0,
+        DEFAULT_BATCH_INTERVAL,
     );
 
     // This is so that the signal_receiver does not go out of scope after the closure.

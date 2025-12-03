@@ -21,6 +21,7 @@ use {
     solana_inflation::Inflation,
     solana_keypair::{read_keypair_file, write_keypair_file, Keypair},
     solana_native_token::sol_str_to_lamports,
+    solana_perf::report_target_features,
     solana_pubkey::Pubkey,
     solana_rent::Rent,
     solana_rpc::{
@@ -126,7 +127,7 @@ fn main() {
 
     info!("{} {}", crate_name!(), solana_version::version!());
     info!("Starting validator with: {:#?}", std::env::args_os());
-    solana_core::validator::report_target_features();
+    report_target_features();
 
     // TODO: Ideally test-validator should *only* allow private addresses.
     let socket_addr_space = SocketAddrSpace::new(/*allow_private_addr=*/ true);
@@ -599,6 +600,20 @@ fn main() {
     if let Some(compute_unit_limit) = compute_unit_limit {
         genesis.compute_unit_limit(compute_unit_limit);
     }
+
+    genesis.block_engine_url = matches
+        .value_of("block_engine_url")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    genesis.relayer_url = matches
+        .value_of("relayer_url")
+        .map(ToString::to_string)
+        .unwrap_or_default();
+    genesis.secondary_block_engine_urls = matches
+        .values_of("secondary_block_engines_urls")
+        .unwrap_or_default()
+        .map(ToString::to_string)
+        .collect();
 
     match genesis.start_with_mint_address_and_geyser_plugin_rpc(
         mint_address,
