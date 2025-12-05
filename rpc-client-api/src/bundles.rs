@@ -92,6 +92,8 @@ pub enum RpcBundleExecutionError {
 //             BundleExecutionError::LockError => Self::BundleLockError,
 //             BundleExecutionError::PohRecordError(e) => Self::PohRecordError(e.to_string()),
 //             BundleExecutionError::TipError(e) => Self::TipError(e.to_string()),
+//             NB: Lie about error type to not break downstream consumers.
+//             BundleExecutionError::FrontRun => Self::TipError(TipError::CrankTipError.to_string()),
 //         }
 //     }
 // }

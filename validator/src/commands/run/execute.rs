@@ -32,6 +32,7 @@ use {
     solana_clock::{Slot, DEFAULT_SLOTS_PER_EPOCH},
     solana_core::{
         banking_stage::transaction_scheduler::scheduler_controller::SchedulerConfig,
+        banking_stage::DEFAULT_BATCH_INTERVAL,
         banking_trace::DISABLED_BAKING_TRACE_DIR,
         consensus::tower_storage,
         proxy::{block_engine_stage::BlockEngineConfig, relayer_stage::RelayerConfig},
@@ -59,7 +60,7 @@ use {
         use_snapshot_archives_at_startup::{self, UseSnapshotArchivesAtStartup},
     },
     solana_net_utils::multihomed_sockets::BindIpAddrs,
-    solana_perf::recycler::enable_recycler_warming,
+    solana_perf::{recycler::enable_recycler_warming, report_target_features},
     solana_poh::poh_service,
     solana_pubkey::Pubkey,
     solana_runtime::{runtime_config::RuntimeConfig, snapshot_utils},
@@ -77,7 +78,7 @@ use {
     std::{
         collections::HashSet,
         fs::{self, File},
-        net::{IpAddr, Ipv4Addr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
         num::{NonZeroU64, NonZeroUsize},
         path::{Path, PathBuf},
         process::exit,
@@ -135,7 +136,7 @@ pub fn execute(
         enable_recycler_warming();
     }
 
-    solana_core::validator::report_target_features();
+    report_target_features();
 
     let authorized_voter_keypairs = keypairs_of(matches, "authorized_voter_keypairs")
         .map(|keypairs| keypairs.into_iter().map(Arc::new).collect())
@@ -543,6 +544,14 @@ pub fn execute(
         trust_packets: matches.is_present("trust_block_engine_packets"),
     }));
 
+    let secondary_block_engine_urls = Arc::new(Mutex::new(
+        matches
+            .values_of("secondary_block_engines_urls")
+            .unwrap_or_default()
+            .map(ToString::to_string)
+            .collect(),
+    ));
+
     // Defaults are set in cli definition, safe to use unwrap() here
     let expected_heartbeat_interval_ms: u64 =
         value_of(matches, "relayer_expected_heartbeat_interval_ms").unwrap();
@@ -702,6 +711,23 @@ pub fn execute(
         shred_receiver_address,
         shred_retransmit_receiver_address,
         tip_manager_config,
+        // paladin config
+        batch_interval: if matches.is_present("batch_interval_ms") {
+            Duration::from_millis(
+                value_of(matches, "batch_interval_ms").expect("Couldn't parse --batch-interval-ms"),
+            )
+        } else {
+            DEFAULT_BATCH_INTERVAL
+        },
+        p3_socket: SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            value_of(matches, "p3_port").unwrap(),
+        )),
+        p3_mev_socket: SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::UNSPECIFIED,
+            value_of(matches, "p3_mev_port").unwrap(),
+        )),
+        secondary_block_engine_urls,
     };
 
     let reserved = validator_config
@@ -1346,6 +1372,9 @@ fn tip_manager_config_from_matches(
     voting_disabled: bool,
 ) -> TipManagerConfig {
     TipManagerConfig {
+        // TODO: Re-enable.
+        funnel: None,
+        rewards_split: None,
         tip_payment_program_id: pubkey_of(matches, "tip_payment_program_pubkey").unwrap_or_else(
             || {
                 if !voting_disabled {

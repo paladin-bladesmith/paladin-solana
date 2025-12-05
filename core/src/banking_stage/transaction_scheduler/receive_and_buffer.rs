@@ -1,5 +1,7 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
+use solana_perf::packet::PacketBatch;
+
 use {
     super::{
         transaction_priority_id::TransactionPriorityId,
@@ -49,6 +51,7 @@ pub(crate) struct DisconnectedError;
 
 /// Stats/metrics returned by `receive_and_buffer_packets`.
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
+#[derive(Default)]
 pub(crate) struct ReceivingStats {
     pub num_received: usize,
     /// Count of packets that passed sigverify but were dropped
@@ -63,10 +66,8 @@ pub(crate) struct ReceivingStats {
     pub num_dropped_on_already_processed: usize,
     pub num_dropped_on_fee_payer: usize,
     pub num_dropped_on_capacity: usize,
-
     pub num_buffered: usize,
     pub num_dropped_on_blacklisted_account: usize,
-
     pub receive_time_us: u64,
     pub buffer_time_us: u64,
 }
@@ -90,6 +91,23 @@ impl ReceivingStats {
     }
 }
 
+#[allow(unused)]
+#[derive(Default)]
+pub struct BufferStats {
+    num_received: usize,
+    num_dropped_without_parsing: usize,
+    num_dropped_on_sanitization: usize,
+    num_dropped_on_lock_validation: usize,
+    num_dropped_on_compute_budget: usize,
+    num_dropped_on_age: usize,
+    num_dropped_on_already_processed: usize,
+    num_dropped_on_fee_payer: usize,
+    num_dropped_on_capacity: usize,
+    num_buffered: usize,
+    num_dropped_on_blacklisted_account: usize,
+    buffer_time_us: u64,
+}
+
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 pub(crate) trait ReceiveAndBuffer {
     type Transaction: TransactionWithMeta + Send + Sync;
@@ -102,6 +120,12 @@ pub(crate) trait ReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError>;
+
+    fn maybe_queue_batch(
+        &mut self,
+        container: &mut Self::Container,
+        decision: &BufferedPacketsDecision,
+    ) -> BufferStats;
 }
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -109,6 +133,11 @@ pub(crate) struct TransactionViewReceiveAndBuffer {
     pub receiver: BankingPacketReceiver,
     pub bank_forks: Arc<RwLock<BankForks>>,
     pub blacklisted_accounts: HashSet<Pubkey>,
+
+    // Batching
+    batch: Vec<BankingPacketBatch>,
+    batch_start: Instant,
+    batch_interval: Duration,
 }
 
 impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
@@ -120,39 +149,16 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
-        let (root_bank, working_bank) = {
-            let bank_forks = self.bank_forks.read().unwrap();
-            let root_bank = bank_forks.root_bank();
-            let working_bank = bank_forks.working_bank();
-            (root_bank, working_bank)
-        };
-
         // Receive packet batches.
-        const TIMEOUT: Duration = Duration::from_millis(10);
-        const PACKET_BURST_LIMIT: usize = 1000;
         let start = Instant::now();
+        let timeout = self.get_timeout();
+        const PACKET_BURST_LIMIT: usize = 1000;
 
-        let mut received_message = false;
-        let mut stats = ReceivingStats {
-            num_received: 0,
-            num_dropped_without_parsing: 0,
-            num_dropped_on_parsing_and_sanitization: 0,
-            num_dropped_on_lock_validation: 0,
-            num_dropped_on_compute_budget: 0,
-            num_dropped_on_age: 0,
-            num_dropped_on_already_processed: 0,
-            num_dropped_on_fee_payer: 0,
-            num_dropped_on_capacity: 0,
-            num_buffered: 0,
-            receive_time_us: 0,
-            buffer_time_us: 0,
-            num_dropped_on_blacklisted_account: 0,
-        };
+        let mut stats = ReceivingStats::default();
 
         // If not leader/unknown, do a blocking-receive initially. This lets
         // the thread sleep until a message is received, or until the timeout.
         // Additionally, only sleep if the container is empty.
-        let mut timed_out = false;
         if container.is_empty()
             && matches!(
                 decision,
@@ -163,68 +169,58 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             //       overhead for wakers? But then risk not waking up when message
             //       received - as long as sleep is somewhat short, this should be
             //       fine.
-            match self.receiver.recv_timeout(TIMEOUT) {
+            match self.receiver.recv_timeout(timeout) {
                 Ok(packet_batch_message) => {
-                    received_message = true;
-                    stats.accumulate(self.handle_packet_batch_message(
-                        container,
-                        decision,
-                        &root_bank,
-                        &working_bank,
-                        packet_batch_message,
-                    ));
+                    stats.accumulate(self.batch_packets(packet_batch_message, decision));
                 }
-                Err(RecvTimeoutError::Timeout) => timed_out = true,
+                Err(RecvTimeoutError::Timeout) => return Ok(stats),
                 Err(RecvTimeoutError::Disconnected) => {
-                    if !received_message {
-                        return Err(DisconnectedError);
-                    }
+                    return (!self.batch.is_empty())
+                        .then_some(stats)
+                        .ok_or(DisconnectedError);
                 }
             }
         }
 
-        if !timed_out {
-            while start.elapsed() < TIMEOUT && stats.num_received < PACKET_BURST_LIMIT {
-                match self.receiver.try_recv() {
-                    Ok(packet_batch_message) => {
-                        stats.receive_time_us += start.elapsed().as_micros() as u64;
-                        received_message = true;
-                        let batch_stats = self.handle_packet_batch_message(
-                            container,
-                            decision,
-                            &root_bank,
-                            &working_bank,
-                            packet_batch_message,
-                        );
-                        stats.accumulate(batch_stats);
-                    }
-                    Err(TryRecvError::Empty) => {
-                        break;
-                    }
-                    Err(TryRecvError::Disconnected) => {
-                        if !received_message {
-                            return Err(DisconnectedError);
-                        }
-                    }
+        while start.elapsed() < timeout && stats.num_received < PACKET_BURST_LIMIT {
+            match self.receiver.try_recv() {
+                Ok(packet_batch_message) => {
+                    stats.accumulate(self.batch_packets(packet_batch_message, decision));
+                }
+                Err(TryRecvError::Empty) => return Ok(stats),
+                Err(TryRecvError::Disconnected) => {
+                    return (!self.batch.is_empty())
+                        .then_some(stats)
+                        .ok_or(DisconnectedError);
                 }
             }
         }
 
-        Ok(ReceivingStats {
-            num_received: stats.num_received,
-            num_dropped_without_parsing: stats.num_dropped_without_parsing,
-            num_dropped_on_parsing_and_sanitization: stats.num_dropped_on_parsing_and_sanitization,
-            num_dropped_on_lock_validation: stats.num_dropped_on_lock_validation,
-            num_dropped_on_compute_budget: stats.num_dropped_on_compute_budget,
-            num_dropped_on_age: stats.num_dropped_on_age,
-            num_dropped_on_already_processed: stats.num_dropped_on_already_processed,
-            num_dropped_on_fee_payer: stats.num_dropped_on_fee_payer,
-            num_dropped_on_capacity: stats.num_dropped_on_capacity,
-            num_buffered: stats.num_buffered,
-            num_dropped_on_blacklisted_account: stats.num_dropped_on_blacklisted_account,
-            receive_time_us: stats.receive_time_us,
-            buffer_time_us: stats.buffer_time_us,
-        })
+        Ok(stats)
+    }
+
+    fn maybe_queue_batch(
+        &mut self,
+        container: &mut Self::Container,
+        decision: &BufferedPacketsDecision,
+    ) -> BufferStats {
+        if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
+            let (root_bank, working_bank) = {
+                let bank_forks = self.bank_forks.read().unwrap();
+                let root_bank = bank_forks.root_bank();
+                let working_bank = bank_forks.working_bank();
+                (root_bank, working_bank)
+            };
+
+            self.handle_batch_of_packet_batch_messages(
+                container,
+                decision,
+                &root_bank,
+                &working_bank,
+            )
+        } else {
+            BufferStats::default()
+        }
     }
 }
 
@@ -238,15 +234,102 @@ pub enum PacketHandlingError {
 }
 
 impl TransactionViewReceiveAndBuffer {
+    pub fn new(
+        receiver: BankingPacketReceiver,
+        bank_forks: Arc<RwLock<BankForks>>,
+        blacklisted_accounts: HashSet<Pubkey>,
+        batch_interval: Duration,
+    ) -> Self {
+        Self {
+            receiver,
+            bank_forks,
+            blacklisted_accounts,
+            batch: Vec::default(),
+            batch_start: Instant::now(),
+            batch_interval,
+        }
+    }
+
+    /// If batch is not empty, and time has elapsed, return zero timeout
+    ///
+    /// If batch is not empty, but time has not elapsed, return remaining time
+    ///
+    /// If batch is empty, return default timeout
+    fn get_timeout(&self) -> Duration {
+        if !self.batch.is_empty() {
+            if self.batch_start.elapsed() >= self.batch_interval {
+                Duration::ZERO
+            } else {
+                self.batch_interval.saturating_sub(self.batch_start.elapsed())
+            }
+        } else {
+            Duration::from_millis(10)
+        }
+    }
+
+    /// Filter and batch the TXs
+    fn batch_packets(
+        &mut self,
+        packet_batch_message: BankingPacketBatch,
+        decision: &BufferedPacketsDecision,
+    ) -> ReceivingStats {
+        // If not holding packets, just drop them immediately without parsing.
+        if matches!(decision, BufferedPacketsDecision::Forward) {
+            let mut stats = ReceivingStats::default();
+            let total = packet_batch_message.iter().map(|b| b.len()).sum::<usize>();
+
+            stats.num_received = total;
+            stats.num_dropped_without_parsing = total;
+            return stats;
+        }
+
+        // If this is the first packet in the batch, set the start timestamp for
+        // the batch.
+        if self.batch.is_empty() {
+            self.batch_start = Instant::now();
+        }
+
+        // Count len of packets without discarded
+        let mut total_packets_len = 0;
+        let num_received = packet_batch_message
+            .iter()
+            .map(|b| {
+                total_packets_len += b.len();
+                b.iter()
+                    .map(|p| usize::from(!p.meta().discard()))
+                    .sum::<usize>()
+            })
+            .sum::<usize>();
+
+        self.batch.push(packet_batch_message);
+
+        ReceivingStats {
+            num_received: total_packets_len,
+            num_dropped_without_parsing: total_packets_len - num_received,
+            num_dropped_on_parsing_and_sanitization: 0,
+            num_dropped_on_lock_validation: 0,
+            num_dropped_on_compute_budget: 0,
+            num_dropped_on_age: 0,
+            num_dropped_on_already_processed: 0,
+            num_dropped_on_fee_payer: 0,
+            num_dropped_on_capacity: 0,
+            num_buffered: 0,
+            num_dropped_on_blacklisted_account: 0,
+            receive_time_us: 0,
+            buffer_time_us: 0,
+        }
+    }
+
     /// Return number of received packets.
-    fn handle_packet_batch_message(
+    fn handle_batch_of_packet_batch_messages(
         &mut self,
         container: &mut TransactionViewStateContainer,
         decision: &BufferedPacketsDecision,
         root_bank: &Bank,
         working_bank: &Bank,
-        packet_batch_message: BankingPacketBatch,
-    ) -> ReceivingStats {
+    ) -> BufferStats {
+        let packet_batch_messages: Vec<BankingPacketBatch> = self.batch.drain(..).collect();
+
         let start = Instant::now();
         // If outside holding window, do not parse.
         let should_parse = !matches!(decision, BufferedPacketsDecision::Forward);
@@ -330,20 +413,22 @@ impl TransactionViewReceiveAndBuffer {
                 );
             };
 
-        let mut num_received = 0;
         let mut num_dropped_without_parsing = 0;
         let mut num_dropped_on_parsing_and_sanitization = 0;
         let mut num_dropped_on_lock_validation = 0;
         let mut num_dropped_on_compute_budget = 0;
         let mut num_dropped_on_blacklisted_account = 0;
 
-        for packet_batch in packet_batch_message.iter() {
+        let flatted_messages: Vec<&PacketBatch> = packet_batch_messages
+            .iter()
+            .flat_map(|arc| arc.iter())
+            .collect();
+        for packet_batch in flatted_messages {
             for packet in packet_batch.iter() {
                 let Some(packet_data) = packet.data(..) else {
                     continue;
                 };
 
-                num_received += 1;
                 if !should_parse {
                     num_dropped_without_parsing += 1;
                     continue;
@@ -401,19 +486,18 @@ impl TransactionViewReceiveAndBuffer {
         // Any remaining packets undergo status/age checks
         check_and_push_to_queue(container, &mut transaction_priority_ids);
 
-        ReceivingStats {
-            num_received,
+        BufferStats {
+            num_received: 0,
             num_dropped_without_parsing,
-            num_dropped_on_parsing_and_sanitization,
+            num_dropped_on_sanitization: num_dropped_on_parsing_and_sanitization,
             num_dropped_on_lock_validation,
             num_dropped_on_compute_budget,
             num_dropped_on_age,
             num_dropped_on_already_processed,
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
-            num_dropped_on_blacklisted_account,
             num_buffered,
-            receive_time_us: 0, // receive is outside this function
+            num_dropped_on_blacklisted_account,
             buffer_time_us: start.elapsed().as_micros() as u64,
         }
     }
@@ -630,6 +714,7 @@ mod tests {
     }
 
     const TEST_CONTAINER_CAPACITY: usize = 100;
+    const _BATCH_PERIOD: Duration = Duration::from_millis(50);
 
     fn setup_transaction_view_receive_and_buffer(
         receiver: Receiver<BankingPacketBatch>,
@@ -643,10 +728,35 @@ mod tests {
             receiver,
             bank_forks,
             blacklisted_accounts,
+
+            batch: Vec::default(),
+            batch_start: Instant::now(),
+            batch_interval: Duration::ZERO,
         };
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
     }
+
+    // fn setup_transaction_view_receive_and_buffer_with_batching(
+    //     receiver: Receiver<BankingPacketBatch>,
+    //     bank_forks: Arc<RwLock<BankForks>>,
+    //     blacklisted_accounts: HashSet<Pubkey>,
+    // ) -> (
+    //     TransactionViewReceiveAndBuffer,
+    //     TransactionViewStateContainer,
+    // ) {
+    //     let receive_and_buffer = TransactionViewReceiveAndBuffer {
+    //         receiver,
+    //         bank_forks,
+    //         blacklisted_accounts,
+
+    //         batch: Vec::default(),
+    //         batch_start: Instant::now(),
+    //         batch_interval: BATCH_PERIOD,
+    //     };
+    //     let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
+    //     (receive_and_buffer, container)
+    // }
 
     // verify container state makes sense:
     // 1. Number of transactions matches expectation
@@ -794,9 +904,9 @@ mod tests {
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
-
         assert_eq!(num_received, 0);
-        assert_eq!(num_dropped_without_parsing, 0);
+
+        assert_eq!(num_dropped_without_parsing, 1);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
@@ -806,6 +916,7 @@ mod tests {
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
 
+        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
         verify_container(&mut container, 0);
     }
 
@@ -841,7 +952,7 @@ mod tests {
 
         assert_eq!(num_received, 1);
         assert_eq!(num_dropped_without_parsing, 0);
-        assert_eq!(num_dropped_on_parsing_and_sanitization, 1);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
@@ -849,6 +960,20 @@ mod tests {
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_without_parsing,
+            num_dropped_on_sanitization,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_sanitization, 1);
 
         verify_container(&mut container, 0);
     }
@@ -887,11 +1012,23 @@ mod tests {
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
-        assert_eq!(num_dropped_on_age, 1);
+        assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_age,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_age, 1);
 
         verify_container(&mut container, 0);
     }
@@ -937,9 +1074,21 @@ mod tests {
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
-        assert_eq!(num_dropped_on_fee_payer, 1);
+        assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_fee_payer,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_fee_payer, 1);
 
         verify_container(&mut container, 0);
     }
@@ -992,10 +1141,10 @@ mod tests {
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
-
         assert_eq!(num_received, 1);
+
         assert_eq!(num_dropped_without_parsing, 0);
-        assert_eq!(num_dropped_on_parsing_and_sanitization, 1);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
@@ -1004,6 +1153,21 @@ mod tests {
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
 
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_without_parsing,
+            num_dropped_on_sanitization,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_sanitization, 1);
+
+        // Nothing should be included in the container
         verify_container(&mut container, 0);
     }
 
@@ -1042,6 +1206,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(num_received, 1);
+
         assert_eq!(num_dropped_without_parsing, 0);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
@@ -1050,7 +1215,10 @@ mod tests {
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
-        assert_eq!(num_buffered, 1);
+        assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
 
         verify_container(&mut container, 1);
     }
@@ -1101,9 +1269,22 @@ mod tests {
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
-        assert!(num_dropped_on_capacity > 0);
-        assert_eq!(num_buffered, num_transactions);
+        assert!(num_dropped_on_capacity == 0);
+        assert_eq!(num_buffered, 0);
 
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_capacity,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, num_transactions);
+        assert!(num_dropped_on_capacity > 0);
+
+        // assert_eq!(num_buffered, num_transactions);
         verify_container(&mut container, TEST_CONTAINER_CAPACITY);
     }
 
@@ -1176,13 +1357,24 @@ mod tests {
         assert_eq!(num_received, 1);
         assert_eq!(num_dropped_without_parsing, 0);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
-        assert_eq!(num_dropped_on_lock_validation, 1);
+        assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_lock_validation,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_lock_validation, 1);
 
         verify_container(&mut container, 0);
     }
@@ -1212,6 +1404,66 @@ mod tests {
         let r = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
-        assert_eq!(r.num_dropped_on_blacklisted_account, 1);
+        assert_eq!(r.num_dropped_on_blacklisted_account, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_blacklisted_account,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 1);
+        assert_eq!(num_dropped_on_blacklisted_account, 1);
+
+        verify_container(&mut container, 1);
     }
+
+    // fn test_receive_and_buffer_batching() {
+    //     let (sender, receiver) = unbounded();
+    //     let (bank_forks, mint_keypair) = test_bank_forks();
+    //     let (mut receive_and_buffer, mut container) =
+    //         setup_receive_and_buffer(receiver, bank_forks.clone(), HashSet::default());
+
+    //     let transaction = transfer(
+    //         &mint_keypair,
+    //         &Pubkey::new_unique(),
+    //         1,
+    //         bank_forks.read().unwrap().root_bank().last_blockhash(),
+    //     );
+    //     let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
+    //     sender.send(packet_batches).unwrap();
+
+    //     let ReceivingStats { num_received, .. } = receive_and_buffer
+    //         .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+    //         .unwrap();
+    //     assert_eq!(num_received, 1);
+
+    //     // Do another transfer after 2 ms
+    //     sleep(Duration::from_millis(2));
+    //     let transaction = transfer(
+    //         &mint_keypair,
+    //         &Pubkey::new_unique(),
+    //         1,
+    //         bank_forks.read().unwrap().root_bank().last_blockhash(),
+    //     );
+    //     let packet_batches = Arc::new(to_packet_batches(&[transaction], 1));
+    //     sender.send(packet_batches).unwrap();
+
+    //     let ReceivingStats { num_received, .. } = receive_and_buffer
+    //         .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
+    //         .unwrap();
+    //     assert_eq!(num_received, 1);
+
+    //     // Sleep the batching period
+    //     sleep(BATCH_PERIOD);
+
+    //     // We need to queue the batch for sdk
+    //     receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+    //     // After both received and buffered, the result should be the same, the container should have 2 transactions
+    //     verify_container(&mut container, 2);
+    // }
 }

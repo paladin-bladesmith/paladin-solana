@@ -189,6 +189,16 @@ tokio-util = { workspace = true }
 tonic = { workspace = true }
 trees = { workspace = true }
 
+# Paladin
+arrayref = { workspace = true }
+funnel = { workspace = true }
+hashbrown = { workspace = true }
+paladin-lockup-program = { workspace = true }
+sha2 = { workspace = true }
+solana-sdk = { workspace = true }
+spl-discriminator = { workspace = true }
+solana-seed-derivable = { workspace = true }
+
 [target.'cfg(not(any(target_env = "msvc", target_os = "freebsd")))'.dependencies]
 jemallocator = { workspace = true }
 
@@ -228,6 +238,7 @@ solana-program-test = { workspace = true }
 solana-rpc = { workspace = true, features = ["dev-context-only-utils"] }
 solana-runtime = { workspace = true, features = ["dev-context-only-utils"] }
 solana-runtime-transaction = { workspace = true }
+# solana-stake-program = { workspace = true }
 solana-system-program = { workspace = true }
 solana-unified-scheduler-pool = { workspace = true, features = [
     "dev-context-only-utils",

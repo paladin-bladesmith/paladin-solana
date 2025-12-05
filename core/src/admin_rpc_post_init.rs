@@ -30,6 +30,10 @@ pub enum KeyUpdaterType {
     Forward,
     /// For the RPC service
     RpcService,
+    /// For the P3 service
+    P3Regular,
+    /// For the P3 MEV service
+    P3Mev,
 }
 
 /// Responsible for managing the updaters for identity key change
@@ -84,6 +88,7 @@ pub struct AdminRpcRequestMetadataPostInit {
     pub node: Option<Arc<NodeMultihoming>>,
     pub banking_stage: Arc<RwLock<Option<BankingStage>>>,
     pub block_engine_config: Arc<Mutex<BlockEngineConfig>>,
+    pub secondary_block_engine_urls: Arc<Mutex<Vec<String>>>,
     pub relayer_config: Arc<Mutex<RelayerConfig>>,
     pub shred_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,
     pub shred_retransmit_receiver_address: Arc<ArcSwap<Option<SocketAddr>>>,

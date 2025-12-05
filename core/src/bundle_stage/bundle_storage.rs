@@ -1,5 +1,6 @@
 use {
     crate::{
+        // arrayref::array_ref,
         banking_stage::{
             scheduler_messages::MaxAge,
             transaction_scheduler::{
@@ -15,6 +16,9 @@ use {
     ahash::HashSet,
     arrayvec::ArrayVec,
     solana_clock::Slot,
+    // solana_cost_model::cost_model::CostModel,
+    // solana_fee_structure::FeeBudgetLimits,
+    // solana_message::compiled_instruction::CompiledInstruction,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_meta::StaticMeta,
@@ -266,6 +270,76 @@ impl BundleStorage {
             }
         }
     }
+
+    // fn calculate_bundle_priority(
+    //     immutable_bundle: &ImmutableDeserializedBundle,
+    //     sanitized_bundle: &SanitizedBundle,
+    //     bank: &Bank,
+    //     priority_counter: & &HashSet<Pubkey>,
+    // ) -> (std::cmp::Reverse<u64>, u64) {
+    //     let total_cu_cost: u64 = sanitized_bundle
+    //         .transactions
+    //         .iter()
+    //         .map(|tx: &_| CostModel::calculate_cost(tx, &bank.feature_set).sum())
+    //         .sum();
+
+    //     let reward_from_tx: u64 = sanitized_bundle
+    //         .transactions
+    //         .iter()
+    //         .map(|tx| {
+    //             let limits = tx
+    //                 .compute_budget_instruction_details()
+    //                 .sanitize_and_convert_to_compute_budget_limits(&bank.feature_set)
+    //                 .unwrap_or_default();
+    //             bank.calculate_reward_for_transaction(tx, &FeeBudgetLimits::from(limits))
+    //         })
+    //         .sum();
+
+    //     let reward_from_tips: u64 = immutable_bundle
+    //         .packets()
+    //         .iter()
+    //         .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
+    //         .sum();
+
+    //     let total_reward = reward_from_tx.saturating_add(reward_from_tips);
+    //     const MULTIPLIER: u64 = 1_000_000;
+    //     let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
+    //     *priority_counter = priority_counter.wrapping_add(1);
+
+    //     (std::cmp::Reverse(priority), *priority_counter)
+    // }
+
+    // pub fn extract_tips_from_packet(
+    //     packet: &ImmutableDeserializedPacket,
+    //     tip_accounts: &HashSet<Pubkey>,
+    // ) -> u64 {
+    //     let message = packet.transaction().get_message();
+    //     let account_keys = message.message.static_account_keys();
+    //     message
+    //         .program_instructions_iter()
+    //         .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
+    //         .filter(|(dest, _)| tip_accounts.contains(dest))
+    //         .map(|(_, amount)| amount)
+    //         .sum()
+    // }
+
+    // fn extract_transfer<'a>(
+    //     account_keys: &'a [Pubkey],
+    //     program_id: &Pubkey,
+    //     ix: &CompiledInstruction,
+    // ) -> Option<(&'a Pubkey, u64)> {
+    //     if program_id == &solana_sdk_ids::system_program::ID
+    //         && ix.data.len() >= 12
+    //         && u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) == 2
+    //     {
+    //         let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
+    //         let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
+
+    //         Some((destination, amount))
+    //     } else {
+    //         None
+    //     }
+    // }
 }
 
 #[cfg(test)]

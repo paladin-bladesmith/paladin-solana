@@ -95,6 +95,8 @@ mod tpu_to_pack;
 const MAX_NUM_WORKERS: NonZeroUsize = NonZeroUsize::new(64).unwrap();
 const DEFAULT_NUM_WORKERS: NonZeroUsize = NonZeroUsize::new(4).unwrap();
 
+pub const DEFAULT_BATCH_INTERVAL: Duration = Duration::from_millis(50);
+
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 const TOTAL_BUFFERED_PACKETS: usize = 100_000;
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
@@ -385,6 +387,7 @@ impl BankingStage {
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
         bundle_account_locker: BundleAccountLocker,
+        batch_interval: Duration,
     ) -> Self {
         let committer = Committer::new(
             transaction_status_sender,
@@ -413,11 +416,12 @@ impl BankingStage {
             bundle_account_locker.clone(),
         ));
 
-        let receive_and_buffer = TransactionViewReceiveAndBuffer {
-            receiver: context.non_vote_receiver.clone(),
-            bank_forks: context.bank_forks.clone(),
+        let receive_and_buffer = TransactionViewReceiveAndBuffer::new(
+            context.non_vote_receiver.clone(),
+            context.bank_forks.clone(),
             blacklisted_accounts,
-        };
+            batch_interval,
+        );
         Self::spawn_scheduler_and_workers(
             &mut thread_hdls,
             receive_and_buffer,
@@ -442,6 +446,7 @@ impl BankingStage {
         &mut self,
         block_production_method: BlockProductionMethod,
         num_workers: NonZeroUsize,
+        batch_interval: Duration,
         scheduler_config: SchedulerConfig,
     ) -> thread::Result<()> {
         if let Some(context) = self.context.as_ref() {
@@ -461,11 +466,12 @@ impl BankingStage {
                 context.bundle_account_locker.clone(),
             ));
 
-            let receive_and_buffer = TransactionViewReceiveAndBuffer {
-                receiver: context.non_vote_receiver.clone(),
-                bank_forks: context.bank_forks.clone(),
-                blacklisted_accounts: context.blacklisted_accounts.clone(),
-            };
+            let receive_and_buffer = TransactionViewReceiveAndBuffer::new(
+                context.non_vote_receiver.clone(),
+                context.bank_forks.clone(),
+                context.blacklisted_accounts.clone(),
+                batch_interval
+            );
             Self::spawn_scheduler_and_workers(
                 &mut self.thread_hdls,
                 receive_and_buffer,
@@ -893,6 +899,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
             BundleAccountLocker::default(),
+            Duration::ZERO,
         );
         drop(non_vote_sender);
         drop(tpu_vote_sender);
@@ -958,6 +965,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
             BundleAccountLocker::default(),
+            Duration::ZERO,
         );
         trace!("sending bank");
         drop(non_vote_sender);
@@ -1031,6 +1039,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
             BundleAccountLocker::default(),
+            Duration::ZERO,
         );
 
         // good tx, and no verify
@@ -1182,6 +1191,7 @@ mod tests {
                 Arc::new(PrioritizationFeeCache::new(0u64)),
                 HashSet::default(),
                 BundleAccountLocker::default(),
+                Duration::ZERO,
             );
 
             // wait for banking_stage to eat the packets
@@ -1335,6 +1345,7 @@ mod tests {
             Arc::new(PrioritizationFeeCache::new(0u64)),
             HashSet::default(),
             BundleAccountLocker::default(),
+            Duration::ZERO,
         );
 
         let keypairs = (0..100).map(|_| Keypair::new()).collect_vec();
@@ -1467,6 +1478,7 @@ mod tests {
                     Arc::new(PrioritizationFeeCache::new(0u64)),
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
                     BundleAccountLocker::default(),
+                        Duration::ZERO,
                 );
 
                 // bad tx

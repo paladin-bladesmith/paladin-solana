@@ -5,6 +5,7 @@ use {
             quic::{ALPN_TPU_PROTOCOL_ID, DEFAULT_WAIT_FOR_CHUNK_TIMEOUT},
             simple_qos::{SimpleQos, SimpleQosConfig},
             swqos::{SwQos, SwQosConfig},
+            stream_throttle::DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
         },
         streamer::StakedNodes,
     },
@@ -630,6 +631,7 @@ pub fn spawn_server_multi(
 #[derive(Clone)]
 #[deprecated(since = "3.1.0", note = "Use QuicStreamerConfig instead")]
 pub struct QuicServerParams {
+    pub variant: QuicVariant,
     pub max_connections_per_peer: usize,
     pub max_staked_connections: usize,
     pub max_unstaked_connections: usize,
@@ -638,6 +640,7 @@ pub struct QuicServerParams {
     pub accumulator_channel_size: usize,
     pub num_threads: NonZeroUsize,
     pub max_streams_per_ms: u64,
+    pub stream_throttling_interval_ms: u64,
 }
 
 #[derive(Clone)]
@@ -649,6 +652,7 @@ pub struct QuicStreamerConfig {
     pub wait_for_chunk_timeout: Duration,
     pub accumulator_channel_size: usize,
     pub num_threads: NonZeroUsize,
+    pub stream_throttling_interval_ms: u64,
 }
 
 #[derive(Clone)]
@@ -667,6 +671,7 @@ pub struct SimpleQosQuicStreamerConfig {
 impl Default for QuicServerParams {
     fn default() -> Self {
         QuicServerParams {
+            variant: QuicVariant::Regular,
             max_connections_per_peer: 1,
             max_staked_connections: DEFAULT_MAX_STAKED_CONNECTIONS,
             max_unstaked_connections: DEFAULT_MAX_UNSTAKED_CONNECTIONS,
@@ -675,11 +680,20 @@ impl Default for QuicServerParams {
             accumulator_channel_size: DEFAULT_ACCUMULATOR_CHANNEL_SIZE,
             num_threads: NonZeroUsize::new(num_cpus::get().min(1)).expect("1 is non-zero"),
             max_streams_per_ms: DEFAULT_MAX_STREAMS_PER_MS,
+            stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuicVariant {
+    Regular,
+    P3,
+    Mev,
+}
+
 #[allow(deprecated)]
+#[cfg(feature = "dev-context-only-utils")]
 impl QuicServerParams {
     #[cfg(feature = "dev-context-only-utils")]
     pub const DEFAULT_NUM_SERVER_THREADS_FOR_TEST: NonZeroUsize = NonZeroUsize::new(8).unwrap();
@@ -704,6 +718,7 @@ impl Default for QuicStreamerConfig {
             wait_for_chunk_timeout: DEFAULT_WAIT_FOR_CHUNK_TIMEOUT,
             accumulator_channel_size: DEFAULT_ACCUMULATOR_CHANNEL_SIZE,
             num_threads: NonZeroUsize::new(num_cpus::get().min(1)).expect("1 is non-zero"),
+            stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
         }
     }
 }
@@ -739,6 +754,7 @@ impl From<&QuicServerParams> for QuicStreamerConfig {
             wait_for_chunk_timeout: params.wait_for_chunk_timeout,
             accumulator_channel_size: params.accumulator_channel_size,
             num_threads: params.num_threads,
+            stream_throttling_interval_ms: DEFAULT_STREAM_THROTTLING_INTERVAL_MS,
         }
     }
 }
@@ -794,6 +810,7 @@ fn spawn_server_with_cancel_generic<Q, C>(
     quic_server_params: QuicStreamerConfig,
     qos: Arc<Q>,
     cancel: CancellationToken,
+    variant: QuicVariant,
 ) -> Result<SpawnServerResult, QuicServerError>
 where
     Q: QosController<C> + Send + Sync + 'static,
@@ -811,6 +828,7 @@ where
             quic_server_params,
             qos,
             cancel,
+            variant,
         )
     }?;
     let handle = thread::Builder::new()
@@ -829,6 +847,43 @@ where
         thread: handle,
         key_updater: Arc::new(updater),
     })
+}
+
+/// Spawns a tokio runtime and a streamer instance inside it.
+pub fn spawn_paladin_server_with_cancel(
+    thread_name: &'static str,
+    metrics_name: &'static str,
+    sockets: impl IntoIterator<Item = UdpSocket>,
+    keypair: &Keypair,
+    packet_sender: Sender<PacketBatch>,
+    staked_nodes: Arc<RwLock<StakedNodes>>,
+    quic_server_params: QuicStreamerConfig,
+    qos_config: SwQosConfig,
+    cancel: CancellationToken,
+    variant: QuicVariant,
+) -> Result<SpawnServerResult, QuicServerError> {
+    let stats = Arc::<StreamerStats>::default();
+    let swqos = Arc::new(SwQos::new(
+        qos_config,
+        quic_server_params.max_staked_connections,
+        quic_server_params.max_unstaked_connections,
+        quic_server_params.max_connections_per_peer,
+        stats.clone(),
+        staked_nodes,
+        cancel.clone(),
+    ));
+    spawn_server_with_cancel_generic(
+        thread_name,
+        metrics_name,
+        stats,
+        sockets,
+        keypair,
+        packet_sender,
+        quic_server_params,
+        swqos,
+        cancel,
+        variant,
+    )
 }
 
 /// Spawns a tokio runtime and a streamer instance inside it.
@@ -863,6 +918,7 @@ pub fn spawn_server_with_cancel(
         quic_server_params,
         swqos,
         cancel,
+        QuicVariant::Regular,
     )
 }
 
@@ -899,6 +955,7 @@ pub fn spawn_simple_qos_server_with_cancel(
         quic_server_params,
         simple_qos,
         cancel,
+        QuicVariant::Regular,
     )
 }
 

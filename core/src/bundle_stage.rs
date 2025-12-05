@@ -51,6 +51,8 @@ pub mod bundle_account_locker;
 mod bundle_consumer;
 mod bundle_packet_deserializer;
 mod bundle_storage;
+mod committer;
+mod front_run_identifier;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
 const SLOT_BOUNDARY_CHECK_PERIOD: Duration = Duration::from_millis(10);
 
@@ -496,7 +498,7 @@ impl BundleStage {
         }
     }
 
-    fn receive_and_buffer_bundles(
+    pub fn receive_and_buffer_bundles(
         bank_forks: &Arc<RwLock<BankForks>>,
         bundle_receiver: &mut Receiver<VerifiedPacketBundle>,
         bundle_storage: &mut BundleStorage,
@@ -971,7 +973,7 @@ mod tests {
         solana_keypair::Keypair,
         solana_ledger::{
             blockstore::Blockstore, genesis_utils::GenesisConfigInfo,
-            get_tmp_ledger_path_auto_delete,
+            get_tmp_ledger_path_auto_delete, leader_schedule_cache::LeaderScheduleCache,
         },
         solana_native_token::LAMPORTS_PER_SOL,
         solana_perf::{
@@ -1061,7 +1063,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1070,6 +1072,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
         ));
 
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_stage = BundleStage::new(
             &cluster_info,
@@ -1081,15 +1084,23 @@ mod tests {
             replay_vote_sender,
             None,
             exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
+            TipManager::new(
+                blockstore.clone(),
+                leader_schedule_cache,
+                TipManagerConfig {
+                    funnel: None,
+                    rewards_split: None,
+                    tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                    tip_distribution_program_id: Pubkey::from(
+                        jito_tip_distribution::id().to_bytes(),
+                    ),
+                    tip_distribution_account_config: TipDistributionAccountConfig {
+                        merkle_root_upload_authority: Pubkey::new_unique(),
+                        vote_account: genesis_config_info.voting_keypair.pubkey(),
+                        commission_bps: 10,
+                    },
                 },
-            }),
+            ),
             BundleAccountLocker::default(),
             &Arc::new(Mutex::new(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
@@ -1199,7 +1210,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1208,6 +1219,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
         ));
 
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_stage = BundleStage::new(
             &cluster_info,
@@ -1219,15 +1231,23 @@ mod tests {
             replay_vote_sender,
             None,
             exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
+            TipManager::new(
+                blockstore.clone(),
+                leader_schedule_cache,
+                TipManagerConfig {
+                    funnel: None,
+                    rewards_split: None,
+                    tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                    tip_distribution_program_id: Pubkey::from(
+                        jito_tip_distribution::id().to_bytes(),
+                    ),
+                    tip_distribution_account_config: TipDistributionAccountConfig {
+                        merkle_root_upload_authority: Pubkey::new_unique(),
+                        vote_account: genesis_config_info.voting_keypair.pubkey(),
+                        commission_bps: 10,
+                    },
                 },
-            }),
+            ),
             BundleAccountLocker::default(),
             &Arc::new(Mutex::new(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
@@ -1292,7 +1312,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1301,6 +1321,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
         ));
 
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_stage = BundleStage::new(
             &cluster_info,
@@ -1312,15 +1333,23 @@ mod tests {
             replay_vote_sender,
             None,
             exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
+            TipManager::new(
+                blockstore.clone(),
+                leader_schedule_cache,
+                TipManagerConfig {
+                    funnel: None,
+                    rewards_split: None,
+                    tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                    tip_distribution_program_id: Pubkey::from(
+                        jito_tip_distribution::id().to_bytes(),
+                    ),
+                    tip_distribution_account_config: TipDistributionAccountConfig {
+                        merkle_root_upload_authority: Pubkey::new_unique(),
+                        vote_account: genesis_config_info.voting_keypair.pubkey(),
+                        commission_bps: 10,
+                    },
                 },
-            }),
+            ),
             BundleAccountLocker::default(),
             &Arc::new(Mutex::new(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
@@ -1416,7 +1445,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1425,6 +1454,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
         ));
 
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_stage = BundleStage::new(
             &cluster_info,
@@ -1436,15 +1466,23 @@ mod tests {
             replay_vote_sender,
             None,
             exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
+            TipManager::new(
+                blockstore.clone(),
+                leader_schedule_cache,
+                TipManagerConfig {
+                    funnel: None,
+                    rewards_split: None,
+                    tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                    tip_distribution_program_id: Pubkey::from(
+                        jito_tip_distribution::id().to_bytes(),
+                    ),
+                    tip_distribution_account_config: TipDistributionAccountConfig {
+                        merkle_root_upload_authority: Pubkey::new_unique(),
+                        vote_account: genesis_config_info.voting_keypair.pubkey(),
+                        commission_bps: 10,
+                    },
                 },
-            }),
+            ),
             BundleAccountLocker::default(),
             &Arc::new(Mutex::new(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,
@@ -1540,7 +1578,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1549,6 +1587,7 @@ mod tests {
             SocketAddrSpace::Unspecified,
         ));
 
+        let leader_schedule_cache = Arc::new(LeaderScheduleCache::new_from_bank(&bank));
         let (verified_bundle_sender, verified_bundle_receiver) = bounded(1024);
         let bundle_stage = BundleStage::new(
             &cluster_info,
@@ -1560,15 +1599,23 @@ mod tests {
             replay_vote_sender,
             None,
             exit.clone(),
-            TipManager::new(TipManagerConfig {
-                tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
-                tip_distribution_program_id: Pubkey::from(jito_tip_distribution::id().to_bytes()),
-                tip_distribution_account_config: TipDistributionAccountConfig {
-                    merkle_root_upload_authority: Pubkey::new_unique(),
-                    vote_account: genesis_config_info.voting_keypair.pubkey(),
-                    commission_bps: 10,
+            TipManager::new(
+                blockstore.clone(),
+                leader_schedule_cache,
+                TipManagerConfig {
+                    funnel: None,
+                    rewards_split: None,
+                    tip_payment_program_id: Pubkey::from(jito_tip_payment::id().to_bytes()),
+                    tip_distribution_program_id: Pubkey::from(
+                        jito_tip_distribution::id().to_bytes(),
+                    ),
+                    tip_distribution_account_config: TipDistributionAccountConfig {
+                        merkle_root_upload_authority: Pubkey::new_unique(),
+                        vote_account: genesis_config_info.voting_keypair.pubkey(),
+                        commission_bps: 10,
+                    },
                 },
-            }),
+            ),
             BundleAccountLocker::default(),
             &Arc::new(Mutex::new(BlockBuilderFeeInfo {
                 block_builder: genesis_config_info.validator_pubkey,

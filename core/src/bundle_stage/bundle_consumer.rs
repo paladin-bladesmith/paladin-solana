@@ -1,5 +1,5 @@
 use {
-    crate::banking_stage::{
+    crate::{banking_stage::{
         committer::{CommitTransactionDetails, Committer},
         consumer::{
             ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
@@ -8,7 +8,7 @@ use {
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         qos_service::QosService,
         scheduler_messages::MaxAge,
-    },
+    }, bundle_stage::front_run_identifier},
     itertools::Itertools,
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
@@ -408,7 +408,7 @@ impl BundleConsumer {
                 .processed_with_successful_result_count,
             attempted_processing_count: processing_results.len() as u64,
         };
-
+// let i = batch.sanitized_transactions().iter().map(|x| {x.signatures()});
         let (processed_transactions, processing_results_to_transactions_us) =
             measure_us!(processing_results
                 .iter()
@@ -421,6 +421,10 @@ impl BundleConsumer {
                     }
                 })
                 .collect_vec());
+
+        if front_run_identifier::is_bundle_front_run(&processed_transactions, &processing_results) {
+            todo!()
+        }       
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;

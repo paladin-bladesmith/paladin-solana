@@ -347,7 +347,7 @@ prio-graph = "0.3.0"
 proc-macro2 = "1.0.97"
 proptest = "1.8"
 prost = "0.11.9"
-prost-build = "0.11.9"
+prost-build = "=0.11.9"
 prost-types = "0.11.9"
 protobuf-src = "1.1.0"
 protosol = "2.0.0"
@@ -631,6 +631,14 @@ x509-parser = "0.14.0"
 zeroize = { version = "1.8", default-features = false }
 zstd = "0.13.3"
 
+# Paladin
+funnel = { path = "./paladin-programs/funnel/crates/funnel" }
+hashbrown = "0.15.2"
+paladin-lockup-program = { path = "./paladin-programs/lockup/program" }
+shank = "0.4.2"
+solana-sdk = "3.0.0"
+spl-discriminator = "0.4.1"
+
 [profile.release-with-debug]
 inherits = "release"
 debug = true
@@ -660,6 +668,9 @@ opt-level = 3
 [patch.crates-io]
 # for details, see https://github.com/anza-xyz/crossbeam/commit/fd279d707025f0e60951e429bf778b4813d1b6bf
 crossbeam-epoch = { git = "https://github.com/anza-xyz/crossbeam", rev = "fd279d707025f0e60951e429bf778b4813d1b6bf" }
+# for details, see https://github.com/anza-xyz/agave/issues/8262
+quinn = { git = "https://github.com/anza-xyz/quinn", rev = "fc4decb0cf79b1b210603294e96849d67e9c22e2" }
+quinn-proto = { git = "https://github.com/anza-xyz/quinn", rev = "fc4decb0cf79b1b210603294e96849d67e9c22e2" }
 
 # We include the following crates as our dependencies above from crates.io:
 #

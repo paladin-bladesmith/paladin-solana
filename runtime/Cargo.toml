@@ -114,7 +114,7 @@ solana-cost-model = { workspace = true }
 solana-cpi = { workspace = true }
 solana-ed25519-program = { workspace = true }
 solana-epoch-info = { workspace = true }
-solana-epoch-rewards-hasher = { workspace = true }
+solana-epoch-rewards-hasher = "=3.0.0"
 solana-epoch-schedule = { workspace = true }
 solana-feature-gate-interface = { workspace = true, features = ["bincode"] }
 solana-fee = { workspace = true }
