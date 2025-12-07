@@ -32,6 +32,7 @@ pub mod scheduler_metrics;
 mod scheduler_metrics;
 
 mod transaction_priority_id;
+pub mod scheduling_unit_priority_id;
 
 #[cfg(feature = "dev-context-only-utils")]
 pub mod transaction_state;

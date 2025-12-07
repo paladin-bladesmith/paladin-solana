@@ -21,8 +21,9 @@ impl Display for TransactionBatchId {
 }
 
 pub type TransactionId = usize;
+pub type BundleId = usize;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MaxAge {
     pub sanitized_epoch: Epoch,
     pub alt_invalidation_slot: Slot,
@@ -42,11 +43,17 @@ pub struct ConsumeWork<Tx> {
     pub ids: Vec<TransactionId>,
     pub transactions: Vec<Tx>,
     pub max_ages: Vec<MaxAge>,
+    pub bundle_id: Option<BundleId>,
 }
 
 /// Message: [Worker -> Scheduler]
-/// Processed transactions.
+/// Processed transactions with retry information.
+/// For bundle batches: if any transaction fails, the entire bundle should be retried (bundle_id will be Some).
+/// For regular batches: individual transactions can be retried independently.
 pub struct FinishedConsumeWork<Tx> {
     pub work: ConsumeWork<Tx>,
+    /// Indexes of individual transactions that should be retried.
+    /// For bundle batches: empty if bundle succeeded, contains indexes if bundle should be retried.
+    /// For regular batches: contains indexes of failed transactions.
     pub retryable_indexes: Vec<RetryableIndex>,
 }

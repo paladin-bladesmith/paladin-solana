@@ -10,6 +10,8 @@ use {
             TracerThread, BANKING_TRACE_DIR_DEFAULT_BYTE_LIMIT, BASENAME,
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        tip_manager::TipManager,
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
@@ -55,7 +57,7 @@ use {
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, sleep, JoinHandle},
         time::{Duration, Instant, SystemTime},
@@ -834,21 +836,34 @@ impl BankingSimulator {
 
         info!("Start banking stage!...");
         let prioritization_fee_cache = &Arc::new(PrioritizationFeeCache::new(0u64));
+        
+        // Create dummy bundle receiver for simulation
+        let (_bundle_sender, verified_bundle_receiver) = crossbeam_channel::unbounded();
+        let block_builder_fee_info = Arc::new(Mutex::new(BlockBuilderFeeInfo {
+            block_builder: Pubkey::default(),
+            block_builder_commission: 0,
+        }));
+        let tip_manager = TipManager::new(cluster_info_for_broadcast.id());
+        
         let banking_stage = BankingStage::new_num_threads(
+            cluster_info_for_broadcast.clone(),
             block_production_method.clone(),
             poh_recorder.clone(),
             transaction_recorder,
             non_vote_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            verified_bundle_receiver,
             BankingStage::default_num_workers(),
             SchedulerConfig::default(),
             None,
             replay_vote_sender,
             None,
             bank_forks.clone(),
+            &block_builder_fee_info,
             prioritization_fee_cache.clone(),
             collections::HashSet::default(),
+            tip_manager,
             BundleAccountLocker::default(),
             Duration::ZERO,
         );

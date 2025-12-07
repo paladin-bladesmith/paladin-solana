@@ -1,3 +1,4 @@
+#![allow(unused_imports)]
 //! The `bundle_stage` processes bundles, which are list of transactions to be executed
 //! sequentially and atomically.
 
@@ -9,7 +10,8 @@ use {
             consumer::ProcessTransactionBatchOutput,
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             qos_service::QosService,
-            scheduler_messages::MaxAge,
+            scheduler_messages::{BundleId, MaxAge},
+            transaction_scheduler::transaction_state_container::TransactionViewStateContainer,
         },
         bundle_stage::{
             bundle_account_locker::BundleAccountLocker,
@@ -48,9 +50,9 @@ use {
 };
 
 pub mod bundle_account_locker;
-mod bundle_consumer;
-mod bundle_packet_deserializer;
-mod bundle_storage;
+pub mod bundle_consumer;
+pub mod bundle_packet_deserializer;
+pub mod bundle_storage;
 mod committer;
 mod front_run_identifier;
 const MAX_BUNDLE_RETRY_DURATION: Duration = Duration::from_millis(40);
@@ -319,7 +321,7 @@ impl BundleStageLoopMetrics {
 type BundleExecutionResult<T> = Result<T, BundleExecutionError>;
 
 #[derive(Debug)]
-enum BundleExecutionError {
+pub enum BundleExecutionError {
     TipError,
     ErrorRetryable,
     ErrorNonRetryable,
@@ -332,6 +334,7 @@ pub struct BundleStage {
 impl BundleStage {
     const BUNDLE_STAGE_ID: u32 = 10_000;
 
+    #[cfg(any())]
     #[allow(clippy::new_ret_no_self)]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -368,10 +371,12 @@ impl BundleStage {
         )
     }
 
+    #[cfg(any())]
     pub fn join(self) -> thread::Result<()> {
         self.bundle_thread.join()
     }
 
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments)]
     fn start_bundle_thread(
         cluster_info: &Arc<ClusterInfo>,
@@ -426,6 +431,7 @@ impl BundleStage {
         Self { bundle_thread }
     }
 
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments)]
     fn process_loop(
         bank_forks: Arc<RwLock<BankForks>>,
@@ -498,6 +504,7 @@ impl BundleStage {
         }
     }
 
+    #[cfg(any())]
     pub fn receive_and_buffer_bundles(
         bank_forks: &Arc<RwLock<BankForks>>,
         bundle_receiver: &mut Receiver<VerifiedPacketBundle>,
@@ -542,6 +549,7 @@ impl BundleStage {
         Ok(())
     }
 
+    #[cfg(any())]
     fn insert_bundle(
         bundle_storage: &mut BundleStorage,
         bundle: VerifiedPacketBundle,
@@ -565,6 +573,7 @@ impl BundleStage {
         }
     }
 
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments)]
     fn process_buffered_bundles(
         decision_maker: &mut DecisionMaker,
@@ -607,6 +616,7 @@ impl BundleStage {
         }
     }
 
+    #[cfg(any())]
     #[allow(clippy::too_many_arguments)]
     fn consume_bundles(
         bank: &Arc<Bank>,
@@ -723,10 +733,10 @@ impl BundleStage {
         );
     }
 
-    fn handle_tip_programs(
+    pub fn handle_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         cluster_info: &Arc<ClusterInfo>,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
@@ -759,7 +769,7 @@ impl BundleStage {
     fn handle_initialize_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         consume_worker_metrics: &ConsumeWorkerMetrics,
         keypair: &Keypair,
@@ -809,7 +819,7 @@ impl BundleStage {
     fn handle_crank_tip_programs(
         bank: &Arc<Bank>,
         bundle_account_locker: &BundleAccountLocker,
-        consumer: &mut BundleConsumer,
+        consumer: &BundleConsumer,
         tip_manager: &TipManager,
         block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         consume_worker_metrics: &ConsumeWorkerMetrics,
@@ -855,7 +865,7 @@ impl BundleStage {
         bundle_result
     }
 
-    fn to_bundle_result(output: &ProcessTransactionBatchOutput) -> BundleExecutionResult<()> {
+    pub fn to_bundle_result(output: &ProcessTransactionBatchOutput) -> BundleExecutionResult<()> {
         // If the commit transactions result is ok and all the commit transactions results are committed without an error, return ok.
         if output
             .execute_and_commit_transactions_output

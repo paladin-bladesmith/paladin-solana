@@ -5,9 +5,11 @@ use {
     solana_sdk::transaction::VersionedTransaction,
     solana_svm::{
         account_loader::LoadedTransaction,
-        transaction_processing_result::{ProcessedTransaction, TransactionProcessingResultExtensions},
+        transaction_processing_result::{
+            ProcessedTransaction, TransactionProcessingResultExtensions,
+        },
     },
-    solana_transaction::{TransactionError, sanitized::MAX_TX_ACCOUNT_LOCKS},
+    solana_transaction::{sanitized::MAX_TX_ACCOUNT_LOCKS, TransactionError},
     std::cell::RefCell,
 };
 
@@ -139,8 +141,10 @@ pub(crate) fn is_bundle_front_run<'a>(
 }
 
 /// Confirm if all TXs in bundle wer executed ok
-fn is_executed_ok(processing_results: &Vec<Result<ProcessedTransaction, TransactionError>>) -> bool {
-        processing_results
+fn is_executed_ok(
+    processing_results: &Vec<Result<ProcessedTransaction, TransactionError>>,
+) -> bool {
+    processing_results
         .iter()
         .all(|t| t.was_processed_with_successful_result())
 }

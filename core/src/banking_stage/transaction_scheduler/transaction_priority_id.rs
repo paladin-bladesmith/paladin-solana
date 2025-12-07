@@ -9,11 +9,13 @@ use {
 /// A unique identifier tied with priority ordering for a transaction/packet:
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 pub(crate) struct TransactionPriorityId {
     pub(crate) priority: u64,
     pub(crate) id: TransactionId,
 }
 
+#[allow(dead_code)]
 impl TransactionPriorityId {
     pub(crate) fn new(priority: u64, id: TransactionId) -> Self {
         Self { priority, id }

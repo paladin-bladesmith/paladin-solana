@@ -5,8 +5,11 @@ use {
         in_flight_tracker::InFlightTracker, scheduler_error::SchedulerError,
         transaction_state_container::StateContainer,
     },
-    crate::banking_stage::scheduler_messages::{
-        ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
+    crate::banking_stage::{
+        scheduler_messages::{
+            BundleId, ConsumeWork, FinishedConsumeWork, MaxAge, TransactionBatchId, TransactionId,
+        },
+        transaction_scheduler::scheduling_unit_priority_id::SchedulingUnitId,
     },
     agave_scheduling_utils::thread_aware_account_locks::{
         ThreadAwareAccountLocks, ThreadId, ThreadSet, MAX_THREADS,
@@ -20,6 +23,7 @@ pub struct Batches<Tx> {
     ids: Vec<Vec<TransactionId>>,
     transactions: Vec<Vec<Tx>>,
     max_ages: Vec<Vec<MaxAge>>,
+    bundle_id: Option<BundleId>,
     total_cus: Vec<u64>,
     target_num_transactions_per_batch: usize,
 }
@@ -39,6 +43,7 @@ impl<Tx> Batches<Tx> {
             ids: make_vecs(num_threads, target_num_transactions_per_batch),
             transactions: make_vecs(num_threads, target_num_transactions_per_batch),
             max_ages: make_vecs(num_threads, target_num_transactions_per_batch),
+            bundle_id: None,
             total_cus: vec![0; num_threads],
             target_num_transactions_per_batch,
         }
@@ -49,6 +54,7 @@ impl<Tx> Batches<Tx> {
         self.ids.iter().all(|ids| ids.is_empty())
             && self.transactions.iter().all(|txs| txs.is_empty())
             && self.max_ages.iter().all(|max_ages| max_ages.is_empty())
+            && self.bundle_id.is_none()
             && self.total_cus.iter().all(|&cus| cus == 0)
     }
 
@@ -74,10 +80,38 @@ impl<Tx> Batches<Tx> {
         self.total_cus[thread_id] += cus;
     }
 
+    pub fn add_bundle_to_batch(
+        &mut self,
+        thread_id: ThreadId,
+        bundle_id: BundleId,
+        transaction_ids: &Vec<TransactionId>,
+        transactions: Vec<Tx>,
+        max_ages: Vec<MaxAge>,
+        cus: u64,
+    ) {
+        assert!(
+            self.transactions[thread_id].is_empty(),
+            "Bundle batch must be empty - flush existing batch before adding bundle"
+        );
+
+        self.ids[thread_id].extend(transaction_ids);
+        self.transactions[thread_id].extend(transactions);
+        self.max_ages[thread_id].extend(max_ages);
+        self.bundle_id = Some(bundle_id);
+
+        self.total_cus[thread_id] += cus;
+    }
+
     pub fn take_batch(
         &mut self,
         thread_id: ThreadId,
-    ) -> (Vec<TransactionId>, Vec<Tx>, Vec<MaxAge>, u64) {
+    ) -> (
+        Vec<TransactionId>,
+        Vec<Tx>,
+        Vec<MaxAge>,
+        Option<BundleId>,
+        u64,
+    ) {
         (
             core::mem::replace(
                 &mut self.ids[thread_id],
@@ -91,6 +125,7 @@ impl<Tx> Batches<Tx> {
                 &mut self.max_ages[thread_id],
                 Vec::with_capacity(self.target_num_transactions_per_batch),
             ),
+            core::mem::replace(&mut self.bundle_id, None),
             core::mem::replace(&mut self.total_cus[thread_id], 0),
         )
     }
@@ -102,6 +137,11 @@ pub struct TransactionSchedulingInfo<Tx> {
     pub transaction: Tx,
     pub max_age: MaxAge,
     pub cost: u64,
+}
+
+pub enum ScheduledItem<Tx> {
+    Transaction(TransactionSchedulingInfo<Tx>),
+    Bundle(Vec<TransactionSchedulingInfo<Tx>>),
 }
 
 /// Error type for reasons a transaction could not be scheduled.
@@ -184,7 +224,8 @@ impl<Tx> SchedulingCommon<Tx> {
             return Ok(0);
         }
 
-        let (ids, transactions, max_ages, total_cus) = self.batches.take_batch(thread_index);
+        let (ids, transactions, max_ages, bundle_id, total_cus) =
+            self.batches.take_batch(thread_index);
 
         let batch_id = self
             .in_flight_tracker
@@ -196,6 +237,7 @@ impl<Tx> SchedulingCommon<Tx> {
             ids,
             transactions,
             max_ages,
+            bundle_id,
         };
         self.consume_work_senders[thread_index]
             .send(work)
@@ -228,6 +270,7 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                         ids,
                         transactions,
                         max_ages: _,
+                        bundle_id,
                     },
                 retryable_indexes,
             }) => {
@@ -237,31 +280,44 @@ impl<Tx: TransactionWithMeta> SchedulingCommon<Tx> {
                 // Free the locks
                 self.complete_batch(batch_id, &transactions);
 
-                // Assumption - retryable indexes are in order (sorted by workers).
-                let mut retryable_iter = retryable_indexes.iter().peekable();
-                for (index, (id, transaction)) in izip!(ids, transactions).enumerate() {
-                    if let Some(&retryable_index) = retryable_iter.peek() {
-                        if retryable_index.index == index {
-                            container.retry_transaction(
-                                id,
-                                transaction,
-                                retryable_index.immediately_retryable,
-                            );
-                            retryable_iter.next();
-                            continue;
-                        }
+                // Handle based on batch type: bundle or regular transactions
+                if let Some(bundle_id) = bundle_id {
+                    // Bundle-only batch: handle atomically
+                    if !retryable_indexes.is_empty() {
+                        // Bundle failed - retry entire bundle
+                        // retry_bundle() puts transaction states back and pushes bundle to queue
+                        container.retry_bundle(bundle_id, transactions);
+                    } else {
+                        // Bundle succeeded - remove bundle (removes all transaction states + metadata)
+                        container.remove_by_id(SchedulingUnitId::Bundle(bundle_id));
                     }
-                    container.remove_by_id(id);
-                }
+                } else {
+                    // Assumption - retryable indexes are in order (sorted by workers).
+                    let mut retryable_iter = retryable_indexes.iter().peekable();
+                    for (index, (id, transaction)) in izip!(ids, transactions).enumerate() {
+                        if let Some(&retryable_index) = retryable_iter.peek() {
+                            if retryable_index.index == index {
+                                container.retry_transaction(
+                                    id,
+                                    transaction,
+                                    retryable_index.immediately_retryable,
+                                );
+                                retryable_iter.next();
+                                continue;
+                            }
+                        }
+                        container.remove_by_id(SchedulingUnitId::Transaction(id));
+                    }
 
-                debug_assert!(
-                    retryable_iter.peek().is_none(),
-                    "retryable indexes were not in order: {:?}",
-                    retryable_indexes
-                        .iter()
-                        .map(|index| index.index)
-                        .collect::<Vec<_>>(),
-                );
+                    debug_assert!(
+                        retryable_iter.peek().is_none(),
+                        "retryable indexes were not in order: {:?}",
+                        retryable_indexes
+                            .iter()
+                            .map(|index| index.index)
+                            .collect::<Vec<_>>(),
+                    );
+                }
 
                 Ok((num_transactions, num_retryable))
             }

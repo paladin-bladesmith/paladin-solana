@@ -4,21 +4,23 @@ use {
     super::{
         scheduler::{PreLockFilterAction, Scheduler, SchedulingSummary},
         scheduler_common::{
-            SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo,
+            ScheduledItem, SchedulingCommon, TransactionSchedulingError, TransactionSchedulingInfo,
         },
         scheduler_error::SchedulerError,
+        scheduling_unit_priority_id::SchedulingUnitId,
     },
     crate::{
         banking_stage::{
             consumer::TARGET_NUM_TRANSACTIONS_PER_BATCH,
             read_write_account_set::ReadWriteAccountSet,
-            scheduler_messages::{ConsumeWork, FinishedConsumeWork},
+            scheduler_messages::{BundleId, ConsumeWork, FinishedConsumeWork},
             transaction_scheduler::{
-                scheduler_common::select_thread, transaction_priority_id::TransactionPriorityId,
+                scheduler_common::select_thread,
+                scheduling_unit_priority_id::SchedulingUnitPriorityId,
                 transaction_state::TransactionState, transaction_state_container::StateContainer,
             },
         },
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
+        bundle_stage::{bundle_account_locker::BundleAccountLocker, bundle_storage::BundleStorage},
     },
     agave_scheduling_utils::thread_aware_account_locks::{
         ThreadAwareAccountLocks, ThreadId, ThreadSet, TryLockError,
@@ -35,17 +37,17 @@ use {
 
 #[inline(always)]
 fn passthrough_priority(
-    id: &TransactionPriorityId,
-    _graph_node: &GraphNode<TransactionPriorityId>,
-) -> TransactionPriorityId {
+    id: &SchedulingUnitPriorityId,
+    _graph_node: &GraphNode<SchedulingUnitPriorityId>,
+) -> SchedulingUnitPriorityId {
     *id
 }
 
 type SchedulerPrioGraph = PrioGraph<
-    TransactionPriorityId,
+    SchedulingUnitPriorityId,
     Pubkey,
-    TransactionPriorityId,
-    fn(&TransactionPriorityId, &GraphNode<TransactionPriorityId>) -> TransactionPriorityId,
+    SchedulingUnitPriorityId,
+    fn(&SchedulingUnitPriorityId, &GraphNode<SchedulingUnitPriorityId>) -> SchedulingUnitPriorityId,
 >;
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -182,25 +184,66 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                 }
                 *window_budget = window_budget.saturating_sub(chunk_size);
 
-                ids.iter().for_each(|id| {
-                    let transaction = container.get_transaction(id.id).unwrap();
-                    txs.push(transaction);
-                });
+                // Collect transactions for filtering (bundles bypass filter)
+                for id in ids.iter() {
+                    match id.id {
+                        SchedulingUnitId::Transaction(tx_id) => {
+                            let transaction = container.get_transaction(tx_id).unwrap();
+                            txs.push(transaction);
+                        }
+                        SchedulingUnitId::Bundle(_) => {}
+                    }
+                }
 
                 let (_, filter_us) =
-                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..chunk_size]));
+                    measure_us!(pre_graph_filter(&txs, &mut filter_array[..txs.len()]));
                 total_filter_time_us += filter_us;
 
-                for (id, filter_result) in ids.iter().zip(&filter_array[..chunk_size]) {
-                    if *filter_result {
-                        let transaction = container.get_transaction(id.id).unwrap();
-                        prio_graph.insert_transaction(
-                            *id,
-                            Self::get_transaction_account_access(transaction),
-                        );
-                    } else {
-                        num_filtered_out += 1;
-                        container.remove_by_id(id.id);
+                let mut tx_filter_idx = 0;
+                for id in ids.iter() {
+                    match id.id {
+                        SchedulingUnitId::Transaction(tx_id) => {
+                            if filter_array[tx_filter_idx] {
+                                let transaction = container.get_transaction(tx_id).unwrap();
+                                prio_graph.insert_transaction(
+                                    *id,
+                                    Self::get_transaction_account_access(transaction),
+                                );
+                            } else {
+                                num_filtered_out += 1;
+                                container.remove_by_id(SchedulingUnitId::Transaction(tx_id));
+                            }
+                            tx_filter_idx += 1;
+                        }
+                        SchedulingUnitId::Bundle(bundle_id) => {
+                            if let Some(bundle_details) =
+                                BundleStorage::bundle_details(container, bundle_id)
+                            {
+                                let mut account_map = std::collections::HashMap::new();
+                                for (_tx_id, tx, _, _) in bundle_details.iter() {
+                                    for (index, key) in tx.account_keys().iter().enumerate() {
+                                        let is_writable = tx.is_writable(index);
+                                        account_map
+                                            .entry(*key)
+                                            .and_modify(|w| *w |= is_writable)
+                                            .or_insert(is_writable);
+                                    }
+                                }
+                                let account_access =
+                                    account_map.into_iter().map(|(key, is_writable)| {
+                                        if is_writable {
+                                            (key, AccessKind::Write)
+                                        } else {
+                                            (key, AccessKind::Read)
+                                        }
+                                    });
+                                prio_graph.insert_transaction(*id, account_access);
+                                for (tx_id, tx, _max_age, _cost) in bundle_details.into_iter() {
+                                    let state = container.get_mut_transaction_state(tx_id).unwrap();
+                                    state.retry_transaction(tx);
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -237,31 +280,54 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                 num_scanned += 1;
                 unblock_this_batch.push(id);
 
-                // Should always be in the container, during initial testing phase panic.
-                // Later, we can replace with a continue in case this does happen.
-                let Some(transaction_state) = container.get_mut_transaction_state(id.id) else {
-                    panic!("transaction state must exist")
+                let maybe_scheduled_item = match id.id {
+                    SchedulingUnitId::Transaction(tx_id) => {
+                        let Some(transaction_state) = container.get_mut_transaction_state(tx_id)
+                        else {
+                            panic!("transaction state must exist")
+                        };
+
+                        try_schedule_transaction(
+                            transaction_state,
+                            &pre_lock_filter,
+                            &mut blocking_locks,
+                            &mut self.common.account_locks,
+                            num_threads,
+                            |thread_set| {
+                                select_thread(
+                                    thread_set,
+                                    self.common.batches.total_cus(),
+                                    self.common.in_flight_tracker.cus_in_flight_per_thread(),
+                                    self.common.batches.transactions(),
+                                    self.common.in_flight_tracker.num_in_flight_per_thread(),
+                                )
+                            },
+                            &self.bundle_account_locker,
+                        )
+                    }
+                    SchedulingUnitId::Bundle(bundle_id) => {
+                        // Send current batches before processing bundle
+                        num_sent += self.common.send_batches()?;
+
+                        try_schedule_bundle(
+                            container,
+                            bundle_id,
+                            &mut self.common.account_locks,
+                            schedulable_threads,
+                            |thread_set| {
+                                select_thread(
+                                    thread_set,
+                                    self.common.batches.total_cus(),
+                                    self.common.in_flight_tracker.cus_in_flight_per_thread(),
+                                    self.common.batches.transactions(),
+                                    self.common.in_flight_tracker.num_in_flight_per_thread(),
+                                )
+                            },
+                        )
+                    }
                 };
 
-                let maybe_schedule_info = try_schedule_transaction(
-                    transaction_state,
-                    &pre_lock_filter,
-                    &mut blocking_locks,
-                    &mut self.common.account_locks,
-                    num_threads,
-                    |thread_set| {
-                        select_thread(
-                            thread_set,
-                            self.common.batches.total_cus(),
-                            self.common.in_flight_tracker.cus_in_flight_per_thread(),
-                            self.common.batches.transactions(),
-                            self.common.in_flight_tracker.num_in_flight_per_thread(),
-                        )
-                    },
-                    &self.bundle_account_locker,
-                );
-
-                match maybe_schedule_info {
+                match maybe_scheduled_item {
                     Err(TransactionSchedulingError::UnschedulableConflicts) => {
                         num_unschedulable_conflicts += 1;
                         unschedulable_ids.push(id);
@@ -270,16 +336,20 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                         num_unschedulable_threads += 1;
                         unschedulable_ids.push(id);
                     }
-                    Ok(TransactionSchedulingInfo {
+                    Ok(ScheduledItem::Transaction(TransactionSchedulingInfo {
                         thread_id,
                         transaction,
                         max_age,
                         cost,
-                    }) => {
+                    })) => {
                         num_scheduled += 1;
+                        let tx_id = match id.id {
+                            SchedulingUnitId::Transaction(tx_id) => tx_id,
+                            _ => unreachable!("must be transaction"),
+                        };
                         self.common.batches.add_transaction_to_batch(
                             thread_id,
-                            id.id,
+                            tx_id,
                             transaction,
                             max_age,
                             cost,
@@ -300,6 +370,55 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for PrioGraphScheduler<Tx> {
                             >= max_cu_per_thread
                         {
                             schedulable_threads.remove(thread_id);
+                            if schedulable_threads.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                    Ok(ScheduledItem::Bundle(transaction_scheduling_infos)) => {
+                        let bundle_thread_id = transaction_scheduling_infos[0].thread_id;
+                        let num_transactions = transaction_scheduling_infos.len();
+                        num_scheduled += num_transactions;
+
+                        let (transactions, max_ages, cus): (Vec<_>, Vec<_>, u64) =
+                            transaction_scheduling_infos.into_iter().fold(
+                                (
+                                    Vec::with_capacity(num_transactions),
+                                    Vec::with_capacity(num_transactions),
+                                    0u64,
+                                ),
+                                |(mut txs, mut ages, total_cus), info| {
+                                    budget = budget.saturating_sub(info.cost);
+                                    txs.push(info.transaction);
+                                    ages.push(info.max_age);
+                                    (txs, ages, total_cus + info.cost)
+                                },
+                            );
+
+                        let bundle_id = match id.id {
+                            SchedulingUnitId::Bundle(bundle_id) => bundle_id,
+                            _ => unreachable!("must be bundle"),
+                        };
+                        self.common.batches.add_bundle_to_batch(
+                            bundle_thread_id,
+                            bundle_id,
+                            container
+                                .get_bundle_transaction_ids(bundle_id)
+                                .expect("bundle transaction ids must be valid"),
+                            transactions,
+                            max_ages,
+                            cus,
+                        );
+
+                        // Send bundle batch immediately
+                        num_sent += self.common.send_batches()?;
+
+                        // Check if we should remove the thread from schedulable set
+                        if self.common.in_flight_tracker.cus_in_flight_per_thread()
+                            [bundle_thread_id]
+                            >= max_cu_per_thread
+                        {
+                            schedulable_threads.remove(bundle_thread_id);
                             if schedulable_threads.is_empty() {
                                 break;
                             }
@@ -385,6 +504,66 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
     }
 }
 
+fn try_schedule_bundle<Tx: TransactionWithMeta>(
+    container: &mut impl StateContainer<Tx>,
+    bundle_id: BundleId,
+    account_locks: &mut ThreadAwareAccountLocks,
+    schedulable_threads: ThreadSet,
+    thread_selector: impl Fn(ThreadSet) -> ThreadId,
+) -> Result<ScheduledItem<Tx>, TransactionSchedulingError> {
+    let Some(bundle_details) = BundleStorage::bundle_details(container, bundle_id) else {
+        panic!("bundle must exist in container");
+    };
+
+    // Collect deduplicated account accesses for the bundle
+    let mut key_write_map: std::collections::HashMap<&solana_pubkey::Pubkey, bool> =
+        std::collections::HashMap::new();
+    for (_, tx, _, _) in bundle_details.iter() {
+        let account_keys = tx.account_keys();
+        for (index, key) in account_keys.iter().enumerate() {
+            let is_writable = tx.is_writable(index);
+            key_write_map
+                .entry(key)
+                .and_modify(|existing_writable| {
+                    *existing_writable |= is_writable;
+                })
+                .or_insert(is_writable);
+        }
+    }
+
+    let (write_account_keys, read_account_keys): (Vec<_>, Vec<_>) = key_write_map
+        .into_iter()
+        .partition(|(_, is_writable)| *is_writable);
+
+    let thread_id = match account_locks.try_lock_accounts(
+        write_account_keys.into_iter().map(|(key, _)| key),
+        read_account_keys.into_iter().map(|(key, _)| key),
+        schedulable_threads,
+        thread_selector,
+    ) {
+        Ok(thread_id) => thread_id,
+        Err(TryLockError::MultipleConflicts) => {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+        Err(TryLockError::ThreadNotAllowed) => {
+            return Err(TransactionSchedulingError::UnschedulableThread);
+        }
+    };
+
+    // Convert bundle details to scheduled items
+    let mut scheduled = Vec::with_capacity(bundle_details.len());
+    for (_tx_id, transaction, max_age, cost) in bundle_details {
+        scheduled.push(TransactionSchedulingInfo {
+            thread_id,
+            transaction,
+            max_age,
+            cost,
+        });
+    }
+
+    Ok(ScheduledItem::Bundle(scheduled))
+}
+
 fn try_schedule_transaction<Tx: TransactionWithMeta>(
     transaction_state: &mut TransactionState<Tx>,
     pre_lock_filter: impl Fn(&TransactionState<Tx>) -> PreLockFilterAction,
@@ -393,7 +572,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     num_threads: usize,
     thread_selector: impl Fn(ThreadSet) -> ThreadId,
     bundle_account_locker: &BundleAccountLocker,
-) -> Result<TransactionSchedulingInfo<Tx>, TransactionSchedulingError> {
+) -> Result<ScheduledItem<Tx>, TransactionSchedulingError> {
     match pre_lock_filter(transaction_state) {
         PreLockFilterAction::AttemptToSchedule => {}
     }
@@ -452,12 +631,12 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     let (transaction, max_age) = transaction_state.take_transaction_for_scheduling();
     let cost = transaction_state.cost();
 
-    Ok(TransactionSchedulingInfo {
+    Ok(ScheduledItem::Transaction(TransactionSchedulingInfo {
         thread_id,
         transaction,
         max_age,
         cost,
-    })
+    }))
 }
 
 #[cfg(test)]

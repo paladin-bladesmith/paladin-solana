@@ -20,7 +20,12 @@ use {
                 scheduler_error::SchedulerError,
             },
         },
-        bundle_stage::bundle_account_locker::BundleAccountLocker,
+        bundle_stage::{
+            bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
+        },
+        packet_bundle::VerifiedPacketBundle,
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        tip_manager::TipManager,
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketReceiver,
@@ -45,7 +50,7 @@ use {
         ops::Deref,
         sync::{
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-            Arc, RwLock,
+            Arc, Mutex, RwLock,
         },
         thread::{self, Builder, JoinHandle},
         time::Duration,
@@ -372,20 +377,24 @@ impl LikeClusterInfo for Arc<ClusterInfo> {
 impl BankingStage {
     #[allow(clippy::too_many_arguments)]
     pub fn new_num_threads(
+        cluster_info: Arc<ClusterInfo>,
         block_production_method: BlockProductionMethod,
         poh_recorder: Arc<RwLock<PohRecorder>>,
         transaction_recorder: TransactionRecorder,
         non_vote_receiver: BankingPacketReceiver,
         tpu_vote_receiver: BankingPacketReceiver,
         gossip_vote_receiver: BankingPacketReceiver,
+        verified_bundle_receiver: Receiver<VerifiedPacketBundle>,
         num_workers: NonZeroUsize,
         scheduler_config: SchedulerConfig,
         transaction_status_sender: Option<TransactionStatusSender>,
         replay_vote_sender: ReplayVoteSender,
         log_messages_bytes_limit: Option<usize>,
         bank_forks: Arc<RwLock<BankForks>>,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
         prioritization_fee_cache: Arc<PrioritizationFeeCache>,
         blacklisted_accounts: HashSet<Pubkey>,
+        tip_manager: TipManager,
         bundle_account_locker: BundleAccountLocker,
         batch_interval: Duration,
     ) -> Self {
@@ -401,12 +410,16 @@ impl BankingStage {
             gossip_vote_receiver,
             non_vote_receiver,
             transaction_recorder,
+            verified_bundle_receiver,
             poh_recorder,
             bank_forks,
             committer,
             log_messages_bytes_limit,
+            block_builder_fee_info: block_builder_fee_info.clone(),
             blacklisted_accounts: blacklisted_accounts.clone(),
             bundle_account_locker: bundle_account_locker.clone(),
+            tip_manager: tip_manager.clone(),
+            cluster_info: cluster_info.clone(),
         };
         // + 1 for vote worker
         // + 1 for the scheduler thread
@@ -418,11 +431,14 @@ impl BankingStage {
 
         let receive_and_buffer = TransactionViewReceiveAndBuffer::new(
             context.non_vote_receiver.clone(),
+            context.verified_bundle_receiver.clone(),
             context.bank_forks.clone(),
             blacklisted_accounts,
             batch_interval,
+            tip_manager.get_tip_accounts(),
         );
         Self::spawn_scheduler_and_workers(
+            cluster_info.clone(),
             &mut thread_hdls,
             receive_and_buffer,
             matches!(
@@ -432,7 +448,8 @@ impl BankingStage {
             num_workers,
             scheduler_config,
             &context,
-            bundle_account_locker,
+            tip_manager.clone(),
+            block_builder_fee_info,
         );
 
         Self {
@@ -466,13 +483,17 @@ impl BankingStage {
                 context.bundle_account_locker.clone(),
             ));
 
+            let tip_accounts = context.tip_manager.get_tip_accounts();
             let receive_and_buffer = TransactionViewReceiveAndBuffer::new(
                 context.non_vote_receiver.clone(),
+                context.verified_bundle_receiver.clone(),
                 context.bank_forks.clone(),
                 context.blacklisted_accounts.clone(),
-                batch_interval
+                batch_interval,
+                &tip_accounts,
             );
             Self::spawn_scheduler_and_workers(
+                context.cluster_info.clone(),
                 &mut self.thread_hdls,
                 receive_and_buffer,
                 matches!(
@@ -482,7 +503,8 @@ impl BankingStage {
                 num_workers,
                 scheduler_config,
                 context,
-                context.bundle_account_locker.clone(),
+                context.tip_manager.clone(),
+                &context.block_builder_fee_info,
             );
         }
 
@@ -490,13 +512,15 @@ impl BankingStage {
     }
 
     fn spawn_scheduler_and_workers<R: ReceiveAndBuffer + Send + Sync + 'static>(
+        cluster_info: Arc<ClusterInfo>,
         non_vote_thread_hdls: &mut Vec<JoinHandle<()>>,
         receive_and_buffer: R,
         use_greedy_scheduler: bool,
         num_workers: NonZeroUsize,
         scheduler_config: SchedulerConfig,
         context: &BankingStageContext,
-        bundle_account_locker: BundleAccountLocker,
+        tip_manager: TipManager,
+        block_builder_fee_info: &Arc<Mutex<BlockBuilderFeeInfo>>,
     ) {
         assert!(num_workers <= BankingStage::max_num_workers());
         let num_workers = num_workers.get();
@@ -510,6 +534,7 @@ impl BankingStage {
 
         // Spawn the worker threads
         let decision_maker = DecisionMaker::from(context.poh_recorder.read().unwrap().deref());
+        let bundle_account_locker_for_workers = Arc::new(context.bundle_account_locker.clone());
         let mut worker_metrics = Vec::with_capacity(num_workers);
         for (index, work_receiver) in work_receivers.into_iter().enumerate() {
             let id = index as u32;
@@ -523,8 +548,18 @@ impl BankingStage {
                     QosService::new(id),
                     context.log_messages_bytes_limit,
                 ),
+                BundleConsumer::new(
+                    context.committer.clone(),
+                    context.transaction_recorder.clone(),
+                    QosService::new(id),
+                    context.log_messages_bytes_limit,
+                ),
+                bundle_account_locker_for_workers.clone(),
                 finished_work_sender.clone(),
                 context.poh_recorder.read().unwrap().shared_leader_state(),
+                tip_manager.clone(),
+                cluster_info.clone(),
+                block_builder_fee_info.clone(),
             );
 
             worker_metrics.push(consume_worker.metrics_handle());
@@ -578,7 +613,7 @@ impl BankingStage {
                 work_senders,
                 finished_work_receiver,
                 GreedySchedulerConfig::default(),
-                bundle_account_locker.clone(),
+                context.bundle_account_locker.clone(),
             );
             spawn_scheduler!(scheduler);
         } else {
@@ -586,7 +621,7 @@ impl BankingStage {
                 work_senders,
                 finished_work_receiver,
                 PrioGraphSchedulerConfig::default(),
-                bundle_account_locker.clone(),
+                context.bundle_account_locker.clone(),
             );
             spawn_scheduler!(scheduler);
         }
@@ -779,18 +814,23 @@ mod external {
 
 // Context for spawning threads in the banking stage.
 #[derive(Clone)]
+#[allow(dead_code)]
 struct BankingStageContext {
     exit_signal: Arc<AtomicBool>,
     tpu_vote_receiver: BankingPacketReceiver,
     gossip_vote_receiver: BankingPacketReceiver,
     non_vote_receiver: BankingPacketReceiver,
+    verified_bundle_receiver: Receiver<VerifiedPacketBundle>,
     transaction_recorder: TransactionRecorder,
     poh_recorder: Arc<RwLock<PohRecorder>>,
     bank_forks: Arc<RwLock<BankForks>>,
+    block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     committer: Committer,
     log_messages_bytes_limit: Option<usize>,
     blacklisted_accounts: HashSet<Pubkey>,
     bundle_account_locker: BundleAccountLocker,
+    tip_manager: TipManager,
+    cluster_info: Arc<ClusterInfo>,
 }
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -1478,7 +1518,7 @@ mod tests {
                     Arc::new(PrioritizationFeeCache::new(0u64)),
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
                     BundleAccountLocker::default(),
-                        Duration::ZERO,
+                    Duration::ZERO,
                 );
 
                 // bad tx

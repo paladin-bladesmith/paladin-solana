@@ -8,10 +8,13 @@ use {
     solana_metrics::datapoint_info,
     solana_perf::packet::PacketBatch,
     solana_poh::poh_recorder::PohRecorder,
-    solana_pubkey::{Pubkey, pubkey},
+    solana_pubkey::{pubkey, Pubkey},
     solana_sdk::account::AccountSharedData,
     solana_streamer::{
-        nonblocking::{quic::{ConnectionPeerType, ConnectionTable, ConnectionTableType}, swqos::SwQosConfig},
+        nonblocking::{
+            quic::{ConnectionPeerType, ConnectionTable, ConnectionTableType},
+            swqos::SwQosConfig,
+        },
         quic::{EndpointKeyUpdater, QuicStreamerConfig, QuicVariant, SpawnServerResult},
         streamer::StakedNodes,
     },
@@ -21,10 +24,12 @@ use {
         net::{SocketAddr, UdpSocket},
         num::Saturating,
         sync::{
-            Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex, RwLock,
         },
         time::{Duration, Instant},
-    }, tokio_util::sync::CancellationToken,
+    },
+    tokio_util::sync::CancellationToken,
 };
 
 const MAX_STAKED_CONNECTIONS: usize = 256;
@@ -108,8 +113,9 @@ where
         // in streamer (i.e. make it an argument).
 
         // Create the connection table here as we want to share
-        let staked_connection_table: Arc<Mutex<ConnectionTable>> =
-            Arc::new(Mutex::new(ConnectionTable::new(ConnectionTableType::Staked, cancel.clone())));
+        let staked_connection_table: Arc<Mutex<ConnectionTable>> = Arc::new(Mutex::new(
+            ConnectionTable::new(ConnectionTableType::Staked, cancel.clone()),
+        ));
 
         // Spawn the P3 QUIC server (regular).
         let (reg_packet_tx, reg_packet_rx) = crossbeam_channel::unbounded();

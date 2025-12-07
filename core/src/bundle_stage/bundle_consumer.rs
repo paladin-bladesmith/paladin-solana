@@ -1,14 +1,17 @@
 use {
-    crate::{banking_stage::{
-        committer::{CommitTransactionDetails, Committer},
-        consumer::{
-            ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
-            ProcessTransactionBatchOutput, RetryableIndex,
+    crate::{
+        banking_stage::{
+            committer::{CommitTransactionDetails, Committer},
+            consumer::{
+                ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
+                ProcessTransactionBatchOutput, RetryableIndex,
+            },
+            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+            qos_service::QosService,
+            scheduler_messages::MaxAge,
         },
-        leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
-        qos_service::QosService,
-        scheduler_messages::MaxAge,
-    }, bundle_stage::front_run_identifier},
+        bundle_stage::front_run_identifier,
+    },
     itertools::Itertools,
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
@@ -74,7 +77,7 @@ impl BundleConsumer {
     // This is to avoid stealing of tips by malicious parties with bundles that crank the tip
     // payment program and set the tip receiver to themself.
     pub fn process_and_record_aged_transactions(
-        &mut self,
+        &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
@@ -146,7 +149,7 @@ impl BundleConsumer {
     }
 
     fn process_and_record_transactions_with_pre_results(
-        &mut self,
+        &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_bundle_duration: Duration,
@@ -399,7 +402,7 @@ impl BundleConsumer {
                 .processed_with_successful_result_count,
             attempted_processing_count: processing_results.len() as u64,
         };
-// let i = batch.sanitized_transactions().iter().map(|x| {x.signatures()});
+        // let i = batch.sanitized_transactions().iter().map(|x| {x.signatures()});
         let (processed_transactions, processing_results_to_transactions_us) =
             measure_us!(processing_results
                 .iter()
@@ -415,7 +418,7 @@ impl BundleConsumer {
 
         if front_run_identifier::is_bundle_front_run(&processed_transactions, &processing_results) {
             todo!()
-        }       
+        }
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;

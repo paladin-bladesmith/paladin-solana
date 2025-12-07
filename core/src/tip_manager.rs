@@ -13,6 +13,7 @@ use {
             },
         },
     },
+    ahash::HashSet,
     funnel::{instructions::become_receiver::BecomeReceiverAccounts, Funnel},
     solana_account::ReadableAccount,
     solana_clock::{Epoch, Slot},
@@ -30,7 +31,7 @@ use {
         Transaction,
     },
     solana_transaction_status::RewardType,
-    std::{collections::HashSet, sync::Arc},
+    std::sync::Arc,
     thiserror::Error,
 };
 
