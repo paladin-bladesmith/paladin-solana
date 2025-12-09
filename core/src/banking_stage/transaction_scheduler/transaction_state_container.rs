@@ -454,7 +454,10 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::scheduler_messages::MaxAge,
+        crate::banking_stage::{
+            scheduler_messages::MaxAge,
+            transaction_scheduler::scheduling_unit_priority_id::SchedulingUnitPriorityId,
+        },
         agave_transaction_view::transaction_view::SanitizedTransactionView,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_hash::Hash,
@@ -573,7 +576,7 @@ mod tests {
                     packet_parser(data, priority, cost)
                 })
                 .unwrap();
-            let priority_id = TransactionPriorityId::new(priority, id);
+            let priority_id = SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(id));
             assert_eq!(
                 container.push_ids_into_queue(std::iter::once(priority_id)),
                 0
@@ -590,7 +593,7 @@ mod tests {
                     packet_parser(data, priority, cost)
                 })
                 .unwrap();
-            let priority_id = TransactionPriorityId::new(priority, id);
+            let priority_id = SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(id));
             priority_ids.push(priority_id);
         }
         assert_eq!(container.push_ids_into_queue(priority_ids.into_iter()), 5);
@@ -609,7 +612,7 @@ mod tests {
                 packet_parser(data, priority, cost)
             })
             .unwrap();
-        let priority_id = TransactionPriorityId::new(priority, id);
+        let priority_id = SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(id));
         assert_eq!(
             container.push_ids_into_queue(std::iter::once(priority_id)),
             1

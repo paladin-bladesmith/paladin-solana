@@ -33,7 +33,7 @@ impl BundlePacketDeserializer {
     /// * `transaction_account_lock_limit` - The transaction account lock limit to use for the deserialization.
     /// * `blacklisted_accounts` - The blacklisted accounts to use for the deserialization.
     /// * `tip_accounts` - The tip accounts to use for tip extraction.
-    pub fn try_handle_packet(
+    pub(crate) fn try_handle_packet(
         bytes: SharedBytes,
         root_bank: &Bank,
         working_bank: &Bank,

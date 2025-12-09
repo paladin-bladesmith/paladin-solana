@@ -620,7 +620,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -678,7 +678,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -737,7 +737,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -809,7 +809,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -885,7 +885,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -952,7 +952,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1034,7 +1034,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:

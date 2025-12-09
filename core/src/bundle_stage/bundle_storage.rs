@@ -51,7 +51,9 @@ pub struct BundleStorageEntry {
 /// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
 /// the cost model and need to get retried next slot.
 pub struct BundleStorage {
+    #[allow(dead_code)]
     last_slot: Slot,
+    #[allow(dead_code)]
     transaction_capacity: usize,
     transaction_view_state_container: TransactionViewStateContainer,
     unprocessed_bundles: VecDeque<BundleTransactionId>,
@@ -120,7 +122,7 @@ impl BundleStorage {
     /// Get bundle transaction IDs and extract their scheduling information.
     /// Returns a vector of (transaction_id, transaction, max_age, cost) tuples.
     /// Generic over Tx to work with any TransactionWithMeta type.
-    pub fn bundle_details<Tx: TransactionWithMeta>(
+    pub(crate) fn bundle_details<Tx: TransactionWithMeta>(
         container: &mut impl StateContainer<Tx>,
         bundle_id: BundleId,
     ) -> Option<Vec<(TransactionId, Tx, MaxAge, u64)>> {

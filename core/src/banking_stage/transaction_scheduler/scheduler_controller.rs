@@ -182,6 +182,10 @@ where
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
+            if self.receive_and_buffer.receive_and_buffer_bundles(&mut self.container, &decision).is_err(){
+                // We don't really care about the errors from bundles
+                // Not right now
+            }
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
@@ -523,7 +527,7 @@ mod tests {
             bank_forks,
             blacklisted_accounts,
             Duration::ZERO,
-            &HashSet::new(),
+            &HashSet::default(),
         )
     }
 

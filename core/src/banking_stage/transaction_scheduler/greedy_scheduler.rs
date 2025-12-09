@@ -490,6 +490,7 @@ mod test {
             scheduler_messages::{MaxAge, TransactionId},
             transaction_scheduler::transaction_state_container::TransactionStateContainer,
         },
+        core::panic,
         crossbeam_channel::unbounded,
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,

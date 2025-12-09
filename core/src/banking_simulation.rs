@@ -11,7 +11,7 @@ use {
         },
         bundle_stage::bundle_account_locker::BundleAccountLocker,
         proxy::block_engine_stage::BlockBuilderFeeInfo,
-        tip_manager::TipManager,
+        tip_manager::{TipDistributionAccountConfig, TipManager, TipManagerConfig},
         validator::BlockProductionMethod,
     },
     agave_banking_stage_ingress_types::BankingPacketBatch,
@@ -843,7 +843,21 @@ impl BankingSimulator {
             block_builder: Pubkey::default(),
             block_builder_commission: 0,
         }));
-        let tip_manager = TipManager::new(cluster_info_for_broadcast.id());
+        let tip_manager = TipManager::new(
+            blockstore.clone(),
+            leader_schedule_cache.clone(),
+            TipManagerConfig {
+                funnel: None,
+                rewards_split: None,
+                tip_payment_program_id: Pubkey::default(),
+                tip_distribution_program_id: Pubkey::default(),
+                tip_distribution_account_config: TipDistributionAccountConfig {
+                    merkle_root_upload_authority: Pubkey::default(),
+                    vote_account: Pubkey::default(),
+                    commission_bps: 0,
+                },
+            },
+        );
         
         let banking_stage = BankingStage::new_num_threads(
             cluster_info_for_broadcast.clone(),
