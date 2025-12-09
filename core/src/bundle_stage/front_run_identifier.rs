@@ -1,5 +1,14 @@
 use {
-    hashbrown::HashMap, itertools::izip, solana_account::ReadableAccount, solana_pubkey::Pubkey, solana_runtime::bank::LoadAndExecuteTransactionsOutput, solana_runtime_transaction::runtime_transaction::RuntimeTransaction, solana_svm::account_loader::LoadedTransaction, solana_transaction::sanitized::{MAX_TX_ACCOUNT_LOCKS, SanitizedTransaction}, std::cell::RefCell
+    hashbrown::HashMap,
+    solana_account::ReadableAccount,
+    solana_pubkey::Pubkey,
+    solana_sdk::transaction::VersionedTransaction,
+    solana_svm::{
+        account_loader::LoadedTransaction,
+        transaction_processing_result::{ProcessedTransaction, TransactionProcessingResultExtensions},
+    },
+    solana_transaction::{TransactionError, sanitized::MAX_TX_ACCOUNT_LOCKS},
+    std::cell::RefCell,
 };
 
 const MAX_PACKETS_PER_BUNDLE: usize = 5;
@@ -27,36 +36,55 @@ thread_local! {
 }
 
 #[must_use]
-pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool {
+pub(crate) fn is_bundle_front_run<'a>(
+    bundle: &Vec<VersionedTransaction>,
+    processing_results: &Vec<Result<ProcessedTransaction, TransactionError>>,
+) -> bool {
     AMM_MAP.with_borrow_mut(|map| map.clear());
 
-    // If the bundle did not execute okay then the results will not be valid.
-    if !bundle.executed_ok() {
-        eprintln!("BUG: Unexpected bundle with ERR");
-        return false;
-    }
-    
-    let count = bundle.transactions().count();
-    if count <= 1 {
+    let tx_count = bundle.len();
+    let output_count = processing_results.len();
+
+    // Confirm output matches bundle size
+    if tx_count != output_count {
+        eprintln!("BUG: Invalid assumption about batch layout");
         return false;
     }
 
-    if count > MAX_PACKETS_PER_BUNDLE {
-        eprintln!("BUG: Too many packets in bundle; packets={count}");
+    // No reason to check if only one TX
+    if tx_count <= 1 {
         return false;
     }
+
+    // Confirm all TXs were executed ok
+    if !is_executed_ok(processing_results) {
+        return false;
+    }
+
+    let loaded = processing_results
+        .iter()
+        .filter_map(|t| {
+            t.processed_transaction().and_then(|pt| match pt {
+                solana_svm::transaction_processing_result::ProcessedTransaction::Executed(
+                    executed_tx,
+                ) => Some(&executed_tx.loaded_transaction),
+                solana_svm::transaction_processing_result::ProcessedTransaction::FeesOnly(_) => {
+                    None
+                }
+            })
+        })
+        .collect::<Vec<_>>();
 
     // Check all TXs for write-locked pool accounts.
-    for (i, tx) in bundle.transactions().enumerate() {
+    for (i, tx) in bundle.iter().enumerate() {
         // Find all the AMM owned writeable accounts.
-        let writeable_amm_accounts = tx
-            .writable_accounts_owners()
-            .filter(|account| AMM_PROGRAMS.contains(account.owner));
+        let writeable_amm_accounts = writable_accounts_owners(tx, loaded[i])
+            .filter(|account| AMM_PROGRAMS.contains(&account.1));
 
         // Record this TX's access of the writeable account.
         for account in writeable_amm_accounts {
             // TODO: Use entry_ref once merged upstream.
-            AMM_MAP.with_borrow_mut(|map| map.entry(*account.key).or_default()[i] = true);
+            AMM_MAP.with_borrow_mut(|map| map.entry(account.0).or_default()[i] = true);
         }
     }
 
@@ -83,17 +111,17 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
     for i in 0..overlap_matrix.len() {
         'outer: for j in i..overlap_matrix.len() {
             if overlap_matrix[i][j] {
-                let Some(i) = bundle.transactions().nth(i) else {
+                let Some(i) = bundle.iter().nth(i) else {
                     eprintln!("BUG: i not found");
                     return false;
                 };
-                let Some(j) = bundle.transactions().nth(j) else {
+                let Some(j) = bundle.iter().nth(j) else {
                     eprintln!("BUG: j not found");
                     return false;
                 };
 
                 // Brute force compare the signers.
-                for (i, j) in i.signers().flat_map(|i| j.signers().map(move |j| (i, j))) {
+                for (i, j) in signers(i).flat_map(|i| signers(j).map(move |j| (i, j))) {
                     // If any signer matches then this overlap is not a front-run.
                     if i == j {
                         continue 'outer;
@@ -110,560 +138,624 @@ pub(crate) fn is_bundle_front_run<'a>(bundle: &'a impl BundleResult<'a>) -> bool
     false
 }
 
-pub(crate) trait BundleResult<'a> {
-    type Transaction: BundleTransaction;
-
-    fn executed_ok(&self) -> bool;
-    fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction>;
+/// Confirm if all TXs in bundle wer executed ok
+fn is_executed_ok(processing_results: &Vec<Result<ProcessedTransaction, TransactionError>>) -> bool {
+        processing_results
+        .iter()
+        .all(|t| t.was_processed_with_successful_result())
 }
 
-pub(crate) trait BundleTransaction {
-    /// Iterator over each signer.
-    fn signers(&self) -> impl Iterator<Item = &Pubkey>;
-    /// Iterator over each loaded account's owner.
-    fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef>;
+fn signers(tx: &VersionedTransaction) -> impl Iterator<Item = &Pubkey> {
+    tx.message
+        .static_account_keys()
+        .iter()
+        // TODO: Check what happens if a precompile is used.
+        .take(tx.signatures.len() as usize)
 }
 
-pub(crate) struct AccountRef<'a> {
-    key: &'a Pubkey,
-    owner: &'a Pubkey,
+fn writable_accounts_owners<'a>(
+    tx: &'a VersionedTransaction,
+    loaded_tx: &'a LoadedTransaction,
+) -> impl Iterator<Item = (Pubkey, Pubkey)> + use<'a> {
+    tx.message
+        .static_account_keys()
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| tx.message.is_maybe_writable(*i, None))
+        .map(|(i, key)| (key.clone(), loaded_tx.accounts[i].1.owner().clone()))
 }
 
-impl<'a> BundleResult for LoadAndExecuteTransactionsOutput {
-    type Transaction = (
-        &'a RuntimeTransaction<SanitizedTransaction>,
-        &'a LoadedTransaction,
-    );
+// pub(crate) trait BundleResult<'a> {
+//     type Transaction: BundleTransaction;
 
-    fn executed_ok(&self) -> bool {
-        self.result.is_ok()
-    }
+//     fn executed_ok(&self) -> bool;
+//     fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction>;
+// }
 
-    fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
-        self.bundle_transaction_results.iter().flat_map(|batch| {
-            let output = batch.load_and_execute_transactions_output();
-            if batch.transactions().len() != output.processing_results.len()
-                || batch.transactions().len() != output.processing_results.len()
-            {
-                eprintln!("BUG: Invalid assumption about batch layout");
-            }
+// pub(crate) trait BundleTransaction {
+//     /// Iterator over each signer.
+//     fn signers(&self) -> impl Iterator<Item = &Pubkey>;
+//     /// Iterator over each loaded account's owner.
+//     fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef>;
+// }
 
-            izip!(batch.transactions(), &output.processing_results,).filter_map(
-                |(sanitized, exec)| match exec {
-                    Ok(exec) => Some((sanitized, &exec.executed_transaction()?.loaded_transaction)),
-                    Err(_) => None,
-                },
-            )
-        })
-    }
-}
+// pub(crate) struct AccountRef<'a> {
+//     key: &'a Pubkey,
+//     owner: &'a Pubkey,
+// }
 
-impl BundleResult for Vec<CommitTransactionDetails> {
-    type Transaction;
+// impl<'a> BundleResult<'a> for LoadAndExecuteTransactionsOutput {
+//     type Transaction = (
+//         &'a VersionedTransaction,
+//         &'a LoadedTransaction,
+//     );
 
-    fn executed_ok(&self) -> bool {
-        todo!()
-    }
+//     fn executed_ok(&self) -> bool {
+//         self.processing_results.iter().any(|t| !t.was_processed_with_successful_result() )
+//     }
 
-    fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
-        todo!()
-    }
-}
+//     fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
+//         self.processing_results.into_iter().flat_map(|batch| {
+//             // unwrap safe because we should check if executed ok first
+//             let output = batch.unwrap().executed_transaction().unwrap();
+//             if batch.transactions().len() != output.processing_results.len()
+//                 || batch.transactions().len() != output.processing_results.len()
+//             {
+//                 eprintln!("BUG: Invalid assumption about batch layout");
+//             }
 
-impl<'a> BundleTransaction
-    for (
-        &'a RuntimeTransaction<SanitizedTransaction>,
-        &'a LoadedTransaction,
-    )
-{
-    fn signers(&self) -> impl Iterator<Item = &Pubkey> {
-        self.0
-            .message()
-            .account_keys()
-            .iter()
-            // TODO: Check what happens if a precompile is used.
-            .take(self.0.message().num_total_signatures() as usize)
-    }
+//             izip!(batch.transactions(), &output.processing_results,).filter_map(
+//                 |(sanitized, exec)| match exec {
+//                     Ok(exec) => Some((sanitized, &exec.executed_transaction()?.loaded_transaction)),
+//                     Err(_) => None,
+//                 },
+//             )
+//         })
+//     }
+// }
 
-    fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef> {
-        self.0
-            .message()
-            .account_keys()
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.0.message().is_writable(*i))
-            .map(|(i, key)| AccountRef {
-                key,
-                owner: self.1.accounts[i].1.owner(),
-            })
-    }
-}
+// impl<'a> BundleResult for LoadAndExecuteTransactionsOutput {
+//     type Transaction = (
+//         &'a RuntimeTransaction<SanitizedTransaction>,
+//         &'a LoadedTransaction,
+//     );
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+//     fn executed_ok(&self) -> bool {
+//         self.result.is_ok()
+//     }
 
-    const NOT_AMM_0: Pubkey = Pubkey::new_from_array([1; 32]);
-    const NOT_AMM_1: Pubkey = Pubkey::new_from_array([2; 32]);
-    const AMM_0: Pubkey = AMM_PROGRAMS[0];
-    const AMM_1: Pubkey = AMM_PROGRAMS[1];
-    const AMM_2: Pubkey = AMM_PROGRAMS[2];
-    const SIGNER_0: Pubkey = Pubkey::new_from_array([3; 32]);
-    const SIGNER_1: Pubkey = Pubkey::new_from_array([4; 32]);
-    const SIGNER_2: Pubkey = Pubkey::new_from_array([5; 32]);
+//     fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
+//         self.bundle_transaction_results.iter().flat_map(|batch| {
+//             let output = batch.load_and_execute_transactions_output();
+//             if batch.transactions().len() != output.processing_results.len()
+//                 || batch.transactions().len() != output.processing_results.len()
+//             {
+//                 eprintln!("BUG: Invalid assumption about batch layout");
+//             }
 
-    struct MockBundleResult {
-        executed_ok: bool,
-        transactions: Vec<MockTransaction>,
-    }
+//             izip!(batch.transactions(), &output.processing_results,).filter_map(
+//                 |(sanitized, exec)| match exec {
+//                     Ok(exec) => Some((sanitized, &exec.executed_transaction()?.loaded_transaction)),
+//                     Err(_) => None,
+//                 },
+//             )
+//         })
+//     }
+// }
 
-    impl<'a> BundleResult<'a> for MockBundleResult {
-        type Transaction = &'a MockTransaction;
+// impl BundleTransaction for VersionedTransaction
+// {
+//     fn signers(&self) -> impl Iterator<Item = &Pubkey> {
+//         self.message.static_account_keys()
+//             .iter()
+//             // TODO: Check what happens if a precompile is used.
+//             .take(self.signatures.len() as usize)
+//     }
 
-        fn executed_ok(&self) -> bool {
-            self.executed_ok
-        }
+//     fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef> {
+//         self
+//             .message.static_account_keys()
+//             .iter()
+//             .enumerate()
+//             .filter(|(i, _)| self.message.is_maybe_writable(*i, None))
+//             .map(|(i, key)| AccountRef {
+//                 key,
+//                 owner: self.1.accounts[i].1.owner(),
+//             })
+//     }
+// }
 
-        fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
-            self.transactions.iter()
-        }
-    }
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
 
-    struct MockTransaction {
-        signers: Vec<Pubkey>,
-        accounts: Vec<MockAccount>,
-    }
+//     const NOT_AMM_0: Pubkey = Pubkey::new_from_array([1; 32]);
+//     const NOT_AMM_1: Pubkey = Pubkey::new_from_array([2; 32]);
+//     const AMM_0: Pubkey = AMM_PROGRAMS[0];
+//     const AMM_1: Pubkey = AMM_PROGRAMS[1];
+//     const AMM_2: Pubkey = AMM_PROGRAMS[2];
+//     const SIGNER_0: Pubkey = Pubkey::new_from_array([3; 32]);
+//     const SIGNER_1: Pubkey = Pubkey::new_from_array([4; 32]);
+//     const SIGNER_2: Pubkey = Pubkey::new_from_array([5; 32]);
 
-    impl<'a> BundleTransaction for &'a MockTransaction {
-        fn signers(&self) -> impl Iterator<Item = &Pubkey> {
-            self.signers.iter()
-        }
+//     struct MockBundleResult {
+//         executed_ok: bool,
+//         transactions: Vec<MockTransaction>,
+//     }
 
-        fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef> {
-            self.accounts
-                .iter()
-                .map(|MockAccount { key, owner }| AccountRef { key, owner })
-        }
-    }
+//     impl<'a> BundleResult<'a> for MockBundleResult {
+//         type Transaction = &'a MockTransaction;
 
-    struct MockAccount {
-        key: Pubkey,
-        owner: Pubkey,
-    }
+//         fn executed_ok(&self) -> bool {
+//             self.executed_ok
+//         }
 
-    #[test]
-    fn two_amm_no_front_run() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: AMM_1,
-                    }],
-                },
-            ],
-        };
+//         fn transactions(&'a self) -> impl Iterator<Item = Self::Transaction> {
+//             self.transactions.iter()
+//         }
+//     }
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//     struct MockTransaction {
+//         signers: Vec<Pubkey>,
+//         accounts: Vec<MockAccount>,
+//     }
 
-    #[test]
-    fn two_amm_front_run() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//     impl<'a> BundleTransaction for &'a MockTransaction {
+//         fn signers(&self) -> impl Iterator<Item = &Pubkey> {
+//             self.signers.iter()
+//         }
 
-        // Act & Assert.
-        assert!(is_bundle_front_run(&bundle));
-    }
+//         fn writable_accounts_owners(&self) -> impl Iterator<Item = AccountRef> {
+//             self.accounts
+//                 .iter()
+//                 .map(|MockAccount { key, owner }| AccountRef { key, owner })
+//         }
+//     }
 
-    #[test]
-    fn first_and_third_conflict_middle_not_amm() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: NOT_AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_2],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//     struct MockAccount {
+//         key: Pubkey,
+//         owner: Pubkey,
+//     }
 
-        // Act & Assert.
-        assert!(is_bundle_front_run(&bundle));
-    }
+//     struct MockData {
+//         tx: vec<VersionedTransaction>,
+//         output: LoadAndExecuteTransactionsOutput,
+//     }
 
-    #[test]
-    fn three_txs_first_and_second_same_amm_different_key() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: NOT_AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_2],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//     fn new_with_txs(signer: Vec<Pubkey>, key: Vec<Pubkey>, owner: Vec<Pubkey>) -> MockData {
+//         for (i,signer) in signer.iter().enumerate() {
+//             assert_eq!(key.len(), owner.len());
+//     }
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//     fn get_tx(signer: Pubkey, key: Pubkey, owner: Pubkey) -> VersionedTransaction {
+//         let mut v = VersionedTransaction::default();
 
-    #[test]
-    fn first_and_third_conflict_middle_amm() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: AMM_1,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_2],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//         v.signatures.push(solana_sdk::signature::Signature::default());
 
-        // Act & Assert.
-        assert!(is_bundle_front_run(&bundle));
-    }
+//         let p = ProcessedTransaction::Executed(ExecutedTransaction {
+//             loaded_transaction: LoadedTransaction::default(),
+//             execution_details: TransactionExecutionDetails::default(),
+//             programs_modified_by_tx: HashMap::new(),
+//         });
+//         let output = LoadAndExecuteTransactionsOutput::default();
+//     }
 
-    #[test]
-    fn three_different_amms() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: AMM_1,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_2],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([2; 32]),
-                        owner: AMM_2,
-                    }],
-                },
-            ],
-        };
+//     #[test]
+//     fn two_amm_no_front_run() {
+// let v = VersionedTransaction::default();
+// let output = LoadAndExecuteTransactionsOutput::default();
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: AMM_1,
+//                     }],
+//                 },
+//             ],
+//         };
 
-    #[test]
-    fn three_same_amms_different_accounts() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_2],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([2; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//     #[test]
+//     fn two_amm_front_run() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
 
-    #[test]
-    fn two_amms_same_signer() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//         // Act & Assert.
+//         assert!(is_bundle_front_run(&bundle));
+//     }
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//     #[test]
+//     fn first_and_third_conflict_middle_not_amm() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: NOT_AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_2],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
 
-    #[test]
-    fn overlapping_non_amms_different_signers() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: NOT_AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: NOT_AMM_0,
-                    }],
-                },
-            ],
-        };
+//         // Act & Assert.
+//         assert!(is_bundle_front_run(&bundle));
+//     }
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//     #[test]
+//     fn three_txs_first_and_second_same_amm_different_key() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: NOT_AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_2],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
 
-    #[test]
-    fn non_overlapping_non_amms_different_signers() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: NOT_AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([1; 32]),
-                        owner: NOT_AMM_1,
-                    }],
-                },
-            ],
-        };
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
 
-        // Act & Assert.
-        assert!(!is_bundle_front_run(&bundle));
-    }
+//     #[test]
+//     fn first_and_third_conflict_middle_amm() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: AMM_1,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_2],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
 
-    #[test]
-    fn sandwich_bundle_simple() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![MockAccount {
-                        key: Pubkey::new_from_array([0; 32]),
-                        owner: AMM_0,
-                    }],
-                },
-            ],
-        };
+//         // Act & Assert.
+//         assert!(is_bundle_front_run(&bundle));
+//     }
 
-        // Act & Assert.
-        assert!(is_bundle_front_run(&bundle));
-    }
+//     #[test]
+//     fn three_different_amms() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: AMM_1,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_2],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([2; 32]),
+//                         owner: AMM_2,
+//                     }],
+//                 },
+//             ],
+//         };
 
-    #[test]
-    fn sandwich_bundle_complex() {
-        // Arrange.
-        let bundle = MockBundleResult {
-            executed_ok: true,
-            transactions: vec![
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![
-                        MockAccount {
-                            key: Pubkey::new_from_array([20; 32]),
-                            owner: NOT_AMM_0,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([21; 32]),
-                            owner: NOT_AMM_0,
-                        },
-                    ],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![
-                        MockAccount {
-                            key: Pubkey::new_from_array([10; 32]),
-                            owner: NOT_AMM_0,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([0; 32]),
-                            owner: AMM_0,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([11; 32]),
-                            owner: NOT_AMM_0,
-                        },
-                    ],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_1],
-                    accounts: vec![
-                        MockAccount {
-                            key: Pubkey::new_from_array([12; 32]),
-                            owner: NOT_AMM_0,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([13; 32]),
-                            owner: NOT_AMM_1,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([0; 32]),
-                            owner: AMM_0,
-                        },
-                    ],
-                },
-                MockTransaction {
-                    signers: vec![SIGNER_0],
-                    accounts: vec![
-                        MockAccount {
-                            key: Pubkey::new_from_array([0; 32]),
-                            owner: AMM_0,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([14; 32]),
-                            owner: NOT_AMM_0,
-                        },
-                        MockAccount {
-                            key: Pubkey::new_from_array([15; 32]),
-                            owner: NOT_AMM_1,
-                        },
-                    ],
-                },
-            ],
-        };
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
 
-        // Act & Assert.
-        assert!(is_bundle_front_run(&bundle));
-    }
-}
+//     #[test]
+//     fn three_same_amms_different_accounts() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_2],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([2; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
+
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
+
+//     #[test]
+//     fn two_amms_same_signer() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
+
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
+
+//     #[test]
+//     fn overlapping_non_amms_different_signers() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: NOT_AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: NOT_AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
+
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
+
+//     #[test]
+//     fn non_overlapping_non_amms_different_signers() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: NOT_AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([1; 32]),
+//                         owner: NOT_AMM_1,
+//                     }],
+//                 },
+//             ],
+//         };
+
+//         // Act & Assert.
+//         assert!(!is_bundle_front_run(&bundle));
+//     }
+
+//     #[test]
+//     fn sandwich_bundle_simple() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![MockAccount {
+//                         key: Pubkey::new_from_array([0; 32]),
+//                         owner: AMM_0,
+//                     }],
+//                 },
+//             ],
+//         };
+
+//         // Act & Assert.
+//         assert!(is_bundle_front_run(&bundle));
+//     }
+
+//     #[test]
+//     fn sandwich_bundle_complex() {
+//         // Arrange.
+//         let bundle = MockBundleResult {
+//             executed_ok: true,
+//             transactions: vec![
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([20; 32]),
+//                             owner: NOT_AMM_0,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([21; 32]),
+//                             owner: NOT_AMM_0,
+//                         },
+//                     ],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([10; 32]),
+//                             owner: NOT_AMM_0,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([0; 32]),
+//                             owner: AMM_0,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([11; 32]),
+//                             owner: NOT_AMM_0,
+//                         },
+//                     ],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_1],
+//                     accounts: vec![
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([12; 32]),
+//                             owner: NOT_AMM_0,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([13; 32]),
+//                             owner: NOT_AMM_1,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([0; 32]),
+//                             owner: AMM_0,
+//                         },
+//                     ],
+//                 },
+//                 MockTransaction {
+//                     signers: vec![SIGNER_0],
+//                     accounts: vec![
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([0; 32]),
+//                             owner: AMM_0,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([14; 32]),
+//                             owner: NOT_AMM_0,
+//                         },
+//                         MockAccount {
+//                             key: Pubkey::new_from_array([15; 32]),
+//                             owner: NOT_AMM_1,
+//                         },``
+//                     ],
+//                 },
+//             ],
+//         };
+
+//         // Act & Assert.
+//         assert!(is_bundle_front_run(&bundle));
+//     }
+// }

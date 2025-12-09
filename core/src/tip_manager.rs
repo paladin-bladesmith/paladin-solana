@@ -915,16 +915,15 @@ impl ReadRewards for Blockstore {
 pub(crate) mod tests {
     use {
         super::*,
-        anchor_lang::solana_program::vote::state::VoteState,
         funnel::LeaderState,
         solana_account::Account,
         solana_cluster_type::ClusterType,
         solana_fee_calculator::{FeeRateGovernor, DEFAULT_TARGET_LAMPORTS_PER_SIGNATURE},
         solana_ledger::leader_schedule::IdentityKeyedLeaderSchedule,
-        solana_native_token::sol_str_to_lamports,
-        solana_program_test::programs::spl_programs,
+        solana_native_token::{sol_str_to_lamports, LAMPORTS_PER_SOL},
         solana_rent::Rent,
         solana_runtime::genesis_utils::create_genesis_config_with_leader_ex,
+        solana_vote_interface::state::VoteStateV4,
         std::sync::RwLock,
     };
 
@@ -964,7 +963,8 @@ pub(crate) mod tests {
             &leader_keypair.pubkey(),
             &voting_keypair.pubkey(),
             &solana_pubkey::new_rand(),
-            rent.minimum_balance(VoteState::size_of()) + sol_str_to_lamports("1000000").unwrap(),
+            None,
+            rent.minimum_balance(VoteStateV4::size_of()) + 1_000_000 * LAMPORTS_PER_SOL,
             sol_str_to_lamports("1000000").unwrap(),
             FeeRateGovernor {
                 // Initialize with a non-zero fee
@@ -973,7 +973,6 @@ pub(crate) mod tests {
             },
             rent.clone(), // most tests don't expect rent
             ClusterType::Development,
-            spl_programs(&rent),
             vec![],
         );
 

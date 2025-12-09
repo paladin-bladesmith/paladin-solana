@@ -1063,7 +1063,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1210,7 +1210,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1312,7 +1312,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1445,7 +1445,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(
@@ -1578,7 +1578,7 @@ mod tests {
             transaction_recorder,
             poh_service,
             entry_receiever,
-        ) = create_test_recorder(bank.clone(), blockstore, None, None);
+        ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
         let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
         let cluster_info = Arc::new(ClusterInfo::new(

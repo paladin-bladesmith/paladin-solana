@@ -91,6 +91,7 @@ impl ReceivingStats {
     }
 }
 
+#[allow(unused)]
 #[derive(Default)]
 pub struct BufferStats {
     num_received: usize,

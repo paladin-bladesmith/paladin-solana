@@ -1,20 +1,20 @@
 use {
     crossbeam_channel::Sender,
     jsonrpc_core::{BoxFuture, ErrorCode, MetaIoHandler, Metadata, Result},
-    jsonrpc_core_client::{transports::ipc, RpcError},
+    jsonrpc_core_client::{RpcError, transports::ipc},
     jsonrpc_derive::rpc,
     jsonrpc_ipc_server::{
-        tokio::sync::oneshot::channel as oneshot_channel, RequestContext, ServerBuilder,
+        RequestContext, ServerBuilder, tokio::sync::oneshot::channel as oneshot_channel
     },
     log::*,
-    serde::{de::Deserializer, Deserialize, Serialize},
+    serde::{Deserialize, Serialize, de::Deserializer},
     solana_accounts_db::accounts_index::AccountIndex,
     solana_core::{
         admin_rpc_post_init::AdminRpcRequestMetadataPostInit,
         banking_stage::{
-            transaction_scheduler::scheduler_controller::SchedulerConfig, BankingStage,
+            BankingStage, DEFAULT_BATCH_INTERVAL, transaction_scheduler::scheduler_controller::SchedulerConfig
         },
-        consensus::{tower_storage::TowerStorage, Tower},
+        consensus::{Tower, tower_storage::TowerStorage},
         proxy::{
             block_engine_stage::{BlockEngineConfig, BlockEngineStage},
             relayer_stage::{RelayerConfig, RelayerStage},
@@ -26,7 +26,7 @@ use {
     },
     solana_geyser_plugin_manager::GeyserPluginManagerRequest,
     solana_gossip::contact_info::{ContactInfo, Protocol, SOCKET_ADDR_UNSPECIFIED},
-    solana_keypair::{read_keypair_file, Keypair},
+    solana_keypair::{Keypair, read_keypair_file},
     solana_pubkey::Pubkey,
     solana_rpc::rpc::verify_pubkey,
     solana_rpc_client_api::{config::RpcAccountIndex, custom_error::RpcCustomError},
@@ -41,8 +41,7 @@ use {
         path::{Path, PathBuf},
         str::FromStr,
         sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc, RwLock,
+            Arc, RwLock, atomic::{AtomicBool, Ordering}
         },
         thread::{self, Builder},
         time::{Duration, SystemTime},
@@ -936,6 +935,7 @@ impl AdminRpc for AdminRpcImpl {
                 .spawn_internal_threads(
                     block_production_method,
                     num_workers,
+                    DEFAULT_BATCH_INTERVAL,
                     SchedulerConfig { scheduler_pacing },
                 )
                 .map_err(|err| {

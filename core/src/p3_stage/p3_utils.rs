@@ -38,7 +38,7 @@ pub fn packet_bundle_from_packet_ref(mut pkt: PacketRefMut<'_>) -> PacketBundle 
         .map(|sig| hash_signature(&sig))
         .unwrap();
 
-    PacketBundle { batch, bundle_id }
+    PacketBundle::new(batch, bundle_id)
 }
 
 fn hash_signature(sig: &Signature) -> String {
@@ -94,6 +94,6 @@ mod tests {
         let mut hasher = Sha256::new();
         hasher.update(tx.signatures[0].to_string());
         let expected = format!("{:x}", hasher.finalize());
-        assert_eq!(bundle.bundle_id, expected);
+        assert_eq!(bundle.bundle_id(), expected);
     }
 }
