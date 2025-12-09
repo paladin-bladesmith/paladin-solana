@@ -539,7 +539,6 @@ mod tests {
         solana_pubkey::{new_rand, Pubkey},
         solana_runtime::{bank::Bank, prioritization_fee_cache::PrioritizationFeeCache},
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
-        solana_sdk::transaction::MessageHash,
         solana_signer::Signer,
         solana_system_transaction::transfer,
         solana_transaction::{sanitized::SanitizedTransaction, Transaction, TransactionError},
