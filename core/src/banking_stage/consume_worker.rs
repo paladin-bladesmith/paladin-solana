@@ -149,14 +149,13 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .fetch_add(1, Ordering::Relaxed);
 
         let output = if work.bundle_id.is_some() {
-            // Bundle-only batch: execute atomically
             const MAX_BUNDLE_DURATION: Duration = Duration::from_millis(100);
 
             // Handle tip programs once per slot before processing bundles
             let current_slot = bank.slot();
             let last_slot = self.last_tip_update_slot.load(Ordering::Relaxed);
             if current_slot != last_slot {
-                if let Err(_e) = BundleStage::handle_tip_programs(
+                if let Err(e) = BundleStage::handle_tip_programs(
                     &bank,
                     &self.bundle_account_locker,
                     &self.bundle_consumer,
@@ -184,7 +183,6 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
 
             output
         } else {
-            // Regular transaction batch (no bundles)
             self.consumer.process_and_record_aged_transactions(
                 &bank,
                 &work.transactions,

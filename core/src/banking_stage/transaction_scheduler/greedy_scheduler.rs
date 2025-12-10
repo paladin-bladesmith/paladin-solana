@@ -289,10 +289,6 @@ impl<Tx: TransactionWithMeta> Scheduler<Tx> for GreedyScheduler<Tx> {
                     }
                 }
                 Ok(ScheduledItem::Bundle(transaction_scheduling_infos)) => {
-                    // Send current batches before sending the bundle batch
-                    self.working_account_set.clear();
-                    num_sent += self.common.send_batches()?;
-
                     // Add all transactions from the bundle to the batch
                     let bundle_thread_id = transaction_scheduling_infos[0].thread_id;
                     let num_transactions = transaction_scheduling_infos.len();

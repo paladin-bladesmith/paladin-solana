@@ -218,6 +218,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
+        let start = Instant::now();
         let stats = ReceivingStats::default();
         let timeout = self.get_timeout();
 
@@ -236,6 +237,23 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
                 }
                 Err(RecvTimeoutError::Timeout) => return Ok(stats),
                 Err(RecvTimeoutError::Disconnected) => {
+                    return (!self.bundle_batch.is_empty())
+                        .then_some(stats)
+                        .ok_or(DisconnectedError);
+                }
+            }
+        }
+
+        while start.elapsed() < timeout {
+            match self.verified_bundle_receiver.try_recv() {
+                Ok(bundle) => {
+                    if self.bundle_batch.is_empty() {
+                        self.batch_start = Instant::now();
+                    }
+                    self.bundle_batch.push(bundle);
+                }
+                Err(TryRecvError::Empty) => return Ok(stats),
+                Err(TryRecvError::Disconnected) => {
                     return (!self.bundle_batch.is_empty())
                         .then_some(stats)
                         .ok_or(DisconnectedError);
@@ -263,8 +281,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
 
             let mut stats = BufferStats::default();
 
-            // Process transaction batch if ready
-            if !self.batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
+            if !self.batch.is_empty() {
                 let tx_stats = self.handle_batch_of_packet_batch_messages(
                     container,
                     decision,
@@ -276,8 +293,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
                 stats.buffer_time_us += tx_stats.buffer_time_us;
             }
 
-            // Process bundle batch if ready
-            if !self.bundle_batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval {
+            if !self.bundle_batch.is_empty() {
                 let bundle_stats = self.handle_verified_bundle_batch(
                     container,
                     decision,
@@ -288,6 +304,8 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
                 stats.num_dropped_on_capacity += bundle_stats.num_dropped_on_capacity;
                 stats.buffer_time_us += bundle_stats.buffer_time_us;
             }
+            
+            self.batch_start = Instant::now();
 
             stats
         } else {
@@ -334,12 +352,12 @@ impl TransactionViewReceiveAndBuffer {
     /// If batch is empty, return default timeout
     fn get_timeout(&self) -> Duration {
         if !self.batch.is_empty() {
-            if self.batch_start.elapsed() >= self.batch_interval {
+            // if self.batch_start.elapsed() >= self.batch_interval {
                 Duration::ZERO
-            } else {
-                self.batch_interval
-                    .saturating_sub(self.batch_start.elapsed())
-            }
+            // } else {
+            //     self.batch_interval
+            //         .saturating_sub(self.batch_start.elapsed())
+            // }
         } else {
             Duration::from_millis(10)
         }
