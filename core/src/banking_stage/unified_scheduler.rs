@@ -121,8 +121,12 @@ pub(crate) fn ensure_banking_stage_setup(
                         .compute_budget_instruction_details()
                         .sanitize_and_convert_to_compute_budget_limits(&bank.feature_set)
                         .ok()?;
-                    let (priority, _cost) =
-                        calculate_priority_and_cost(&tx, &compute_budget_limits.into(), &bank);
+                    let (priority, _cost) = calculate_priority_and_cost(
+                        &tx,
+                        &compute_budget_limits.into(),
+                        &bank,
+                        None,
+                    );
                     let task_id = BankingStageHelper::new_task_id(task_id_base + i, priority);
 
                     Some(helper.create_new_task(tx, task_id, packet.meta().size))

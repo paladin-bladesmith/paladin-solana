@@ -14,7 +14,8 @@ use {
             consumer::Consumer,
             decision_maker::{BufferedPacketsDecision, DecisionMaker},
             transaction_scheduler::{
-                receive_and_buffer::ReceivingStats, transaction_state_container::StateContainer,
+                receive_and_buffer::ReceivingStats, scheduling_unit_priority_id,
+                transaction_state_container::StateContainer,
             },
             TOTAL_BUFFERED_PACKETS,
         },
@@ -176,11 +177,14 @@ where
 
             self.receive_completed()?;
             self.process_transactions(&decision, cost_pacer.as_ref(), &now)?;
-            self.receive_and_buffer
-                .maybe_queue_batch(&mut self.container, &decision);
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
+            if self.receive_and_buffer.receive_and_buffer_bundles(&mut self.container, &decision).is_err(){
+                break;
+            }
+            self.receive_and_buffer
+                .maybe_queue_batch(&mut self.container, &decision);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
@@ -320,10 +324,18 @@ where
             let lock_results = vec![Ok(()); chunk.len()];
             let sanitized_txs: Vec<_> = chunk
                 .iter()
-                .map(|id| {
-                    self.container
-                        .get_transaction(id.id)
-                        .expect("transaction must exist")
+                .filter_map(|id| {
+                    match id.id {
+                        scheduling_unit_priority_id::SchedulingUnitId::Transaction(tx_id) => Some(
+                            self.container
+                                .get_transaction(tx_id)
+                                .expect("transaction must exist"),
+                        ),
+                        scheduling_unit_priority_id::SchedulingUnitId::Bundle(_) => {
+                            // Bundles are not checked individually, skip
+                            None
+                        }
+                    }
                 })
                 .collect();
 
@@ -507,7 +519,15 @@ mod tests {
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
     ) -> TransactionViewReceiveAndBuffer {
-        TransactionViewReceiveAndBuffer::new(receiver, bank_forks, blacklisted_accounts, Duration::ZERO)
+        let (_, bundle_receiver) = crossbeam_channel::unbounded();
+        TransactionViewReceiveAndBuffer::new(
+            receiver,
+            bundle_receiver,
+            bank_forks,
+            blacklisted_accounts,
+            Duration::ZERO,
+            &HashSet::default(),
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -631,7 +651,9 @@ mod tests {
         {}
 
         let now = Instant::now();
-        scheduler_controller.receive_and_buffer.maybe_queue_batch(&mut scheduler_controller.container, &decision);
+        scheduler_controller
+            .receive_and_buffer
+            .maybe_queue_batch(&mut scheduler_controller.container, &decision);
         assert!(scheduler_controller
             .process_transactions(
                 &decision,
@@ -666,6 +688,7 @@ mod tests {
                     ids: vec![],
                     transactions: vec![],
                     max_ages: vec![],
+                    bundle_id: None,
                 },
                 retryable_indexes: vec![],
             })

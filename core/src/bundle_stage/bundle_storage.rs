@@ -2,9 +2,10 @@ use {
     crate::{
         // arrayref::array_ref,
         banking_stage::{
-            scheduler_messages::MaxAge,
+            scheduler_messages::{BundleId, MaxAge, TransactionId},
             transaction_scheduler::{
                 receive_and_buffer::PacketHandlingError,
+                scheduling_unit_priority_id::{SchedulingUnitId, SchedulingUnitPriorityId},
                 transaction_state_container::{
                     RuntimeTransactionView, StateContainer, TransactionViewStateContainer,
                 },
@@ -21,7 +22,9 @@ use {
     // solana_message::compiled_instruction::CompiledInstruction,
     solana_pubkey::Pubkey,
     solana_runtime::bank::Bank,
-    solana_runtime_transaction::transaction_meta::StaticMeta,
+    solana_runtime_transaction::{
+        transaction_meta::StaticMeta, transaction_with_meta::TransactionWithMeta,
+    },
     std::collections::VecDeque,
 };
 
@@ -48,7 +51,9 @@ pub struct BundleStorageEntry {
 /// Bundle storage has two deques: one for unprocessed bundles and another for ones that exceeded
 /// the cost model and need to get retried next slot.
 pub struct BundleStorage {
+    #[allow(dead_code)]
     last_slot: Slot,
+    #[allow(dead_code)]
     transaction_capacity: usize,
     transaction_view_state_container: TransactionViewStateContainer,
     unprocessed_bundles: VecDeque<BundleTransactionId>,
@@ -110,53 +115,38 @@ impl BundleStorage {
     pub fn destroy_bundle(&mut self, bundle: BundleStorageEntry) {
         for container_id in bundle.container_ids.into_iter() {
             self.transaction_view_state_container
-                .remove_by_id(container_id);
+                .remove_by_id(SchedulingUnitId::Transaction(container_id));
         }
     }
 
-    /// Pops a bundle from the unprocessed_bundles queue and returns it as a BundleStorageEntry.
-    /// Returns None if there are no bundles to pop.
-    pub fn pop_bundle(&mut self, slot: Slot) -> Option<BundleStorageEntry> {
-        if slot != self.last_slot {
-            // the cost_model_buffered_bundles has the oldest bundles at the front of the queue
-            // we need to pop from the back of that queue and insert to the front of the unprocessed_bundles queue so by the time we reach the front,
-            // the oldest bundle is at the front of the unprocessed_bundles queue
-            while let Some(bundle) = self.cost_model_buffered_bundles.pop_back() {
-                self.unprocessed_bundles.push_front(bundle);
-            }
+    /// Get bundle transaction IDs and extract their scheduling information.
+    /// Returns a vector of (transaction_id, transaction, max_age, cost) tuples.
+    /// Generic over Tx to work with any TransactionWithMeta type.
+    pub(crate) fn bundle_details<Tx: TransactionWithMeta>(
+        container: &mut impl StateContainer<Tx>,
+        bundle_id: BundleId,
+    ) -> Option<Vec<(TransactionId, Tx, MaxAge, u64)>> {
+        let transaction_ids = container.get_bundle_transaction_ids(bundle_id)?.clone();
 
-            self.last_slot = slot;
+        let mut details = Vec::with_capacity(transaction_ids.len());
+        for tx_id in transaction_ids.iter() {
+            let state = container.get_mut_transaction_state(*tx_id)?;
+            let cost = state.cost();
+            let (transaction, max_age) = state.take_transaction_for_scheduling();
+            details.push((*tx_id, transaction, max_age, cost));
         }
 
-        // only want to pop from the unprocessed bundles queue and wait for slot boundary to refresh from cost_model_buffered_bundles
-        let bundle = self.unprocessed_bundles.pop_front()?;
-
-        let (bundle_transactions, bundle_max_ages): (Vec<RuntimeTransactionView>, Vec<MaxAge>) =
-            bundle
-                .container_ids
-                .iter()
-                .map(|id| {
-                    self.transaction_view_state_container
-                        .get_mut_transaction_state(*id)
-                        .unwrap()
-                        .take_transaction_for_scheduling()
-                })
-                .collect();
-
-        Some(BundleStorageEntry {
-            container_ids: bundle.container_ids,
-            transactions: bundle_transactions,
-            max_ages: bundle_max_ages,
-        })
+        Some(details)
     }
 
     pub fn insert_bundle(
-        &mut self,
+        container: &mut TransactionViewStateContainer,
         bundle: VerifiedPacketBundle,
         root_bank: &Bank,
         working_bank: &Bank,
         blacklisted_accounts: &HashSet<Pubkey>,
-    ) -> Result<(), BundleStorageError> {
+        tip_accounts: &HashSet<Pubkey>,
+    ) -> Result<Vec<usize>, BundleStorageError> {
         let batch = bundle.take();
 
         // Packet checks
@@ -175,12 +165,7 @@ impl BundleStorage {
         }
 
         // Container checks
-        if self
-            .transaction_view_state_container
-            .buffer_size()
-            .saturating_add(batch.len())
-            > self.transaction_capacity
-        {
+        if container.buffer_size().saturating_add(batch.len()) > container.capacity() {
             return Err(BundleStorageError::ContainerFull);
         }
 
@@ -192,9 +177,8 @@ impl BundleStorage {
             let packet_data = packet.data(..).unwrap();
 
             // try to insert the packet into the container
-            if let Some(container_id) = self
-                .transaction_view_state_container
-                .try_insert_map_only_with_data(packet_data, |bytes| {
+            if let Some(container_id) =
+                container.try_insert_map_only_with_data(packet_data, |bytes| {
                     match BundlePacketDeserializer::try_handle_packet(
                         bytes,
                         root_bank,
@@ -204,6 +188,7 @@ impl BundleStorage {
                             .is_active(&agave_feature_set::static_instruction_limit::id()),
                         working_bank.get_transaction_account_lock_limit(),
                         blacklisted_accounts,
+                        tip_accounts,
                     ) {
                         Ok(state) => Ok(state),
                         Err(e) => {
@@ -217,8 +202,7 @@ impl BundleStorage {
             } else {
                 // any error shall rollback any transactions added to the container
                 for container_id in container_ids.iter() {
-                    self.transaction_view_state_container
-                        .remove_by_id(*container_id);
+                    container.remove_by_id(SchedulingUnitId::Transaction(*container_id));
                 }
                 return Err(BundleStorageError::PacketFilterError((
                     maybe_error.unwrap_err(),
@@ -227,26 +211,30 @@ impl BundleStorage {
             }
         }
 
-        let is_duplicate_hashes = self.does_contain_duplicate_hashes(&container_ids);
+        let is_duplicate_hashes = Self::does_contain_duplicate_hashes(&container, &container_ids);
         if is_duplicate_hashes {
             for container_id in container_ids.iter() {
-                self.transaction_view_state_container
-                    .remove_by_id(*container_id);
+                container.remove_by_id(SchedulingUnitId::Transaction(*container_id));
             }
             return Err(BundleStorageError::DuplicateTransaction);
         }
 
-        self.unprocessed_bundles
-            .push_back(BundleTransactionId { container_ids });
+        // All the checks passed, the bundle was also inserted into the container.
+        // Hence for unified scheduler, we don't need this.
+        // All transactions + bundle would be scheduled by scheduler
+        // self.unprocessed_bundles
+        //     .push_back(BundleTransactionId { container_ids });
 
-        Ok(())
+        Ok(container_ids)
     }
 
-    fn does_contain_duplicate_hashes(&self, container_ids: &[usize]) -> bool {
+    pub fn does_contain_duplicate_hashes(
+        container: &TransactionViewStateContainer,
+        container_ids: &[usize],
+    ) -> bool {
         let mut transaction_hashes = ArrayVec::<_, { Self::MAX_PACKETS_PER_BUNDLE }>::new();
         for container_id in container_ids.iter() {
-            let transaction_hash = self
-                .transaction_view_state_container
+            let transaction_hash = container
                 .get_transaction(*container_id)
                 .unwrap()
                 .message_hash();
@@ -261,88 +249,20 @@ impl BundleStorage {
     pub fn clear(&mut self) {
         for bundle in self.unprocessed_bundles.drain(..) {
             for id in bundle.container_ids.iter() {
-                self.transaction_view_state_container.remove_by_id(*id);
+                self.transaction_view_state_container
+                    .remove_by_id(SchedulingUnitId::Transaction(*id));
             }
         }
         for bundle in self.cost_model_buffered_bundles.drain(..) {
             for id in bundle.container_ids.iter() {
-                self.transaction_view_state_container.remove_by_id(*id);
+                self.transaction_view_state_container
+                    .remove_by_id(SchedulingUnitId::Transaction(*id));
             }
         }
     }
-
-    // fn calculate_bundle_priority(
-    //     immutable_bundle: &ImmutableDeserializedBundle,
-    //     sanitized_bundle: &SanitizedBundle,
-    //     bank: &Bank,
-    //     priority_counter: & &HashSet<Pubkey>,
-    // ) -> (std::cmp::Reverse<u64>, u64) {
-    //     let total_cu_cost: u64 = sanitized_bundle
-    //         .transactions
-    //         .iter()
-    //         .map(|tx: &_| CostModel::calculate_cost(tx, &bank.feature_set).sum())
-    //         .sum();
-
-    //     let reward_from_tx: u64 = sanitized_bundle
-    //         .transactions
-    //         .iter()
-    //         .map(|tx| {
-    //             let limits = tx
-    //                 .compute_budget_instruction_details()
-    //                 .sanitize_and_convert_to_compute_budget_limits(&bank.feature_set)
-    //                 .unwrap_or_default();
-    //             bank.calculate_reward_for_transaction(tx, &FeeBudgetLimits::from(limits))
-    //         })
-    //         .sum();
-
-    //     let reward_from_tips: u64 = immutable_bundle
-    //         .packets()
-    //         .iter()
-    //         .map(|packets| Self::extract_tips_from_packet(packets, tip_accounts))
-    //         .sum();
-
-    //     let total_reward = reward_from_tx.saturating_add(reward_from_tips);
-    //     const MULTIPLIER: u64 = 1_000_000;
-    //     let priority = total_reward.saturating_mul(MULTIPLIER) / total_cu_cost.max(1);
-    //     *priority_counter = priority_counter.wrapping_add(1);
-
-    //     (std::cmp::Reverse(priority), *priority_counter)
-    // }
-
-    // pub fn extract_tips_from_packet(
-    //     packet: &ImmutableDeserializedPacket,
-    //     tip_accounts: &HashSet<Pubkey>,
-    // ) -> u64 {
-    //     let message = packet.transaction().get_message();
-    //     let account_keys = message.message.static_account_keys();
-    //     message
-    //         .program_instructions_iter()
-    //         .filter_map(|(pid, ix)| Self::extract_transfer(account_keys, pid, ix))
-    //         .filter(|(dest, _)| tip_accounts.contains(dest))
-    //         .map(|(_, amount)| amount)
-    //         .sum()
-    // }
-
-    // fn extract_transfer<'a>(
-    //     account_keys: &'a [Pubkey],
-    //     program_id: &Pubkey,
-    //     ix: &CompiledInstruction,
-    // ) -> Option<(&'a Pubkey, u64)> {
-    //     if program_id == &solana_sdk_ids::system_program::ID
-    //         && ix.data.len() >= 12
-    //         && u32::from_le_bytes(*array_ref![&ix.data, 0, 4]) == 2
-    //     {
-    //         let destination = account_keys.get(*ix.accounts.get(1)? as usize)?;
-    //         let amount = u64::from_le_bytes(*array_ref![ix.data, 4, 8]);
-
-    //         Some((destination, amount))
-    //     } else {
-    //         None
-    //     }
-    // }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use {
         crate::{

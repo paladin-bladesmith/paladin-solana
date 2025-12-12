@@ -83,7 +83,7 @@ use {
 use {
     crate::{
         bundle_sigverify_stage::BundleSigverifyStage,
-        bundle_stage::{bundle_account_locker::BundleAccountLocker, BundleStage},
+        bundle_stage::{bundle_account_locker::BundleAccountLocker /*BundleStage*/},
         tip_manager::{TipManager, TipManagerConfig},
     },
     ahash::{HashSet, HashSetExt},
@@ -137,7 +137,7 @@ pub struct Tpu {
     relayer_stage: RelayerStage,
     block_engine_stage: BlockEngineStage,
     fetch_stage_manager: FetchStageManager,
-    bundle_stage: BundleStage,
+    // bundle_stage: BundleStage,
     bundle_sigverify_stage: BundleSigverifyStage,
     p3_quic: std::thread::JoinHandle<()>,
 }
@@ -438,20 +438,24 @@ impl Tpu {
         blacklisted_accounts.insert(tip_manager.tip_payment_program_id());
 
         let banking_stage = BankingStage::new_num_threads(
+            cluster_info.clone(),
             block_production_method,
             poh_recorder.clone(),
             transaction_recorder.clone(),
             banking_stage_receiver,
             tpu_vote_receiver,
             gossip_vote_receiver,
+            verified_bundle_receiver,
             block_production_num_workers,
             block_production_scheduler_config,
             transaction_status_sender.clone(),
             replay_vote_sender.clone(),
             log_messages_bytes_limit,
             bank_forks.clone(),
+            &block_builder_fee_info,
             prioritization_fee_cache.clone(),
             blacklisted_accounts.clone(),
+            tip_manager,
             bundle_account_locker.clone(),
             batch_interval,
         );
@@ -468,22 +472,23 @@ impl Tpu {
             DataBudget::default(),
         );
 
-        let bundle_stage = BundleStage::new(
-            cluster_info,
-            bank_forks.clone(),
-            poh_recorder,
-            transaction_recorder,
-            verified_bundle_receiver,
-            transaction_status_sender,
-            replay_vote_sender,
-            log_messages_bytes_limit,
-            exit.clone(),
-            tip_manager,
-            bundle_account_locker,
-            &block_builder_fee_info,
-            prioritization_fee_cache,
-            blacklisted_accounts,
-        );
+        // TODO: remove bundle stage as part of unified scheduling of bundles and transactions
+        // let bundle_stage = BundleStage::new(
+        //     cluster_info,
+        //     bank_forks.clone(),
+        //     poh_recorder,
+        //     transaction_recorder,
+        //     verified_bundle_receiver,
+        //     transaction_status_sender,
+        //     replay_vote_sender,
+        //     log_messages_bytes_limit,
+        //     exit.clone(),
+        //     tip_manager,
+        //     bundle_account_locker,
+        //     &block_builder_fee_info,
+        //     prioritization_fee_cache,
+        //     blacklisted_accounts,
+        // );
 
         let (entry_receiver, tpu_entry_notifier) =
             if let Some(entry_notification_sender) = entry_notification_sender {
@@ -545,7 +550,7 @@ impl Tpu {
             block_engine_stage,
             relayer_stage,
             fetch_stage_manager,
-            bundle_stage,
+            // bundle_stage,
             bundle_sigverify_stage,
             p3_quic,
         }
@@ -572,7 +577,7 @@ impl Tpu {
             self.tpu_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_forwards_quic_t.map_or(Ok(()), |t| t.join()),
             self.tpu_vote_quic_t.join(),
-            self.bundle_stage.join(),
+            // self.bundle_stage.join(),
             self.bundle_sigverify_stage.join(),
             self.relayer_stage.join(),
             self.block_engine_stage.join(),

@@ -8,7 +8,8 @@ use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
         banking_stage::{
-            transaction_scheduler::scheduler_controller::SchedulerConfig, BankingStage, DEFAULT_BATCH_INTERVAL
+            transaction_scheduler::scheduler_controller::SchedulerConfig, BankingStage,
+            DEFAULT_BATCH_INTERVAL,
         },
         banking_trace::{self, BankingTracer, TraceError},
         cluster_info_vote_listener::VoteTracker,

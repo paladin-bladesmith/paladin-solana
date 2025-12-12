@@ -1,8 +1,11 @@
 #[cfg(feature = "dev-context-only-utils")]
 use qualifier_attr::qualifiers;
 use {
-    super::{transaction_priority_id::TransactionPriorityId, transaction_state::TransactionState},
-    crate::banking_stage::scheduler_messages::TransactionId,
+    super::{
+        scheduling_unit_priority_id::{SchedulingUnitId, SchedulingUnitPriorityId},
+        transaction_state::TransactionState,
+    },
+    crate::banking_stage::scheduler_messages::{BundleId, TransactionId},
     agave_transaction_view::resolved_transaction_view::ResolvedTransactionView,
     itertools::MinMaxResult,
     min_max_heap::MinMaxHeap,
@@ -42,9 +45,10 @@ use {
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 pub(crate) struct TransactionStateContainer<Tx: TransactionWithMeta> {
     capacity: usize,
-    priority_queue: MinMaxHeap<TransactionPriorityId>,
+    priority_queue: MinMaxHeap<SchedulingUnitPriorityId>,
     id_to_transaction_state: Slab<TransactionState<Tx>>,
-    held_transactions: Vec<TransactionPriorityId>,
+    bundle_id_to_transaction_ids: Slab<Vec<TransactionId>>,
+    held_transactions: Vec<SchedulingUnitPriorityId>,
 }
 
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
@@ -59,8 +63,10 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
     /// Returns true if the queue is empty.
     fn is_empty(&self) -> bool;
 
-    /// Get the top transaction id in the priority queue.
-    fn pop(&mut self) -> Option<TransactionPriorityId>;
+    fn capacity(&self) -> usize;
+
+    /// Get the top scheduling unit (transaction or bundle) from the priority queue.
+    fn pop(&mut self) -> Option<SchedulingUnitPriorityId>;
 
     /// Get mutable transaction state by id.
     fn get_mut_transaction_state(&mut self, id: TransactionId)
@@ -69,6 +75,9 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
     /// Get reference to `SanitizedTransactionTTL` by id.
     /// Panics if the transaction does not exist.
     fn get_transaction(&self, id: TransactionId) -> Option<&Tx>;
+
+    /// Get transaction ids mapped to a bundle id.
+    fn get_bundle_transaction_ids(&self, bundle_id: BundleId) -> Option<&Vec<TransactionId>>;
 
     /// Retries a transaction - inserts transaction back into map.
     /// This transitions the transaction to `Unprocessed` state.
@@ -81,7 +90,10 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
         let transaction_state = self
             .get_mut_transaction_state(transaction_id)
             .expect("transaction must exist");
-        let priority_id = TransactionPriorityId::new(transaction_state.priority(), transaction_id);
+        let priority_id = SchedulingUnitPriorityId::new(
+            transaction_state.priority(),
+            SchedulingUnitId::Transaction(transaction_id),
+        );
         transaction_state.retry_transaction(transaction);
 
         if immediately_retryable {
@@ -89,6 +101,28 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
         } else {
             self.hold_transaction(priority_id);
         }
+    }
+
+    /// Retries a bundle - inserts bundle back into map.
+    /// This transitions the transaction to `Unprocessed` state.
+    fn retry_bundle(&mut self, bundle_id: BundleId, transactions: Vec<Tx>) {
+        let transaction_ids = self
+            .get_bundle_transaction_ids(bundle_id)
+            .expect("bundle must exist")
+            .clone();
+
+        let mut priority: u64 = 0;
+        for (transaction_id, transaction) in transaction_ids.iter().zip(transactions.into_iter()) {
+            let transaction_state = self
+                .get_mut_transaction_state(*transaction_id)
+                .expect("transaction must exist");
+            transaction_state.retry_transaction(transaction);
+            priority += transaction_state.priority();
+        }
+
+        let priority_id =
+            SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Bundle(bundle_id));
+        self.push_ids_into_queue(std::iter::once(priority_id));
     }
 
     /// Pushes transaction ids into the priority queue. If the queue if full,
@@ -99,14 +133,14 @@ pub(crate) trait StateContainer<Tx: TransactionWithMeta> {
     /// Returns the number of dropped transactions.
     fn push_ids_into_queue(
         &mut self,
-        priority_ids: impl Iterator<Item = TransactionPriorityId>,
+        priority_ids: impl Iterator<Item = SchedulingUnitPriorityId>,
     ) -> usize;
 
-    /// Hold the tarnsaction until the next flush (next slot).
-    fn hold_transaction(&mut self, priority_id: TransactionPriorityId);
+    /// Hold the scheduling unit until the next flush (next slot).
+    fn hold_transaction(&mut self, priority_id: SchedulingUnitPriorityId);
 
-    /// Remove transaction by id.
-    fn remove_by_id(&mut self, id: TransactionId);
+    /// Remove scheduling unit by id.
+    fn remove_by_id(&mut self, id: SchedulingUnitId);
 
     fn flush_held_transactions(&mut self);
 
@@ -126,6 +160,7 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
             capacity,
             priority_queue: MinMaxHeap::with_capacity(capacity + EXTRA_CAPACITY),
             id_to_transaction_state: Slab::with_capacity(capacity + EXTRA_CAPACITY),
+            bundle_id_to_transaction_ids: Slab::with_capacity(capacity + EXTRA_CAPACITY),
             held_transactions: Vec::with_capacity(capacity),
         }
     }
@@ -142,7 +177,11 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
         self.priority_queue.is_empty()
     }
 
-    fn pop(&mut self) -> Option<TransactionPriorityId> {
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn pop(&mut self) -> Option<SchedulingUnitPriorityId> {
         self.priority_queue.pop_max()
     }
 
@@ -159,18 +198,19 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
             .map(|state| state.transaction())
     }
 
+    fn get_bundle_transaction_ids(&self, bundle_id: BundleId) -> Option<&Vec<TransactionId>> {
+        self.bundle_id_to_transaction_ids.get(bundle_id)
+    }
+
     fn push_ids_into_queue(
         &mut self,
-        priority_ids: impl Iterator<Item = TransactionPriorityId>,
+        priority_ids: impl Iterator<Item = SchedulingUnitPriorityId>,
     ) -> usize {
         for id in priority_ids {
             self.priority_queue.push(id);
         }
 
-        // The number of items in the `id_to_transaction_state` map is
-        // greater than or equal to the number of elements in the queue.
-        // To avoid the map going over capacity, we use the length of the
-        // map here instead of the queue.
+        // Drop lowest priority items if over capacity
         let num_dropped = self
             .id_to_transaction_state
             .len()
@@ -178,18 +218,28 @@ impl<Tx: TransactionWithMeta> StateContainer<Tx> for TransactionStateContainer<T
 
         for _ in 0..num_dropped {
             let priority_id = self.priority_queue.pop_min().expect("queue is not empty");
-            self.id_to_transaction_state.remove(priority_id.id);
+            self.remove_by_id(priority_id.id);
         }
 
         num_dropped
     }
 
-    fn hold_transaction(&mut self, priority_id: TransactionPriorityId) {
+    fn hold_transaction(&mut self, priority_id: SchedulingUnitPriorityId) {
         self.held_transactions.push(priority_id);
     }
 
-    fn remove_by_id(&mut self, id: TransactionId) {
-        self.id_to_transaction_state.remove(id);
+    fn remove_by_id(&mut self, id: SchedulingUnitId) {
+        match id {
+            SchedulingUnitId::Transaction(tx_id) => {
+                self.id_to_transaction_state.remove(tx_id);
+            }
+            SchedulingUnitId::Bundle(bundle_id) => {
+                let transaction_ids = self.bundle_id_to_transaction_ids.remove(bundle_id);
+                transaction_ids.into_iter().for_each(|tx_id| {
+                    self.id_to_transaction_state.remove(tx_id);
+                });
+            }
+        };
     }
 
     fn flush_held_transactions(&mut self) {
@@ -230,7 +280,7 @@ impl<Tx: TransactionWithMeta> TransactionStateContainer<Tx> {
             let entry = self.get_vacant_map_entry();
             let transaction_id = entry.key();
             entry.insert(TransactionState::new(transaction, max_age, priority, cost));
-            TransactionPriorityId::new(priority, transaction_id)
+            SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(transaction_id))
         };
 
         self.push_ids_into_queue(std::iter::once(priority_id)) > 0
@@ -294,6 +344,19 @@ impl TransactionViewStateContainer {
             None
         }
     }
+
+    /// Inserts a bundle mapping into the slab and returns the BundleId.
+    /// This stores the vector of transaction IDs that belong to a bundle.
+    pub(crate) fn try_insert_bundle_mapping(
+        &mut self,
+        transaction_ids: Vec<TransactionId>,
+    ) -> usize {
+        // Get a vacant entry in the slab.
+        let vacant_entry = self.inner.bundle_id_to_transaction_ids.vacant_entry();
+        let bundle_id = vacant_entry.key();
+        vacant_entry.insert(transaction_ids);
+        bundle_id
+    }
 }
 
 impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
@@ -325,7 +388,12 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
     }
 
     #[inline]
-    fn pop(&mut self) -> Option<TransactionPriorityId> {
+    fn capacity(&self) -> usize {
+        self.inner.capacity()
+    }
+
+    #[inline]
+    fn pop(&mut self) -> Option<SchedulingUnitPriorityId> {
         self.inner.pop()
     }
 
@@ -343,20 +411,25 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
     }
 
     #[inline]
+    fn get_bundle_transaction_ids(&self, bundle_id: BundleId) -> Option<&Vec<TransactionId>> {
+        self.inner.get_bundle_transaction_ids(bundle_id)
+    }
+
+    #[inline]
     fn push_ids_into_queue(
         &mut self,
-        priority_ids: impl Iterator<Item = TransactionPriorityId>,
+        priority_ids: impl Iterator<Item = SchedulingUnitPriorityId>,
     ) -> usize {
         self.inner.push_ids_into_queue(priority_ids)
     }
 
     #[inline]
-    fn hold_transaction(&mut self, priority_id: TransactionPriorityId) {
+    fn hold_transaction(&mut self, priority_id: SchedulingUnitPriorityId) {
         self.inner.hold_transaction(priority_id);
     }
 
     #[inline]
-    fn remove_by_id(&mut self, id: TransactionId) {
+    fn remove_by_id(&mut self, id: SchedulingUnitId) {
         self.inner.remove_by_id(id);
     }
 
@@ -381,7 +454,10 @@ impl StateContainer<RuntimeTransactionView> for TransactionViewStateContainer {
 mod tests {
     use {
         super::*,
-        crate::banking_stage::scheduler_messages::MaxAge,
+        crate::banking_stage::{
+            scheduler_messages::MaxAge,
+            transaction_scheduler::scheduling_unit_priority_id::SchedulingUnitPriorityId,
+        },
         agave_transaction_view::transaction_view::SanitizedTransactionView,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_hash::Hash,
@@ -500,7 +576,7 @@ mod tests {
                     packet_parser(data, priority, cost)
                 })
                 .unwrap();
-            let priority_id = TransactionPriorityId::new(priority, id);
+            let priority_id = SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(id));
             assert_eq!(
                 container.push_ids_into_queue(std::iter::once(priority_id)),
                 0
@@ -517,7 +593,7 @@ mod tests {
                     packet_parser(data, priority, cost)
                 })
                 .unwrap();
-            let priority_id = TransactionPriorityId::new(priority, id);
+            let priority_id = SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(id));
             priority_ids.push(priority_id);
         }
         assert_eq!(container.push_ids_into_queue(priority_ids.into_iter()), 5);
@@ -536,7 +612,7 @@ mod tests {
                 packet_parser(data, priority, cost)
             })
             .unwrap();
-        let priority_id = TransactionPriorityId::new(priority, id);
+        let priority_id = SchedulingUnitPriorityId::new(priority, SchedulingUnitId::Transaction(id));
         assert_eq!(
             container.push_ids_into_queue(std::iter::once(priority_id)),
             1

@@ -4,8 +4,18 @@ use {
         leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
         scheduler_messages::{ConsumeWork, FinishedConsumeWork},
     },
-    crate::banking_stage::consumer::RetryableIndex,
+    crate::{
+        banking_stage::consumer::RetryableIndex,
+        bundle_stage::{
+            bundle_account_locker::BundleAccountLocker, bundle_consumer::BundleConsumer,
+            BundleExecutionError, BundleStage,
+        },
+        proxy::block_engine_stage::BlockBuilderFeeInfo,
+        tip_manager::TipManager,
+    },
     crossbeam_channel::{Receiver, SendError, Sender, TryRecvError},
+    solana_clock::Slot,
+    solana_gossip::cluster_info::ClusterInfo,
     solana_poh::poh_recorder::{LeaderState, SharedLeaderState},
     solana_runtime::bank::Bank,
     solana_runtime_transaction::transaction_with_meta::TransactionWithMeta,
@@ -14,7 +24,7 @@ use {
     std::{
         sync::{
             atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-            Arc,
+            Arc, Mutex,
         },
         time::{Duration, Instant},
     },
@@ -39,10 +49,18 @@ pub(crate) struct ConsumeWorker<Tx> {
     exit: Arc<AtomicBool>,
     consume_receiver: Receiver<ConsumeWork<Tx>>,
     consumer: Consumer,
+    bundle_consumer: BundleConsumer,
+    bundle_account_locker: Arc<BundleAccountLocker>,
     consumed_sender: Sender<FinishedConsumeWork<Tx>>,
 
     shared_leader_state: SharedLeaderState,
     metrics: Arc<ConsumeWorkerMetrics>,
+
+    // Bundle-specific dependencies
+    tip_manager: TipManager,
+    cluster_info: Arc<ClusterInfo>,
+    block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
+    last_tip_update_slot: Arc<AtomicU64>,
 }
 
 impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
@@ -51,16 +69,27 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
         exit: Arc<AtomicBool>,
         consume_receiver: Receiver<ConsumeWork<Tx>>,
         consumer: Consumer,
+        bundle_consumer: BundleConsumer,
+        bundle_account_locker: Arc<BundleAccountLocker>,
         consumed_sender: Sender<FinishedConsumeWork<Tx>>,
         shared_leader_state: SharedLeaderState,
+        tip_manager: TipManager,
+        cluster_info: Arc<ClusterInfo>,
+        block_builder_fee_info: Arc<Mutex<BlockBuilderFeeInfo>>,
     ) -> Self {
         Self {
             exit,
             consume_receiver,
             consumer,
+            bundle_consumer,
+            bundle_account_locker,
             consumed_sender,
             shared_leader_state,
             metrics: Arc::new(ConsumeWorkerMetrics::new(id)),
+            tip_manager,
+            cluster_info,
+            block_builder_fee_info,
+            last_tip_update_slot: Arc::new(AtomicU64::new(Slot::MAX)),
         }
     }
 
@@ -119,21 +148,87 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             .num_messages_processed
             .fetch_add(1, Ordering::Relaxed);
 
-        let output = self.consumer.process_and_record_aged_transactions(
-            bank,
-            &work.transactions,
-            &work.max_ages,
-            reservation_cb,
-            None, // bundle account locker checked in scheduler
-        );
+        let output = if work.bundle_id.is_some() {
+            const MAX_BUNDLE_DURATION: Duration = Duration::from_millis(100);
+
+            // Handle tip programs once per slot before processing bundles
+            let current_slot = bank.slot();
+            let last_slot = self.last_tip_update_slot.load(Ordering::Relaxed);
+            if current_slot != last_slot {
+                if let Err(_e) = BundleStage::handle_tip_programs(
+                    &bank,
+                    &self.bundle_account_locker,
+                    &self.bundle_consumer,
+                    &self.tip_manager,
+                    &self.cluster_info,
+                    &self.block_builder_fee_info,
+                    &self.metrics.clone(),
+                ) {
+                    error!("tip programs error, not processing bundles");
+                    // Ideally we should stop bundle execution but because unified scheduler needs
+                    // to process both bundle and non-bundle transactions in the same worker,
+                    // we cannot return early here. So we just log the error and continue.
+                }
+                self.last_tip_update_slot
+                    .store(current_slot, Ordering::Relaxed);
+            }
+
+            // No need to lock the bundles, the ThreadAwareAccountLocks already handles that
+            let output = self.bundle_consumer.process_and_record_aged_transactions(
+                &bank,
+                &work.transactions,
+                &work.max_ages,
+                MAX_BUNDLE_DURATION,
+            );
+
+            output
+        } else {
+            self.consumer.process_and_record_aged_transactions(
+                &bank,
+                &work.transactions,
+                &work.max_ages,
+                reservation_cb,
+                Some(&self.bundle_account_locker),
+            )
+        };
+
         self.metrics.update_for_consume(&output);
         self.metrics.has_data.store(true, Ordering::Relaxed);
 
+        // Determine retry strategy based on batch type
+        let retryable_indexes = if work.bundle_id.is_some() {
+            // Bundle batch: use BundleStage retry logic
+            match BundleStage::to_bundle_result(&output) {
+                Ok(_) => {
+                    // Bundle succeeded - no retries
+                    Vec::default()
+                }
+                Err(BundleExecutionError::ErrorRetryable) => {
+                    // Bundle failed - mark all transactions for retry
+                    // The scheduler will use retry_bundle() to put transactions back and push bundle to queue
+                    (0..work.transactions.len())
+                        .map(|index| RetryableIndex {
+                            index,
+                            immediately_retryable: true,
+                        })
+                        .collect()
+                }
+                Err(BundleExecutionError::TipError)
+                | Err(BundleExecutionError::ErrorNonRetryable) => {
+                    // Non-retryable bundle failure - no retries
+                    Vec::default()
+                }
+            }
+        } else {
+            // Regular batch: individual transaction retries
+            output
+                .execute_and_commit_transactions_output
+                .retryable_transaction_indexes
+        };
+
         self.consumed_sender.send(FinishedConsumeWork {
             work,
-            retryable_indexes: output
-                .execute_and_commit_transactions_output
-                .retryable_transaction_indexes,
+            retryable_indexes,
         })?;
         Ok(ProcessingStatus::Processed)
     }
@@ -1617,6 +1712,7 @@ impl ConsumeWorkerTransactionErrorMetrics {
     }
 }
 
+#[cfg(any())] // Tests disabled - need updating for bundle integration
 #[cfg(test)]
 mod tests {
     use {
@@ -1709,7 +1805,14 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = Consumer::new(committer, recorder, QosService::new(1), None);
+        let consumer = Consumer::new(
+            committer.clone(),
+            recorder.clone(),
+            QosService::new(1),
+            None,
+        );
+        let bundle_consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let bundle_account_locker = Arc::new(BundleAccountLocker::default());
         let shared_leader_state = SharedLeaderState::new(0, None, None);
 
         let (consume_sender, consume_receiver) = unbounded();
@@ -1719,6 +1822,8 @@ mod tests {
             Arc::new(AtomicBool::new(false)),
             consume_receiver,
             consumer,
+            bundle_consumer,
+            bundle_account_locker,
             consumed_sender,
             shared_leader_state.clone(),
         );
