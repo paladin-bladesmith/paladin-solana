@@ -45,6 +45,7 @@ impl BundlePacketDeserializer {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
             working_bank,
+            root_bank,
             enable_static_instruction_limit,
             transaction_account_lock_limit,
         )?;

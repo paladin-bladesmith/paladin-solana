@@ -74,7 +74,7 @@ impl BundleConsumer {
     // This is to avoid stealing of tips by malicious parties with bundles that crank the tip
     // payment program and set the tip receiver to themself.
     pub fn process_and_record_aged_transactions(
-        &mut self,
+        &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
@@ -146,7 +146,7 @@ impl BundleConsumer {
     }
 
     fn process_and_record_transactions_with_pre_results(
-        &mut self,
+        &self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_bundle_duration: Duration,

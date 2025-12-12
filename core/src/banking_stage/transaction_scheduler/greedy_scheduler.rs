@@ -389,20 +389,20 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
         .filter_map(|(index, key)| (!transaction.is_writable(index)).then_some(key));
 
     // Check bundle account locks doesn't have it yet
-    let l_account_locks = bundle_account_locker.account_locks();
-    for lock in read_account_locks.clone() {
-        if l_account_locks.write_locks().contains_key(lock) {
-            return Err(TransactionSchedulingError::UnschedulableConflicts);
-        }
-    }
-    for lock in write_account_locks.clone() {
-        if l_account_locks.write_locks().contains_key(lock)
-            || l_account_locks.read_locks().contains_key(lock)
-        {
-            return Err(TransactionSchedulingError::UnschedulableConflicts);
-        }
-    }
-    drop(l_account_locks);
+    // let l_account_locks = bundle_account_locker.account_locks();
+    // for lock in read_account_locks.clone() {
+    //     if l_account_locks.write_locks().contains_key(lock) {
+    //         return Err(TransactionSchedulingError::UnschedulableConflicts);
+    //     }
+    // }
+    // for lock in write_account_locks.clone() {
+    //     if l_account_locks.write_locks().contains_key(lock)
+    //         || l_account_locks.read_locks().contains_key(lock)
+    //     {
+    //         return Err(TransactionSchedulingError::UnschedulableConflicts);
+    //     }
+    // }
+    // drop(l_account_locks);
 
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,

@@ -155,7 +155,7 @@ impl<Tx: TransactionWithMeta> ConsumeWorker<Tx> {
             let current_slot = bank.slot();
             let last_slot = self.last_tip_update_slot.load(Ordering::Relaxed);
             if current_slot != last_slot {
-                if let Err(e) = BundleStage::handle_tip_programs(
+                if let Err(_e) = BundleStage::handle_tip_programs(
                     &bank,
                     &self.bundle_account_locker,
                     &self.bundle_consumer,

@@ -5,10 +5,6 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
 use {
-    crate::tip_manager::TipManagerConfig,
-    std::net::{Ipv4Addr, SocketAddrV4},
-};
-use {
     crate::{
         admin_rpc_post_init::{AdminRpcRequestMetadataPostInit, KeyUpdaterType, KeyUpdaters},
         banking_stage::{

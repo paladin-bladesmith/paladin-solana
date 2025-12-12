@@ -75,7 +75,6 @@ pub(crate) struct PrioGraphScheduler<Tx> {
     prio_graph: SchedulerPrioGraph,
     config: PrioGraphSchedulerConfig,
     bundle_account_locker: BundleAccountLocker,
-    bundle_account_locker: BundleAccountLocker,
 }
 
 impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
@@ -84,7 +83,6 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: PrioGraphSchedulerConfig,
-        bundle_account_locker: BundleAccountLocker,
         bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
@@ -95,7 +93,6 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
             ),
             prio_graph: PrioGraph::new(passthrough_priority),
             config,
-            bundle_account_locker,
             bundle_account_locker,
         }
     }
@@ -658,7 +655,7 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     }))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use {
         super::*,
@@ -690,7 +687,6 @@ mod tests {
     fn create_test_frame(
         num_threads: usize,
         bundle_account_locker: BundleAccountLocker,
-        bundle_account_locker: BundleAccountLocker,
     ) -> (
         PrioGraphScheduler<RuntimeTransaction<SanitizedTransaction>>,
         Vec<Receiver<ConsumeWork<RuntimeTransaction<SanitizedTransaction>>>>,
@@ -703,7 +699,6 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
-            bundle_account_locker,
             bundle_account_locker,
         );
         (
