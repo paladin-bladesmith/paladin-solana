@@ -166,7 +166,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         // Receive packet batches.
         let start = Instant::now();
         let timeout = self.get_timeout();
-        const PACKET_BURST_LIMIT: usize = 1000;
+        // const PACKET_BURST_LIMIT: usize = 1000;
 
         let mut stats = ReceivingStats::default();
 
@@ -196,16 +196,47 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             }
         }
 
-        while start.elapsed() < timeout && stats.num_received < PACKET_BURST_LIMIT {
-            match self.receiver.try_recv() {
-                Ok(packet_batch_message) => {
-                    stats.accumulate(self.batch_packets(packet_batch_message, decision));
+        if start.elapsed() < timeout {
+            loop {
+                let mut packets_empty = false;
+                let mut bundles_empty = false;
+
+                // Check transaction packets channel
+                match self.receiver.try_recv() {
+                    Ok(packet_batch_message) => {
+                        stats.accumulate(self.batch_packets(packet_batch_message, decision));
+                    }
+                    Err(TryRecvError::Empty) => packets_empty = true,
+                    Err(TryRecvError::Disconnected) => {
+                        return (!self.batch.is_empty())
+                            .then_some(stats)
+                            .ok_or(DisconnectedError);
+                    }
                 }
-                Err(TryRecvError::Empty) => return Ok(stats),
-                Err(TryRecvError::Disconnected) => {
-                    return (!self.batch.is_empty())
-                        .then_some(stats)
-                        .ok_or(DisconnectedError);
+
+                // Also check bundles channel for parallel receiving
+                match self.verified_bundle_receiver.try_recv() {
+                    Ok(bundle) => {
+                        if self.bundle_batch.is_empty() && self.batch.is_empty() {
+                            self.batch_start = Instant::now();
+                        }
+                        self.bundle_batch.push(bundle);
+                    }
+                    Err(TryRecvError::Empty) => bundles_empty = true,
+                    Err(TryRecvError::Disconnected) => {
+                        // Bundle channel disconnected, continue with packets only
+                        bundles_empty = true;
+                    }
+                }
+
+                // Break if both channels are empty
+                if packets_empty && bundles_empty {
+                    break;
+                }
+
+                // Check if we've exceeded the timeout
+                if start.elapsed() >= timeout {
+                    break;
                 }
             }
         }
@@ -219,7 +250,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         decision: &BufferedPacketsDecision,
     ) -> Result<ReceivingStats, DisconnectedError> {
         let start = Instant::now();
-        let stats = ReceivingStats::default();
+        let mut stats = ReceivingStats::default();
         let timeout = self.get_timeout();
 
         // If not leader/unknown, do a blocking-receive initially. This lets
@@ -244,19 +275,47 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             }
         }
 
-        while start.elapsed() < timeout {
-            match self.verified_bundle_receiver.try_recv() {
-                Ok(bundle) => {
-                    if self.bundle_batch.is_empty() {
-                        self.batch_start = Instant::now();
+        if start.elapsed() < timeout {
+            loop {
+                let mut packets_empty = false;
+                let mut bundles_empty = false;
+
+                // Check bundles channel
+                match self.verified_bundle_receiver.try_recv() {
+                    Ok(bundle) => {
+                        if self.bundle_batch.is_empty() && self.batch.is_empty() {
+                            self.batch_start = Instant::now();
+                        }
+                        self.bundle_batch.push(bundle);
                     }
-                    self.bundle_batch.push(bundle);
+                    Err(TryRecvError::Empty) => bundles_empty = true,
+                    Err(TryRecvError::Disconnected) => {
+                        return (!self.bundle_batch.is_empty())
+                            .then_some(stats)
+                            .ok_or(DisconnectedError);
+                    }
                 }
-                Err(TryRecvError::Empty) => return Ok(stats),
-                Err(TryRecvError::Disconnected) => {
-                    return (!self.bundle_batch.is_empty())
-                        .then_some(stats)
-                        .ok_or(DisconnectedError);
+
+                // Also check packets channel for parallel receiving
+                match self.receiver.try_recv() {
+                    Ok(packet_batch_message) => {
+                        stats.accumulate(self.batch_packets(packet_batch_message, decision));
+                    }
+                    Err(TryRecvError::Empty) => packets_empty = true,
+                    Err(TryRecvError::Disconnected) => {
+                        // Packets channel disconnected, continue with bundles only
+                        packets_empty = true;
+                    }
+                }
+
+                // Break if both channels are empty
+                if packets_empty && bundles_empty {
+                    break;
+                }
+
+                // Check if we've exceeded the timeout
+                if start.elapsed() >= timeout {
+                    break;
                 }
             }
         }
@@ -269,8 +328,7 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         container: &mut Self::Container,
         decision: &BufferedPacketsDecision,
     ) -> BufferStats {
-        if !self.batch.is_empty()
-            || !self.bundle_batch.is_empty() && self.batch_start.elapsed() >= self.batch_interval
+        if self.batch_start.elapsed() >= self.batch_interval
         {
             let (root_bank, working_bank) = {
                 let bank_forks = self.bank_forks.read().unwrap();
@@ -351,13 +409,8 @@ impl TransactionViewReceiveAndBuffer {
     ///
     /// If batch is empty, return default timeout
     fn get_timeout(&self) -> Duration {
-        if !self.batch.is_empty() {
-            // if self.batch_start.elapsed() >= self.batch_interval {
+        if !self.batch.is_empty() && !self.bundle_batch.is_empty() {
                 Duration::ZERO
-            // } else {
-            //     self.batch_interval
-            //         .saturating_sub(self.batch_start.elapsed())
-            // }
         } else {
             Duration::from_millis(10)
         }
@@ -381,7 +434,7 @@ impl TransactionViewReceiveAndBuffer {
 
         // If this is the first packet in the batch, set the start timestamp for
         // the batch.
-        if self.batch.is_empty() {
+        if self.batch.is_empty() && self.bundle_batch.is_empty() {
             self.batch_start = Instant::now();
         }
 

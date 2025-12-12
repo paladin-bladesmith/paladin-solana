@@ -177,15 +177,14 @@ where
 
             self.receive_completed()?;
             self.process_transactions(&decision, cost_pacer.as_ref(), &now)?;
-            self.receive_and_buffer
-                .maybe_queue_batch(&mut self.container, &decision);
             if self.receive_and_buffer_packets(&decision).is_err() {
                 break;
             }
             if self.receive_and_buffer.receive_and_buffer_bundles(&mut self.container, &decision).is_err(){
-                // We don't really care about the errors from bundles
-                // Not right now
+                break;
             }
+            self.receive_and_buffer
+                .maybe_queue_batch(&mut self.container, &decision);
             // Report metrics only if there is data.
             // Reset intervals when appropriate, regardless of report.
             let should_report = self.count_metrics.interval_has_data();
