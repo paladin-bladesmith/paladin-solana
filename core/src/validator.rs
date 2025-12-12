@@ -1,5 +1,8 @@
 //! The `validator` module hosts all the validator microservices.
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+
+use crate::tip_manager::TipManagerConfig;
 pub use solana_perf::report_target_features;
 use {
     crate::tip_manager::TipManagerConfig,

@@ -75,6 +75,7 @@ pub(crate) struct PrioGraphScheduler<Tx> {
     prio_graph: SchedulerPrioGraph,
     config: PrioGraphSchedulerConfig,
     bundle_account_locker: BundleAccountLocker,
+    bundle_account_locker: BundleAccountLocker,
 }
 
 impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
@@ -83,6 +84,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
         consume_work_senders: Vec<Sender<ConsumeWork<Tx>>>,
         finished_consume_work_receiver: Receiver<FinishedConsumeWork<Tx>>,
         config: PrioGraphSchedulerConfig,
+        bundle_account_locker: BundleAccountLocker,
         bundle_account_locker: BundleAccountLocker,
     ) -> Self {
         Self {
@@ -93,6 +95,7 @@ impl<Tx: TransactionWithMeta> PrioGraphScheduler<Tx> {
             ),
             prio_graph: PrioGraph::new(passthrough_priority),
             config,
+            bundle_account_locker,
             bundle_account_locker,
         }
     }
@@ -611,6 +614,22 @@ fn try_schedule_transaction<Tx: TransactionWithMeta>(
     }
     drop(l_account_locks);
 
+    // Check bundle account locks doesn't have it yet
+    let l_account_locks = bundle_account_locker.account_locks();
+    for lock in read_account_locks.clone() {
+        if l_account_locks.write_locks().contains_key(lock) {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+    }
+    for lock in write_account_locks.clone() {
+        if l_account_locks.write_locks().contains_key(lock)
+            || l_account_locks.read_locks().contains_key(lock)
+        {
+            return Err(TransactionSchedulingError::UnschedulableConflicts);
+        }
+    }
+    drop(l_account_locks);
+
     let thread_id = match account_locks.try_lock_accounts(
         write_account_locks,
         read_account_locks,
@@ -651,14 +670,17 @@ mod tests {
         itertools::Itertools,
         solana_compute_budget_interface::ComputeBudgetInstruction,
         solana_genesis_config::GenesisConfig,
+        solana_genesis_config::GenesisConfig,
         solana_hash::Hash,
         solana_keypair::Keypair,
         solana_message::Message,
         solana_pubkey::Pubkey,
         solana_runtime::bank::Bank,
+        solana_runtime::bank::Bank,
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_interface::instruction as system_instruction,
+        solana_system_transaction::transfer,
         solana_system_transaction::transfer,
         solana_transaction::{sanitized::SanitizedTransaction, Transaction},
         std::borrow::Borrow,
@@ -667,6 +689,7 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn create_test_frame(
         num_threads: usize,
+        bundle_account_locker: BundleAccountLocker,
         bundle_account_locker: BundleAccountLocker,
     ) -> (
         PrioGraphScheduler<RuntimeTransaction<SanitizedTransaction>>,
@@ -680,6 +703,7 @@ mod tests {
             consume_work_senders,
             finished_consume_work_receiver,
             PrioGraphSchedulerConfig::default(),
+            bundle_account_locker,
             bundle_account_locker,
         );
         (
@@ -786,6 +810,8 @@ mod tests {
     fn test_schedule_disconnected_channel() {
         let (mut scheduler, work_receivers, _finished_work_sender) =
             create_test_frame(1, BundleAccountLocker::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(1, BundleAccountLocker::default());
         let mut container = create_container([(&Keypair::new(), &[Pubkey::new_unique()], 1, 1)]);
 
         drop(work_receivers); // explicitly drop receivers
@@ -802,6 +828,8 @@ mod tests {
 
     #[test]
     fn test_schedule_single_threaded_no_conflicts() {
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(1, BundleAccountLocker::default());
         let (mut scheduler, work_receivers, _finished_work_sender) =
             create_test_frame(1, BundleAccountLocker::default());
         let mut container = create_container([
@@ -826,6 +854,8 @@ mod tests {
     fn test_schedule_budget() {
         let (mut scheduler, _work_receivers, _finished_work_sender) =
             create_test_frame(1, BundleAccountLocker::default());
+        let (mut scheduler, _work_receivers, _finished_work_sender) =
+            create_test_frame(1, BundleAccountLocker::default());
         let mut container = create_container([
             (&Keypair::new(), &[Pubkey::new_unique()], 1, 1),
             (&Keypair::new(), &[Pubkey::new_unique()], 2, 2),
@@ -845,6 +875,8 @@ mod tests {
 
     #[test]
     fn test_schedule_single_threaded_conflict() {
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(1, BundleAccountLocker::default());
         let (mut scheduler, work_receivers, _finished_work_sender) =
             create_test_frame(1, BundleAccountLocker::default());
         let pubkey = Pubkey::new_unique();
@@ -868,6 +900,8 @@ mod tests {
 
     #[test]
     fn test_schedule_consume_single_threaded_multi_batch() {
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(1, BundleAccountLocker::default());
         let (mut scheduler, work_receivers, _finished_work_sender) =
             create_test_frame(1, BundleAccountLocker::default());
         let mut container = create_container(
@@ -901,6 +935,8 @@ mod tests {
     fn test_schedule_simple_thread_selection() {
         let (mut scheduler, work_receivers, _finished_work_sender) =
             create_test_frame(2, BundleAccountLocker::default());
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(2, BundleAccountLocker::default());
         let mut container =
             create_container((0..4).map(|i| (Keypair::new(), [Pubkey::new_unique()], 1, i)));
 
@@ -920,6 +956,8 @@ mod tests {
 
     #[test]
     fn test_schedule_priority_guard() {
+        let (mut scheduler, work_receivers, finished_work_sender) =
+            create_test_frame(2, BundleAccountLocker::default());
         let (mut scheduler, work_receivers, finished_work_sender) =
             create_test_frame(2, BundleAccountLocker::default());
         // intentionally shorten the look-ahead window to cause unschedulable conflicts
@@ -1003,6 +1041,8 @@ mod tests {
     fn test_schedule_over_full_container() {
         let (mut scheduler, _work_receivers, _finished_work_sender) =
             create_test_frame(1, BundleAccountLocker::default());
+        let (mut scheduler, _work_receivers, _finished_work_sender) =
+            create_test_frame(1, BundleAccountLocker::default());
 
         // set up a container is larger enough that single pass of schedulling will not deplete it.
         let capacity = scheduler
@@ -1042,6 +1082,68 @@ mod tests {
             post_schedule_remaining_ids,
             capacity - expected_num_scheduled
         );
+    }
+
+    #[test]
+    fn test_schedule_with_bundle_account_locker() {
+        let bundle_account_locker = BundleAccountLocker::default();
+        let bank = Bank::new_for_tests(&GenesisConfig::default());
+
+        let keypair_1 = Keypair::new();
+        let keypair_2 = Keypair::new();
+        let tx_1_a = transfer(&keypair_1, &keypair_1.pubkey(), 1, Hash::default());
+        let tx_1_b = transfer(&keypair_1, &keypair_1.pubkey(), 2, Hash::default());
+        let tx_2_a = transfer(&keypair_2, &keypair_2.pubkey(), 1, Hash::default());
+        let tx_2_b = transfer(&keypair_2, &keypair_2.pubkey(), 2, Hash::default());
+
+        let runtime_tx_1_a = RuntimeTransaction::from_transaction_for_tests(tx_1_a);
+        let runtime_tx_1_b = RuntimeTransaction::from_transaction_for_tests(tx_1_b);
+        let runtime_tx_1_b = vec![runtime_tx_1_b];
+        let runtime_tx_2_a = RuntimeTransaction::from_transaction_for_tests(tx_2_a);
+        let runtime_tx_2_b = RuntimeTransaction::from_transaction_for_tests(tx_2_b);
+        let runtime_tx_2_b = vec![runtime_tx_2_b];
+
+        let (mut scheduler, work_receivers, _finished_work_sender) =
+            create_test_frame(1, bundle_account_locker.clone());
+
+        let mut container = TransactionStateContainer::with_capacity(10 * 1024);
+        container.insert_new_transaction(runtime_tx_1_a, MaxAge::MAX, 1, 5000);
+        container.insert_new_transaction(runtime_tx_2_a, MaxAge::MAX, 1, 5000);
+
+        bundle_account_locker
+            .lock_bundle(&runtime_tx_1_b, &bank)
+            .unwrap();
+
+        let scheduling_summary = scheduler
+            .schedule(
+                &mut container,
+                u64::MAX, // no budget
+                test_pre_graph_filter,
+                test_pre_lock_filter,
+            )
+            .unwrap();
+        assert_eq!(scheduling_summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![1]]);
+        bundle_account_locker
+            .unlock_bundle(&runtime_tx_1_b, &bank)
+            .unwrap();
+
+        bundle_account_locker
+            .lock_bundle(&runtime_tx_2_b, &bank)
+            .unwrap();
+        let scheduling_summary = scheduler
+            .schedule(
+                &mut container,
+                u64::MAX, // no budget
+                test_pre_graph_filter,
+                test_pre_lock_filter,
+            )
+            .unwrap();
+        assert_eq!(scheduling_summary.num_scheduled, 1);
+        assert_eq!(collect_work(&work_receivers[0]).1, [vec![0]]);
+        bundle_account_locker
+            .unlock_bundle(&runtime_tx_2_b, &bank)
+            .unwrap();
     }
 
     #[test]

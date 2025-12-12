@@ -1581,36 +1581,29 @@ mod tests {
                     transaction_recorder,
                     poh_service,
                     entry_receiver,
-                ) = create_test_recorder(bank.clone(), blockstore.clone(), None, None);
+                ) = create_test_recorder(bank.clone(), blockstore, None, None);
 
                 let (replay_vote_sender, _replay_vote_receiver) = unbounded();
 
                 let blacklisted_keypair = Keypair::new();
 
-                let (cluster_info, bundle_receiver, block_builder_fee_info, tip_manager) =
-                    create_test_bundle_infrastructure(&blockstore, &bank);
-
                 let banking_stage = BankingStage::new_num_threads(
-                    cluster_info,
                     block_production_method.clone(),
                     poh_recorder,
                     transaction_recorder,
                     non_vote_receiver,
                     tpu_vote_receiver,
                     gossip_vote_receiver,
-                    bundle_receiver,
                     DEFAULT_NUM_WORKERS,
                     SchedulerConfig::default(),
                     None,
                     replay_vote_sender,
                     None,
                     bank_forks.clone(), // keep a local-copy of bank-forks so worker threads do not lose weak access to bank-forks
-                    &block_builder_fee_info,
                     Arc::new(PrioritizationFeeCache::new(0u64)),
                     HashSet::from_iter([blacklisted_keypair.pubkey()]),
-                    tip_manager,
                     BundleAccountLocker::default(),
-                    Duration::ZERO,
+                        Duration::ZERO,
                 );
 
                 // bad tx

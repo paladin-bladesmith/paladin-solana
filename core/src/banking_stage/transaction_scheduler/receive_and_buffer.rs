@@ -35,6 +35,7 @@ use {
     solana_fee_structure::FeeBudgetLimits,
     solana_message::v0::LoadedAddresses,
     solana_pubkey::Pubkey,
+    solana_pubkey::Pubkey,
     solana_runtime::{bank::Bank, bank_forks::BankForks},
     solana_runtime_transaction::{
         runtime_transaction::RuntimeTransaction, transaction_meta::StaticMeta,
@@ -57,6 +58,7 @@ pub(crate) struct DisconnectedError;
 /// Stats/metrics returned by `receive_and_buffer_packets`.
 #[cfg_attr(feature = "dev-context-only-utils", qualifiers(pub))]
 #[derive(Default)]
+#[derive(Default)]
 pub(crate) struct ReceivingStats {
     pub num_received: usize,
     /// Count of packets that passed sigverify but were dropped
@@ -72,6 +74,7 @@ pub(crate) struct ReceivingStats {
     pub num_dropped_on_fee_payer: usize,
     pub num_dropped_on_capacity: usize,
     pub num_buffered: usize,
+    pub num_dropped_on_blacklisted_account: usize,
     pub num_dropped_on_blacklisted_account: usize,
     pub receive_time_us: u64,
     pub buffer_time_us: u64,
@@ -91,9 +94,27 @@ impl ReceivingStats {
         self.num_dropped_on_capacity += other.num_dropped_on_capacity;
         self.num_buffered += other.num_buffered;
         self.num_dropped_on_blacklisted_account += other.num_dropped_on_blacklisted_account;
+        self.num_dropped_on_blacklisted_account += other.num_dropped_on_blacklisted_account;
         self.receive_time_us += other.receive_time_us;
         self.buffer_time_us += other.buffer_time_us;
     }
+}
+
+#[allow(unused)]
+#[derive(Default)]
+pub struct BufferStats {
+    num_received: usize,
+    num_dropped_without_parsing: usize,
+    num_dropped_on_sanitization: usize,
+    num_dropped_on_lock_validation: usize,
+    num_dropped_on_compute_budget: usize,
+    num_dropped_on_age: usize,
+    num_dropped_on_already_processed: usize,
+    num_dropped_on_fee_payer: usize,
+    num_dropped_on_capacity: usize,
+    num_buffered: usize,
+    num_dropped_on_blacklisted_account: usize,
+    buffer_time_us: u64,
 }
 
 #[allow(unused)]
@@ -169,6 +190,10 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
         const PACKET_BURST_LIMIT: usize = 1000;
 
         let mut stats = ReceivingStats::default();
+        let timeout = self.get_timeout();
+        const PACKET_BURST_LIMIT: usize = 1000;
+
+        let mut stats = ReceivingStats::default();
 
         // If not leader/unknown, do a blocking-receive initially. This lets
         // the thread sleep until a message is received, or until the timeout.
@@ -184,11 +209,17 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
             //       received - as long as sleep is somewhat short, this should be
             //       fine.
             match self.receiver.recv_timeout(timeout) {
+            match self.receiver.recv_timeout(timeout) {
                 Ok(packet_batch_message) => {
+                    stats.accumulate(self.batch_packets(packet_batch_message, decision));
                     stats.accumulate(self.batch_packets(packet_batch_message, decision));
                 }
                 Err(RecvTimeoutError::Timeout) => return Ok(stats),
+                Err(RecvTimeoutError::Timeout) => return Ok(stats),
                 Err(RecvTimeoutError::Disconnected) => {
+                    return (!self.batch.is_empty())
+                        .then_some(stats)
+                        .ok_or(DisconnectedError);
                     return (!self.batch.is_empty())
                         .then_some(stats)
                         .ok_or(DisconnectedError);
@@ -316,10 +347,13 @@ impl ReceiveAndBuffer for TransactionViewReceiveAndBuffer {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum PacketHandlingError {
+#[derive(Debug, PartialEq, Eq)]
+pub enum PacketHandlingError {
     Sanitization,
     LockValidation,
     ComputeBudget,
     ALTResolution,
+    BlacklistedAccount,
     BlacklistedAccount,
 }
 
@@ -491,11 +525,15 @@ impl TransactionViewReceiveAndBuffer {
 
     /// Return number of received packets.
     fn handle_batch_of_packet_batch_messages(
+    fn handle_batch_of_packet_batch_messages(
         &mut self,
         container: &mut TransactionViewStateContainer,
         decision: &BufferedPacketsDecision,
         root_bank: &Bank,
         working_bank: &Bank,
+    ) -> BufferStats {
+        let packet_batch_messages: Vec<BankingPacketBatch> = self.batch.drain(..).collect();
+
     ) -> BufferStats {
         let packet_batch_messages: Vec<BankingPacketBatch> = self.batch.drain(..).collect();
 
@@ -593,6 +631,13 @@ impl TransactionViewReceiveAndBuffer {
             .flat_map(|arc| arc.iter())
             .collect();
         for packet_batch in flatted_messages {
+        let mut num_dropped_on_blacklisted_account = 0;
+
+        let flatted_messages: Vec<&PacketBatch> = packet_batch_messages
+            .iter()
+            .flat_map(|arc| arc.iter())
+            .collect();
+        for packet_batch in flatted_messages {
             for packet in packet_batch.iter() {
                 let Some(packet_data) = packet.data(..) else {
                     continue;
@@ -613,6 +658,7 @@ impl TransactionViewReceiveAndBuffer {
                             enable_static_instruction_limit,
                             transaction_account_lock_limit,
                             &self.blacklisted_accounts,
+                            &self.blacklisted_accounts,
                         ) {
                             Ok(state) => Ok(state),
                             Err(
@@ -628,6 +674,10 @@ impl TransactionViewReceiveAndBuffer {
                             }
                             Err(PacketHandlingError::ComputeBudget) => {
                                 num_dropped_on_compute_budget += 1;
+                                Err(())
+                            }
+                            Err(PacketHandlingError::BlacklistedAccount) => {
+                                num_dropped_on_blacklisted_account += 1;
                                 Err(())
                             }
                             Err(PacketHandlingError::BlacklistedAccount) => {
@@ -659,7 +709,10 @@ impl TransactionViewReceiveAndBuffer {
 
         BufferStats {
             num_received: 0,
+        BufferStats {
+            num_received: 0,
             num_dropped_without_parsing,
+            num_dropped_on_sanitization: num_dropped_on_parsing_and_sanitization,
             num_dropped_on_sanitization: num_dropped_on_parsing_and_sanitization,
             num_dropped_on_lock_validation,
             num_dropped_on_compute_budget,
@@ -668,6 +721,7 @@ impl TransactionViewReceiveAndBuffer {
             num_dropped_on_fee_payer,
             num_dropped_on_capacity,
             num_buffered,
+            num_dropped_on_blacklisted_account,
             num_dropped_on_blacklisted_account,
             buffer_time_us: start.elapsed().as_micros() as u64,
         }
@@ -680,9 +734,11 @@ impl TransactionViewReceiveAndBuffer {
         enable_static_instruction_limit: bool,
         transaction_account_lock_limit: usize,
         blacklisted_accounts: &HashSet<Pubkey>,
+        blacklisted_accounts: &HashSet<Pubkey>,
     ) -> Result<TransactionViewState, PacketHandlingError> {
         let (view, deactivation_slot) = translate_to_runtime_view(
             bytes,
+            working_bank,
             root_bank,
             enable_static_instruction_limit,
             transaction_account_lock_limit,
@@ -694,6 +750,14 @@ impl TransactionViewReceiveAndBuffer {
         .is_err()
         {
             return Err(PacketHandlingError::LockValidation);
+        }
+
+        if view
+            .account_keys()
+            .iter()
+            .any(|account| blacklisted_accounts.contains(account))
+        {
+            return Err(PacketHandlingError::BlacklistedAccount);
         }
 
         if view
@@ -725,7 +789,8 @@ impl TransactionViewReceiveAndBuffer {
 /// ALT deactivation, if any. If no minimum slot, Slot::MAX is returned.
 pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     data: D,
-    bank: &Bank,
+    working_bank: &Bank,
+    root_bank: &Bank,
     enable_static_instruction_limit: bool,
     transaction_account_lock_limit: usize,
 ) -> Result<(RuntimeTransaction<ResolvedTransactionView<D>>, u64), PacketHandlingError> {
@@ -745,7 +810,7 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
     };
 
     // Discard non-vote packets if in vote-only mode.
-    if bank.vote_only_bank() && !view.is_simple_vote_transaction() {
+    if working_bank.vote_only_bank() && !view.is_simple_vote_transaction() {
         return Err(PacketHandlingError::Sanitization);
     }
 
@@ -753,12 +818,12 @@ pub(crate) fn translate_to_runtime_view<D: TransactionData>(
         return Err(PacketHandlingError::LockValidation);
     }
 
-    let (loaded_addresses, deactivation_slot) = load_addresses_for_view(&view, bank)?;
+    let (loaded_addresses, deactivation_slot) = load_addresses_for_view(&view, root_bank)?;
 
     let Ok(view) = RuntimeTransaction::<ResolvedTransactionView<_>>::try_from(
         view,
         loaded_addresses,
-        bank.get_reserved_account_keys(),
+        root_bank.get_reserved_account_keys(),
     ) else {
         return Err(PacketHandlingError::Sanitization);
     };
@@ -889,6 +954,7 @@ fn extract_transfer<'a>(
 /// period, i.e. the transaction's address lookups are valid until
 /// AT LEAST this slot.
 pub(crate) fn calculate_max_age(
+pub(crate) fn calculate_max_age(
     sanitized_epoch: Epoch,
     deactivation_slot: Slot,
     current_slot: Slot,
@@ -944,6 +1010,7 @@ mod tests {
         bundle_receiver: Receiver<VerifiedPacketBundle>,
         bank_forks: Arc<RwLock<BankForks>>,
         blacklisted_accounts: HashSet<Pubkey>,
+        blacklisted_accounts: HashSet<Pubkey>,
     ) -> (
         TransactionViewReceiveAndBuffer,
         TransactionViewStateContainer,
@@ -988,6 +1055,27 @@ mod tests {
         let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
         (receive_and_buffer, container)
     }
+
+    // fn setup_transaction_view_receive_and_buffer_with_batching(
+    //     receiver: Receiver<BankingPacketBatch>,
+    //     bank_forks: Arc<RwLock<BankForks>>,
+    //     blacklisted_accounts: HashSet<Pubkey>,
+    // ) -> (
+    //     TransactionViewReceiveAndBuffer,
+    //     TransactionViewStateContainer,
+    // ) {
+    //     let receive_and_buffer = TransactionViewReceiveAndBuffer {
+    //         receiver,
+    //         bank_forks,
+    //         blacklisted_accounts,
+
+    //         batch: Vec::default(),
+    //         batch_start: Instant::now(),
+    //         batch_interval: BATCH_PERIOD,
+    //     };
+    //     let container = TransactionViewStateContainer::with_capacity(TEST_CONTAINER_CAPACITY);
+    //     (receive_and_buffer, container)
+    // }
 
     // verify container state makes sense:
     // 1. Number of transactions matches expectation
@@ -1089,6 +1177,7 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(
                 &mut container,
@@ -1150,6 +1239,7 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1165,6 +1255,7 @@ mod tests {
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
 
+        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
         receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
         verify_container(&mut container, 0);
     }
@@ -1200,6 +1291,7 @@ mod tests {
             num_buffered,
             receive_time_us: _,
             buffer_time_us: _,
+            num_dropped_on_blacklisted_account: _,
             num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
@@ -1267,6 +1359,7 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1277,10 +1370,23 @@ mod tests {
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
+        assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_age,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_age, 1);
 
         // We need to queue the batch
         let BufferStats {
@@ -1333,6 +1439,7 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1345,8 +1452,21 @@ mod tests {
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
+        assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_fee_payer,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_fee_payer, 1);
 
         // We need to queue the batch
         let BufferStats {
@@ -1413,12 +1533,15 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
         assert_eq!(num_received, 1);
 
+
         assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
@@ -1428,6 +1551,21 @@ mod tests {
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
 
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_without_parsing,
+            num_dropped_on_sanitization,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_without_parsing, 0);
+        assert_eq!(num_dropped_on_sanitization, 1);
+
+        // Nothing should be included in the container
         // We need to queue the batch
         let BufferStats {
             num_received,
@@ -1482,11 +1620,13 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
 
         assert_eq!(num_received, 1);
+
 
         assert_eq!(num_dropped_without_parsing, 0);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
@@ -1496,6 +1636,10 @@ mod tests {
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
+        assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
         assert_eq!(num_buffered, 0);
 
         // We need to queue the batch
@@ -1544,6 +1688,7 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1568,9 +1713,23 @@ mod tests {
         } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
 
         assert_eq!(num_received, 0);
+        assert!(num_dropped_on_capacity == 0);
+        assert_eq!(num_buffered, 0);
+
+        // We need to queue the batch
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_capacity,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
         assert_eq!(num_buffered, num_transactions);
         assert!(num_dropped_on_capacity > 0);
+        assert!(num_dropped_on_capacity > 0);
 
+        // assert_eq!(num_buffered, num_transactions);
         // assert_eq!(num_buffered, num_transactions);
         verify_container(&mut container, TEST_CONTAINER_CAPACITY);
     }
@@ -1643,6 +1802,7 @@ mod tests {
             receive_time_us: _,
             buffer_time_us: _,
             num_dropped_on_blacklisted_account: _,
+            num_dropped_on_blacklisted_account: _,
         } = receive_and_buffer
             .receive_and_buffer_packets(&mut container, &BufferedPacketsDecision::Hold)
             .unwrap();
@@ -1651,12 +1811,24 @@ mod tests {
         assert_eq!(num_dropped_without_parsing, 0);
         assert_eq!(num_dropped_on_parsing_and_sanitization, 0);
         assert_eq!(num_dropped_on_lock_validation, 0);
+        assert_eq!(num_dropped_on_lock_validation, 0);
         assert_eq!(num_dropped_on_compute_budget, 0);
         assert_eq!(num_dropped_on_age, 0);
         assert_eq!(num_dropped_on_already_processed, 0);
         assert_eq!(num_dropped_on_fee_payer, 0);
         assert_eq!(num_dropped_on_capacity, 0);
         assert_eq!(num_buffered, 0);
+
+        let BufferStats {
+            num_received,
+            num_buffered,
+            num_dropped_on_lock_validation,
+            ..
+        } = receive_and_buffer.maybe_queue_batch(&mut container, &BufferedPacketsDecision::Hold);
+
+        assert_eq!(num_received, 0);
+        assert_eq!(num_buffered, 0);
+        assert_eq!(num_dropped_on_lock_validation, 1);
 
         let BufferStats {
             num_received,

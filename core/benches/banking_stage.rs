@@ -1,6 +1,8 @@
 #![allow(clippy::arithmetic_side_effects)]
 #![feature(test)]
 
+use solana_core::banking_stage::DEFAULT_BATCH_INTERVAL;
+
 use {
     agave_banking_stage_ingress_types::BankingPacketBatch,
     solana_core::{

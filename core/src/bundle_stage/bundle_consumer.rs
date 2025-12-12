@@ -1,17 +1,14 @@
 use {
-    crate::{
-        banking_stage::{
-            committer::{CommitTransactionDetails, Committer},
-            consumer::{
-                ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
-                ProcessTransactionBatchOutput, RetryableIndex,
-            },
-            leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
-            qos_service::QosService,
-            scheduler_messages::MaxAge,
+    crate::{banking_stage::{
+        committer::{CommitTransactionDetails, Committer},
+        consumer::{
+            ExecuteAndCommitTransactionsOutput, LeaderProcessedTransactionCounts,
+            ProcessTransactionBatchOutput, RetryableIndex,
         },
-        bundle_stage::front_run_identifier,
-    },
+        leader_slot_timing_metrics::LeaderExecuteAndCommitTimings,
+        qos_service::QosService,
+        scheduler_messages::MaxAge,
+    }, bundle_stage::front_run_identifier},
     itertools::Itertools,
     solana_clock::MAX_PROCESSING_AGE,
     solana_measure::measure_us,
@@ -77,7 +74,7 @@ impl BundleConsumer {
     // This is to avoid stealing of tips by malicious parties with bundles that crank the tip
     // payment program and set the tip receiver to themself.
     pub fn process_and_record_aged_transactions(
-        &self,
+        &mut self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_ages: &[MaxAge],
@@ -149,7 +146,7 @@ impl BundleConsumer {
     }
 
     fn process_and_record_transactions_with_pre_results(
-        &self,
+        &mut self,
         bank: &Bank,
         txs: &[impl TransactionWithMeta],
         max_bundle_duration: Duration,
@@ -350,12 +347,21 @@ impl BundleConsumer {
         } = load_and_execute_transactions_output;
 
         // BundleStage: all transactions must execute successfully to be committed
-        if processing_results.iter().any(|result| result.is_err()) {
+        // If any pre-filter check is an error or there's any tx that executed but failed
+        if processing_results.iter().any(|result| {
+            result.is_err() || (result.is_ok() && result.as_ref().unwrap().status().is_err())
+        }) {
             let commit_transactions_result = processing_results
                 .iter()
                 .map(|r| match r {
-                    Ok(_) => {
-                        CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+                    Ok(executed_tx) => {
+                        if let Err(e) = executed_tx.status() {
+                            CommitTransactionDetails::NotCommitted(e)
+                        } else {
+                            CommitTransactionDetails::NotCommitted(
+                                TransactionError::CommitCancelled,
+                            )
+                        }
                     }
                     Err(err) => CommitTransactionDetails::NotCommitted(err.clone()),
                 })
@@ -402,7 +408,7 @@ impl BundleConsumer {
                 .processed_with_successful_result_count,
             attempted_processing_count: processing_results.len() as u64,
         };
-        // let i = batch.sanitized_transactions().iter().map(|x| {x.signatures()});
+// let i = batch.sanitized_transactions().iter().map(|x| {x.signatures()});
         let (processed_transactions, processing_results_to_transactions_us) =
             measure_us!(processing_results
                 .iter()
@@ -418,7 +424,7 @@ impl BundleConsumer {
 
         if front_run_identifier::is_bundle_front_run(&processed_transactions, &processing_results) {
             todo!()
-        }
+        }       
 
         let (freeze_lock, freeze_lock_us) = measure_us!(bank.freeze_lock());
         execute_and_commit_timings.freeze_lock_us = freeze_lock_us;
@@ -544,7 +550,9 @@ mod tests {
         solana_runtime_transaction::runtime_transaction::RuntimeTransaction,
         solana_signer::Signer,
         solana_system_transaction::transfer,
-        solana_transaction::{sanitized::SanitizedTransaction, Transaction, TransactionError},
+        solana_transaction::{
+            sanitized::SanitizedTransaction, InstructionError, Transaction, TransactionError,
+        },
         std::{sync::Arc, time::Duration},
     };
 
@@ -620,7 +628,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -678,7 +686,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -737,7 +745,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -809,7 +817,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -885,7 +893,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -952,7 +960,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1034,7 +1042,7 @@ mod tests {
             replay_vote_sender,
             Arc::new(PrioritizationFeeCache::new(0u64)),
         );
-        let consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
 
         let ProcessTransactionBatchOutput {
             execute_and_commit_transactions_output:
@@ -1060,5 +1068,70 @@ mod tests {
             CommitTransactionDetails::NotCommitted(TransactionError::AccountInUse)
         );
         assert_eq!(bank.read_cost_tracker().unwrap().block_cost(), 0);
+    }
+
+    #[test]
+    fn test_non_fee_payer_failure_tx_reverts() {
+        agave_logger::setup();
+        let GenesisConfigInfo {
+            genesis_config,
+            mint_keypair,
+            ..
+        } = create_genesis_config_with_leader(
+            10_000,
+            &Pubkey::new_unique(),
+            bootstrap_validator_stake_lamports(),
+        );
+        let (bank, _bank_forks) = Bank::new_no_wallclock_throttle_for_tests(&genesis_config);
+
+        let kp1 = Keypair::new();
+        let kp2 = Keypair::new();
+        let transactions = sanitize_transactions(vec![
+            transfer(&mint_keypair, &kp1.pubkey(), 1, genesis_config.hash()),
+            transfer(&kp1, &kp2.pubkey(), 10, genesis_config.hash()),
+        ]);
+
+        let (record_sender, mut record_receiver) = record_channels(false);
+        let recorder = TransactionRecorder::new(record_sender);
+        record_receiver.restart(bank.bank_id());
+
+        let (replay_vote_sender, _replay_vote_receiver) = unbounded();
+
+        let committer = Committer::new(
+            None,
+            replay_vote_sender,
+            Arc::new(PrioritizationFeeCache::new(0u64)),
+        );
+        let mut consumer = BundleConsumer::new(committer, recorder, QosService::new(1), None);
+
+        let ProcessTransactionBatchOutput {
+            execute_and_commit_transactions_output:
+                ExecuteAndCommitTransactionsOutput {
+                    commit_transactions_result,
+                    ..
+                },
+            cost_model_throttled_transactions_count,
+            ..
+        } = consumer.process_and_record_aged_transactions(
+            &bank,
+            &transactions,
+            &[MaxAge::MAX],
+            Duration::from_millis(20),
+        );
+        assert_eq!(cost_model_throttled_transactions_count, 0);
+        assert!(commit_transactions_result.is_ok());
+        let commit_transactions_result = commit_transactions_result.unwrap();
+        assert_eq!(commit_transactions_result.len(), 2);
+        assert_matches!(
+            commit_transactions_result[0],
+            CommitTransactionDetails::NotCommitted(TransactionError::CommitCancelled)
+        );
+        assert_matches!(
+            commit_transactions_result[1],
+            CommitTransactionDetails::NotCommitted(TransactionError::InstructionError(
+                0,
+                InstructionError::Custom(1)
+            ))
+        );
     }
 }
